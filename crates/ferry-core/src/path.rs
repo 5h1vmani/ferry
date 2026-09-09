@@ -6,6 +6,23 @@
 //!
 //! A [`RemotePath`] is a path that has passed those checks. The type exists so
 //! that the rest of the core cannot forget to run them.
+//!
+//! # What this module does not do
+//!
+//! These checks are lexical. They read the text of the path and nothing else.
+//! They cannot see what the filesystem resolves.
+//!
+//! A symlink inside the shared root that points outside it passes every check
+//! here. So does a FIFO, which blocks the reading thread forever, and so does a
+//! device file. The test
+//! `a_validated_path_can_still_escape_through_a_symlink` records this gap.
+//!
+//! The filesystem layer must therefore do three more things:
+//!
+//! 1. Open every path with `O_NOFOLLOW_ANY` on macOS, and with `O_NOFOLLOW` on
+//!    each component on Android.
+//! 2. Refuse anything that is not a regular file or a directory.
+//! 3. Resolve the result and confirm it still sits inside the shared root.
 
 use std::fmt;
 
@@ -45,10 +62,13 @@ impl fmt::Display for PathError {
 
 impl std::error::Error for PathError {}
 
-/// A relative path that is safe to join onto a shared root.
+/// A relative path whose text is safe to join onto a shared root.
 ///
 /// Build one with [`RemotePath::parse`]. The stored form uses `/` as the
 /// separator and holds no empty, `.`, or `..` components.
+///
+/// This is a lexical guarantee only. It does not make the path safe to open.
+/// See the module documentation for what the filesystem layer must still do.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RemotePath(String);
 
@@ -180,7 +200,36 @@ mod tests {
     }
 
     #[test]
-    fn no_accepted_path_can_escape_a_root() {
+    fn a_validated_path_can_still_escape_through_a_symlink() {
+        // This test records a known gap rather than a bug. RemotePath checks
+        // text only. Closing the gap is the filesystem layer's job, using
+        // O_NOFOLLOW_ANY. If this test ever starts failing, the checks grew
+        // beyond lexical and the module documentation needs updating.
+        let base = std::env::temp_dir().join(format!("ferry-symlink-{}", std::process::id()));
+        let root = base.join("root");
+        let outside = base.join("outside");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), b"private").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+
+        let path = RemotePath::parse("link/secret.txt").expect("the text is valid");
+        let joined = root.join(path.as_str());
+        assert!(joined.starts_with(&root), "the lexical check passes");
+
+        let resolved = std::fs::canonicalize(&joined).unwrap();
+        let real_root = std::fs::canonicalize(&root).unwrap();
+        assert!(
+            !resolved.starts_with(&real_root),
+            "a lexically valid path escaped the root through a symlink"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn no_accepted_path_can_escape_a_root_lexically() {
         // Any path the parser accepts must stay inside the root once joined.
         let root = std::path::Path::new("/tmp/ferry-root");
         for candidate in [
