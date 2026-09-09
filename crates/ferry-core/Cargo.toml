@@ -1,0 +1,16 @@
+[package]
+name = "ferry-core"
+version = "0.0.0"
+description = "Shared core for Ferry: file operations layer, transfer engine, and transports."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]

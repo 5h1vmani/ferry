@@ -1,0 +1,29 @@
+//! Shared core for Ferry.
+//!
+//! Ferry moves files between macOS and Android. The core is split into two
+//! layers, and this crate will hold both.
+//!
+//! # The file operations layer
+//!
+//! A small set of remote operations that either side can serve and either side
+//! can call: `list`, `stat`, `read(path, offset, length)`, `write(path,
+//! offset, bytes)`, `mkdir`, and `delete`.
+//!
+//! Reads and writes take a byte range. Finder must list files without
+//! downloading them and fetch bytes on demand, so a whole-file read API cannot
+//! work.
+//!
+//! # The transfer engine
+//!
+//! A transfer is a loop of `read` or `write` calls on top of the file
+//! operations layer. Pushing is repeated `write`. Pulling is repeated `read`.
+//! One protocol, used in two directions.
+//!
+//! # Current state
+//!
+//! Phase 1 has not started. This crate holds only the types that are already
+//! decided. See `PLAN.md` and `docs/protocol.md`.
+
+pub mod path;
+
+pub use path::{PathError, RemotePath};
