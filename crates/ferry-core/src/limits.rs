@@ -58,3 +58,13 @@ pub const MAX_PENDING_HANDSHAKES: u32 = 8;
 /// The Noise specification caps a transport message at 65535 bytes. The
 /// authentication tag takes 16 of them.
 pub const MAX_NOISE_PLAINTEXT: usize = 65535 - 16;
+
+/// The largest number of chunks one manifest may hold.
+///
+/// A manifest is exchanged in a single frame during resume, and each chunk
+/// costs 32 bytes. This cap keeps it inside [`MAX_FRAME_PAYLOAD`].
+///
+/// It also sets a ceiling on file size for a given chunk size. At one mebibyte
+/// per chunk the ceiling is 32 gibibytes. A larger file needs a larger chunk
+/// size, up to the 16 mebibyte maximum, which reaches 512 gibibytes.
+pub const MAX_MANIFEST_CHUNKS: u32 = 32 * 1024;

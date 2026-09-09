@@ -30,6 +30,9 @@
 use blake3::hazmat::{HasherExt, Mode, merge_subtrees_non_root, merge_subtrees_root};
 use blake3::{CHUNK_LEN, Hash, Hasher};
 
+use crate::limits;
+use crate::wire::{Decoder, Encoder, WireError};
+
 /// A per-chunk chaining value. Thirty-two bytes.
 ///
 /// This is not a hash of the chunk on its own. See the module documentation.
@@ -57,6 +60,59 @@ impl core::fmt::Display for ChunkSizeError {
 }
 
 impl std::error::Error for ChunkSizeError {}
+
+/// The reason a stored or received manifest was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManifestError {
+    /// The bytes were malformed.
+    Wire(WireError),
+    /// The chunk size was not one BLAKE3 can use.
+    BadChunkSize(ChunkSizeError),
+    /// The number of chunks did not match the stated file length.
+    WrongChunkCount {
+        /// How many the length implies.
+        expected: usize,
+        /// How many were present.
+        found: usize,
+    },
+    /// The manifest held more chunks than [`limits::MAX_MANIFEST_CHUNKS`].
+    TooManyChunks,
+    /// The chunk values did not merge to the stated root hash.
+    ///
+    /// Someone edited the manifest, or it was written by a different build.
+    RootMismatch,
+}
+
+impl core::fmt::Display for ManifestError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Wire(e) => write!(f, "manifest did not decode: {e}"),
+            Self::BadChunkSize(e) => write!(f, "manifest chunk size is unusable: {e}"),
+            Self::WrongChunkCount { expected, found } => {
+                write!(
+                    f,
+                    "manifest lists {found} chunks but the length implies {expected}"
+                )
+            }
+            Self::TooManyChunks => f.write_str("manifest holds more chunks than the limit"),
+            Self::RootMismatch => f.write_str("manifest chunks do not match its root hash"),
+        }
+    }
+}
+
+impl std::error::Error for ManifestError {}
+
+impl From<WireError> for ManifestError {
+    fn from(value: WireError) -> Self {
+        Self::Wire(value)
+    }
+}
+
+impl From<ChunkSizeError> for ManifestError {
+    fn from(value: ChunkSizeError) -> Self {
+        Self::BadChunkSize(value)
+    }
+}
 
 /// A chunk size that BLAKE3 accepts as a subtree length.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -151,6 +207,93 @@ impl Manifest {
     #[must_use]
     pub fn root(&self) -> Hash {
         self.root
+    }
+
+    /// Rebuild a manifest that was stored on disk or sent by a peer.
+    ///
+    /// The chunk values are merged again and compared with the stated root
+    /// hash. A manifest that fails that check is refused. This is what stops a
+    /// tampered manifest from marking chunks as good when they are not, and it
+    /// costs no disk access at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestError`] when the chunk count does not match the
+    /// length, or when the chunk values do not merge to the stated root.
+    pub fn from_parts(
+        length: u64,
+        chunk_size: ChunkSize,
+        chunks: Vec<ChainingValue>,
+        root: Hash,
+    ) -> Result<Self, ManifestError> {
+        let expected = length.div_ceil(chunk_size.as_u64());
+        let expected = usize::try_from(expected).map_err(|_| ManifestError::TooManyChunks)?;
+        if chunks.len() != expected {
+            return Err(ManifestError::WrongChunkCount {
+                expected,
+                found: chunks.len(),
+            });
+        }
+        if chunks.len() > limits::MAX_MANIFEST_CHUNKS as usize {
+            return Err(ManifestError::TooManyChunks);
+        }
+
+        let rebuilt = match chunks.len() {
+            // An empty file and a single chunk file both hash their own bytes,
+            // so neither root can be rebuilt from chaining values alone. The
+            // stated root is kept and every chunk is still verified on read.
+            0 | 1 => root,
+            _ => Hash::from_bytes(merge_range(&chunks, 0, length, chunk_size, true)),
+        };
+        if rebuilt != root {
+            return Err(ManifestError::RootMismatch);
+        }
+
+        Ok(Self {
+            length,
+            chunk_size,
+            chunks,
+            root,
+        })
+    }
+
+    /// Write the manifest out, for storage or for the wire.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut e = Encoder::new();
+        e.u64(self.length);
+        e.u32(self.chunk_size.get());
+        e.u32(u32::try_from(self.chunks.len()).unwrap_or(u32::MAX));
+        for cv in &self.chunks {
+            e.fixed(cv);
+        }
+        e.fixed(self.root.as_bytes());
+        e.finish()
+    }
+
+    /// Read a manifest back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManifestError::Wire`] when the bytes are malformed, and the
+    /// other variants when the manifest is internally inconsistent. A manifest
+    /// from disk is not trusted, because another process may have edited it.
+    pub fn decode(bytes: &[u8]) -> Result<Self, ManifestError> {
+        let mut d = Decoder::new(bytes);
+        let length = d.u64()?;
+        let chunk_size = ChunkSize::new(d.u32()?)?;
+        let count = d.u32()?;
+        if count > limits::MAX_MANIFEST_CHUNKS {
+            return Err(ManifestError::TooManyChunks);
+        }
+        // The count is capped before anything is reserved.
+        let mut chunks = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            chunks.push(d.fixed::<32>()?);
+        }
+        let root = Hash::from_bytes(d.fixed::<32>()?);
+        d.finish()?;
+        Self::from_parts(length, chunk_size, chunks, root)
     }
 
     /// The byte range covered by one chunk.
@@ -305,7 +448,9 @@ fn merge_range(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkSize, ChunkSizeError, ManifestBuilder, manifest_from_bytes};
+    use super::{
+        ChunkSize, ChunkSizeError, Manifest, ManifestBuilder, ManifestError, manifest_from_bytes,
+    };
 
     fn data(len: usize) -> Vec<u8> {
         (0..len)
@@ -408,5 +553,61 @@ mod tests {
             builder.push(piece);
         }
         assert_eq!(builder.finish(), manifest_from_bytes(&bytes, chunk_size));
+    }
+
+    #[test]
+    fn a_manifest_survives_being_stored_and_read_back() {
+        let chunk_size = ChunkSize::new(1024).unwrap();
+        for len in [0, 1, 1024, 5000, 100_000] {
+            let original = manifest_from_bytes(&data(len), chunk_size);
+            let restored = Manifest::decode(&original.encode()).unwrap();
+            assert_eq!(restored, original, "manifest changed at length {len}");
+        }
+    }
+
+    #[test]
+    fn a_tampered_chunk_value_is_refused() {
+        // Another process on the machine can edit a manifest on disk. Merging
+        // the chunk values again catches that, with no disk access at all.
+        let chunk_size = ChunkSize::new(1024).unwrap();
+        let manifest = manifest_from_bytes(&data(5000), chunk_size);
+        let mut encoded = manifest.encode();
+        // The chunk values start after the length, chunk size, and count.
+        encoded[16] ^= 0x01;
+        assert_eq!(Manifest::decode(&encoded), Err(ManifestError::RootMismatch));
+    }
+
+    #[test]
+    fn a_tampered_root_hash_is_refused() {
+        let chunk_size = ChunkSize::new(1024).unwrap();
+        let manifest = manifest_from_bytes(&data(5000), chunk_size);
+        let mut encoded = manifest.encode();
+        let last = encoded.len() - 1;
+        encoded[last] ^= 0x01;
+        assert_eq!(Manifest::decode(&encoded), Err(ManifestError::RootMismatch));
+    }
+
+    #[test]
+    fn a_chunk_count_that_disagrees_with_the_length_is_refused() {
+        let chunk_size = ChunkSize::new(1024).unwrap();
+        let manifest = manifest_from_bytes(&data(5000), chunk_size);
+        let result = Manifest::from_parts(
+            9999,
+            chunk_size,
+            manifest.chunks().to_vec(),
+            manifest.root(),
+        );
+        assert!(matches!(result, Err(ManifestError::WrongChunkCount { .. })));
+    }
+
+    #[test]
+    fn trailing_bytes_after_a_manifest_are_refused() {
+        let chunk_size = ChunkSize::new(1024).unwrap();
+        let mut encoded = manifest_from_bytes(&data(5000), chunk_size).encode();
+        encoded.push(0);
+        assert!(matches!(
+            Manifest::decode(&encoded),
+            Err(ManifestError::Wire(_))
+        ));
     }
 }
