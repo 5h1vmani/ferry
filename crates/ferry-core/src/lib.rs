@@ -30,6 +30,7 @@ pub mod limits;
 pub mod noise;
 pub mod ops;
 pub mod path;
+pub mod rpc;
 pub mod transport;
 pub mod version;
 pub mod wire;
@@ -38,6 +39,7 @@ pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuil
 pub use frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
 pub use ops::{Entry, FileKind, OpError, Request, Response};
 pub use path::{PathError, RemotePath};
+pub use rpc::{Client, FileOps, RpcError, serve};
 pub use transport::{Endpoint, Stream, loopback};
 pub use version::{Agreed, Role, VersionError, negotiate};
 pub use wire::{Decoder, Encoder, WireError};

@@ -1,0 +1,484 @@
+//! Calling file operations across a connection, and serving them.
+//!
+//! [`FileOps`] is what a device offers. [`Client`] calls it across a stream.
+//! [`serve`] answers those calls.
+//!
+//! The protocol is symmetric, so either device can hold either role. One
+//! connection currently carries one client and one server. Running both
+//! directions at once needs multiplexing, which is not built yet.
+//!
+//! Requests are also answered one at a time. Pipelining needs the credit window
+//! described in `docs/protocol.md` section 7, and that is not built yet either.
+//! The frame format already carries request identifiers, so adding it later
+//! does not change the wire format.
+
+use std::fmt;
+use std::io::{self, Read, Write};
+
+use crate::frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
+use crate::ops::{Entry, OpError, Request, Response};
+use crate::path::RemotePath;
+use crate::wire::WireError;
+
+/// The file operations one device offers to the other.
+///
+/// Methods take `&self` so that one implementation can be shared by several
+/// connections. Anything that needs to change state uses interior mutability.
+///
+/// An implementation is responsible for the safety rules in
+/// `docs/protocol.md` section 8. It resolves paths inside its own shared root,
+/// refuses symlinks and special files, and never follows a path out of that
+/// root.
+pub trait FileOps: Send + Sync {
+    /// List one page of a directory.
+    ///
+    /// Returns the entries and, when more remain, the cursor for the next page.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`] when the path does not exist, and
+    /// [`OpError::NotADirectory`] when it is a file.
+    fn list(&self, path: &RemotePath, cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError>;
+
+    /// Describe one file or directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`] when the path does not exist.
+    fn stat(&self, path: &RemotePath) -> Result<Entry, OpError>;
+
+    /// Read a byte range.
+    ///
+    /// A short result means the range ran past the end of the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`], [`OpError::IsADirectory`], or
+    /// [`OpError::RangeTooLarge`] when the length is over the limit.
+    fn read(&self, path: &RemotePath, offset: u64, length: u32) -> Result<Vec<u8>, OpError>;
+
+    /// Write a byte range, creating the file when it does not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::IsADirectory`] or [`OpError::PermissionDenied`].
+    fn write(&self, path: &RemotePath, offset: u64, bytes: &[u8]) -> Result<u32, OpError>;
+
+    /// Set a file's length, cutting it short or extending it with zeros.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`] or [`OpError::IsADirectory`].
+    fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), OpError>;
+
+    /// Move a file or directory to another name.
+    ///
+    /// This is how a received file moves from its temporary name to its real
+    /// one, so it must replace the destination in one step.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`] when the source is missing.
+    fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), OpError>;
+
+    /// Set a file's modified time, so a copied photo keeps its original date.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`].
+    fn set_mtime(&self, path: &RemotePath, modified_unix_secs: i64) -> Result<(), OpError>;
+
+    /// Create a directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::AlreadyExists`] or [`OpError::NotFound`] when a
+    /// parent is missing.
+    fn mkdir(&self, path: &RemotePath) -> Result<(), OpError>;
+
+    /// Delete a file, or an empty directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotEmpty`] for a directory holding anything. Delete
+    /// is not recursive in version 1.
+    fn delete(&self, path: &RemotePath) -> Result<(), OpError>;
+}
+
+/// The reason a call failed.
+#[derive(Debug)]
+pub enum RpcError {
+    /// The frame layer failed.
+    Frame(FrameError),
+    /// A payload did not decode.
+    Wire(WireError),
+    /// The peer refused the operation. This is a normal outcome, not a fault.
+    Remote(OpError),
+    /// The peer answered a different question than the one asked.
+    ///
+    /// A well behaved peer never does this. The connection should be dropped.
+    MismatchedResponse,
+    /// The peer used a request identifier that was never sent.
+    MismatchedRequestId {
+        /// What was sent.
+        expected: u32,
+        /// What came back.
+        got: u32,
+    },
+    /// The peer sent a response where a request belonged, or the reverse.
+    UnexpectedFrameKind(FrameKind),
+}
+
+impl fmt::Display for RpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Frame(e) => write!(f, "frame layer failed: {e}"),
+            Self::Wire(e) => write!(f, "payload did not decode: {e}"),
+            Self::Remote(e) => write!(f, "the peer refused: {e}"),
+            Self::MismatchedResponse => f.write_str("the peer answered a different question"),
+            Self::MismatchedRequestId { expected, got } => {
+                write!(f, "expected request {expected} but got {got}")
+            }
+            Self::UnexpectedFrameKind(k) => write!(f, "unexpected frame kind {k:?}"),
+        }
+    }
+}
+
+impl std::error::Error for RpcError {}
+
+impl From<FrameError> for RpcError {
+    fn from(value: FrameError) -> Self {
+        Self::Frame(value)
+    }
+}
+
+impl From<WireError> for RpcError {
+    fn from(value: WireError) -> Self {
+        Self::Wire(value)
+    }
+}
+
+impl From<OpError> for RpcError {
+    fn from(value: OpError) -> Self {
+        Self::Remote(value)
+    }
+}
+
+/// True when `response` is a sensible answer to `request`.
+///
+/// A response carries its own tag, so the codec alone cannot tell whether it
+/// answers the question that was asked. Without this check a peer could answer
+/// `mkdir` with a pile of file bytes, and the caller would believe it.
+fn answers(request: &Request, response: &Response) -> bool {
+    matches!(
+        (request, response),
+        (Request::List { .. }, Response::List { .. })
+            | (Request::Stat { .. }, Response::Stat { .. })
+            | (Request::Read { .. }, Response::Read { .. })
+            | (Request::Write { .. }, Response::Write { .. })
+            | (
+                Request::Truncate { .. }
+                    | Request::Rename { .. }
+                    | Request::SetMtime { .. }
+                    | Request::Mkdir { .. }
+                    | Request::Delete { .. },
+                Response::Ok
+            )
+    )
+}
+
+/// Calls file operations on the other device.
+#[derive(Debug)]
+pub struct Client<S> {
+    stream: S,
+    next_id: u32,
+}
+
+impl<S: Read + Write> Client<S> {
+    /// Wrap a connected stream.
+    ///
+    /// The stream is normally a `SecureStream`, but any byte stream works.
+    pub fn new(stream: S) -> Self {
+        Self { stream, next_id: 1 }
+    }
+
+    /// Give the stream back.
+    pub fn into_inner(self) -> S {
+        self.stream
+    }
+
+    /// Send one request and wait for its answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Remote`] when the peer refused the operation, which
+    /// is an ordinary outcome. Returns [`RpcError::MismatchedResponse`] when
+    /// the peer answers a different question, which is not.
+    pub fn call(&mut self, request: &Request) -> Result<Response, RpcError> {
+        let request_id = self.next_id;
+        self.next_id = self.next_id.wrapping_add(1);
+
+        write_frame(
+            &mut self.stream,
+            &Frame {
+                kind: FrameKind::Request,
+                request_id,
+                payload: request.encode(),
+            },
+        )?;
+
+        let frame = read_frame(&mut self.stream)?;
+        if frame.request_id != request_id {
+            return Err(RpcError::MismatchedRequestId {
+                expected: request_id,
+                got: frame.request_id,
+            });
+        }
+        match frame.kind {
+            FrameKind::Response => {
+                let response = Response::decode(&frame.payload)?;
+                if answers(request, &response) {
+                    Ok(response)
+                } else {
+                    Err(RpcError::MismatchedResponse)
+                }
+            }
+            FrameKind::Error => Err(RpcError::Remote(OpError::decode(&frame.payload)?)),
+            FrameKind::Request => Err(RpcError::UnexpectedFrameKind(FrameKind::Request)),
+        }
+    }
+
+    /// List one page of a directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn list(
+        &mut self,
+        path: &RemotePath,
+        cursor: u64,
+    ) -> Result<(Vec<Entry>, Option<u64>), RpcError> {
+        match self.call(&Request::List {
+            path: path.clone(),
+            cursor,
+        })? {
+            Response::List {
+                entries,
+                next_cursor,
+            } => Ok((entries, next_cursor)),
+            _ => Err(RpcError::MismatchedResponse),
+        }
+    }
+
+    /// Describe one file or directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn stat(&mut self, path: &RemotePath) -> Result<Entry, RpcError> {
+        match self.call(&Request::Stat { path: path.clone() })? {
+            Response::Stat { entry } => Ok(entry),
+            _ => Err(RpcError::MismatchedResponse),
+        }
+    }
+
+    /// Read a byte range.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn read(
+        &mut self,
+        path: &RemotePath,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, RpcError> {
+        match self.call(&Request::Read {
+            path: path.clone(),
+            offset,
+            length,
+        })? {
+            Response::Read { bytes } => Ok(bytes),
+            _ => Err(RpcError::MismatchedResponse),
+        }
+    }
+
+    /// Write a byte range.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn write(
+        &mut self,
+        path: &RemotePath,
+        offset: u64,
+        bytes: Vec<u8>,
+    ) -> Result<u32, RpcError> {
+        match self.call(&Request::Write {
+            path: path.clone(),
+            offset,
+            bytes,
+        })? {
+            Response::Write { written } => Ok(written),
+            _ => Err(RpcError::MismatchedResponse),
+        }
+    }
+
+    /// Set a file's length.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn truncate(&mut self, path: &RemotePath, length: u64) -> Result<(), RpcError> {
+        self.call(&Request::Truncate {
+            path: path.clone(),
+            length,
+        })
+        .map(|_| ())
+    }
+
+    /// Move a file or directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<(), RpcError> {
+        self.call(&Request::Rename {
+            from: from.clone(),
+            to: to.clone(),
+        })
+        .map(|_| ())
+    }
+
+    /// Set a file's modified time.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn set_mtime(
+        &mut self,
+        path: &RemotePath,
+        modified_unix_secs: i64,
+    ) -> Result<(), RpcError> {
+        self.call(&Request::SetMtime {
+            path: path.clone(),
+            modified_unix_secs,
+        })
+        .map(|_| ())
+    }
+
+    /// Create a directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn mkdir(&mut self, path: &RemotePath) -> Result<(), RpcError> {
+        self.call(&Request::Mkdir { path: path.clone() })
+            .map(|_| ())
+    }
+
+    /// Delete a file or an empty directory.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn delete(&mut self, path: &RemotePath) -> Result<(), RpcError> {
+        self.call(&Request::Delete { path: path.clone() })
+            .map(|_| ())
+    }
+}
+
+fn handle(ops: &dyn FileOps, request: &Request) -> Result<Response, OpError> {
+    match request {
+        Request::List { path, cursor } => {
+            let (entries, next_cursor) = ops.list(path, *cursor)?;
+            Ok(Response::List {
+                entries,
+                next_cursor,
+            })
+        }
+        Request::Stat { path } => Ok(Response::Stat {
+            entry: ops.stat(path)?,
+        }),
+        Request::Read {
+            path,
+            offset,
+            length,
+        } => Ok(Response::Read {
+            bytes: ops.read(path, *offset, *length)?,
+        }),
+        Request::Write {
+            path,
+            offset,
+            bytes,
+        } => Ok(Response::Write {
+            written: ops.write(path, *offset, bytes)?,
+        }),
+        Request::Truncate { path, length } => ops.truncate(path, *length).map(|()| Response::Ok),
+        Request::Rename { from, to } => ops.rename(from, to).map(|()| Response::Ok),
+        Request::SetMtime {
+            path,
+            modified_unix_secs,
+        } => ops
+            .set_mtime(path, *modified_unix_secs)
+            .map(|()| Response::Ok),
+        Request::Mkdir { path } => ops.mkdir(path).map(|()| Response::Ok),
+        Request::Delete { path } => ops.delete(path).map(|()| Response::Ok),
+    }
+}
+
+/// Answer requests until the peer stops or the connection fails.
+///
+/// Returns normally when the peer closes the connection cleanly.
+///
+/// A refused operation is not a reason to stop. It is sent back as an error
+/// frame, and the loop continues. A malformed frame is different, because the
+/// two sides no longer agree on the format, so the loop stops.
+///
+/// # Errors
+///
+/// Returns [`RpcError::Frame`] when the stream fails or the peer sends
+/// something the frame layer refuses.
+pub fn serve(stream: &mut (impl Read + Write), ops: &dyn FileOps) -> Result<(), RpcError> {
+    loop {
+        let frame = match read_frame(stream) {
+            Ok(f) => f,
+            Err(FrameError::Io(e))
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        };
+
+        if frame.kind != FrameKind::Request {
+            return Err(RpcError::UnexpectedFrameKind(frame.kind));
+        }
+
+        // A payload that does not decode is answered, not ignored, so the
+        // caller learns why instead of waiting forever.
+        let reply = match Request::decode(&frame.payload) {
+            Ok(request) => handle(ops, &request),
+            Err(WireError::InvalidPath) => Err(OpError::InvalidPath),
+            Err(WireError::TooLong) => Err(OpError::RangeTooLarge),
+            Err(_) => Err(OpError::Unsupported),
+        };
+
+        let out = match reply {
+            Ok(response) => Frame {
+                kind: FrameKind::Response,
+                request_id: frame.request_id,
+                payload: response.encode(),
+            },
+            Err(error) => Frame {
+                kind: FrameKind::Error,
+                request_id: frame.request_id,
+                payload: error.encode(),
+            },
+        };
+        write_frame(stream, &out)?;
+    }
+}
