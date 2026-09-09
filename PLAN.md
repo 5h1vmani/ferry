@@ -363,12 +363,18 @@ Recording these matters as much as the feature list.
   borg do, and it pays off for edited documents and disk images. These files are
   photos and videos, which change as whole files or not at all. Fixed chunks
   plus whole-file deduplication captures the real win.
-Fuzzing was on this list and has been moved back into scope. The reason given
-was that the parser never sees hostile bytes after the handshake. That reason
-was wrong. Handshake messages are parsed before any peer is authenticated, and
-from any host on the network. The resume manifest is parsed from a file on disk
-that another process may have edited. A paired device that is later compromised
-is authenticated and hostile at the same time.
+- **A short pairing code over plain Noise `XX`.** An attacker in the middle can
+  generate static keys until the code matches, because `XX` sends the
+  initiator's static key last. See decision record 6.
+- **Recursive delete.** It is the largest single action a peer can trigger, for
+  a case the user can do folder by folder.
+
+Fuzzing was on this list and has moved back into scope. The reason given for
+cutting it was that the parser never sees hostile bytes after the handshake.
+That reason was wrong. Handshake messages are parsed before any peer is
+authenticated, and from any host on the network. The resume manifest is parsed
+from a file on disk that another process may have edited. A paired device that
+is later compromised is authenticated and hostile at the same time.
 
 ## 12. Next actions
 
