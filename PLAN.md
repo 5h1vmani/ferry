@@ -1,7 +1,8 @@
 # Ferry: build plan
 
 Date written: 9 September 2026.
-Status: planning. Order 0 spike in progress.
+Status: order 0 is done, apart from two items that need a person at the
+keyboard. See `docs/spike-0-findings.md`. Phase 1 has not started.
 
 ## 1. Goal
 
@@ -163,16 +164,22 @@ yet decided, so these are working weeks, not calendar weeks.
 |---|---|---|---|
 | 0 | Spike. File Provider hello world, WebDAV mount test, Apple entitlement check. | 3 to 5 days | Low |
 | 1 | Rust core: file operations layer, frame codec, Noise, pairing, BLAKE3 chunking, session manifest. Loopback transport and property tests. TCP and mDNS. Both apps. Push and pull. adb tunnel as a developer transport. | 5 to 7 weeks | Medium |
-| 2 | Finder mount, by whichever route the spike proved. | 1 to 6 weeks | Medium |
+| 2 | Finder mount over a WebDAV bridge, on top of the file operations layer. | 1 to 2 weeks | Low |
 | 3 | Android Open Accessory over USB. Session resume across a dropped transport. | 3 to 5 weeks | Medium |
-| 4 | Optional. File Provider proper if phase 2 shipped WebDAV. Whole-file deduplication. Hotspot fallback. | Undecided | High |
+| 4 | Optional. File Provider extension, which needs the Apple entitlement question answered. Whole-file deduplication. Hotspot fallback. | Undecided | High |
 
 Phase 2 is the headline feature. It moved ahead of USB for two reasons. It is
 the feature I actually need. It is also the only feature here that no free tool
 provides.
 
-Phase 2 has a wide estimate because the spike decides the route. A WebDAV
-bridge is days of work. A File Provider extension is weeks.
+The order 0 spike settled the phase 2 route. macOS mounts a WebDAV server with
+no `sudo`, no TLS, no entitlement, and no Apple Developer Program. Finder
+browses it. So the Finder mount ships as a WebDAV bridge over the file
+operations layer.
+
+A File Provider extension is the better long-term answer, because it gets
+bounded byte ranges and the system caches metadata instead of asking the phone.
+It moved to phase 4, and it depends on the Apple entitlement question.
 
 ## 7. Cost
 
@@ -200,10 +207,18 @@ is free and still gives a Finder mount.
 ## 8. Open questions
 
 1. Can a free Apple personal team provision App Group and File Provider
-   entitlements on macOS 26? Answered by order 0.
-2. Does macOS mount a WebDAV server well enough to browse a phone? Does it
-   fetch byte ranges on demand, or download whole files? Answered by order 0.
-3. Does mDNS need a `MulticastLock` on Android and a local network permission
+   entitlements on macOS 26? Still open. It needs an Apple ID signed into
+   Xcode, which needs a password. It no longer blocks phase 2.
+2. Does macOS mount a WebDAV server well enough to browse a phone? Answered.
+   Yes. It mounts, it browses, and it fetches ranges rather than whole files.
+   It is chatty, it writes `.DS_Store`, and it sends open-ended ranges. All
+   three are handled on the Mac side.
+3. What throughput does the macOS WebDAV client reach? Still open. Measuring it
+   needs a bulk read through the mount, which macOS blocks for a plain shell
+   process.
+4. Can Finder's thumbnail fetches be suppressed? Still open. Two media files
+   caused ten content requests, so this matters at scale.
+5. Does mDNS need a `MulticastLock` on Android and a local network permission
    on macOS 26? Confirm during phase 1.
 
 ## 9. Known risks
@@ -263,6 +278,7 @@ Recording these matters as much as the feature list.
 
 ## 12. Next actions
 
-1. Finish order 0.
-2. Decide the Finder route from the spike result.
+1. Sign an Apple ID into Xcode, then answer open question 1. It takes about ten
+   minutes and it decides whether phase 4 is free.
+2. Measure macOS WebDAV throughput through a mount. Open question 3.
 3. Start phase 1.
