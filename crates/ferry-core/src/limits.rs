@@ -68,3 +68,9 @@ pub const MAX_NOISE_PLAINTEXT: usize = 65535 - 16;
 /// per chunk the ceiling is 32 gibibytes. A larger file needs a larger chunk
 /// size, up to the 16 mebibyte maximum, which reaches 512 gibibytes.
 pub const MAX_MANIFEST_CHUNKS: u32 = 32 * 1024;
+
+/// The largest a stored manifest may be, in bytes.
+///
+/// A manifest holds a length, a chunk size, a count, one 32 byte value per
+/// chunk, and a 32 byte root hash.
+pub const MAX_MANIFEST_BYTES: usize = 8 + 4 + 4 + (MAX_MANIFEST_CHUNKS as usize * 32) + 32;
