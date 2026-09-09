@@ -209,19 +209,38 @@ chunk size, the hash of each chunk, and the root hash of the whole file.
 
 ### Hashing
 
-BLAKE3, in a way that matters.
+Designed and implemented. See `crates/ferry-core/src/chunk.rs`.
 
-The claim that one pass yields both the per-chunk hashes and the whole-file
-root hash is true only through the `blake3` crate's `hazmat` interface. The
-per-chunk values are subtree chaining values, not `blake3::hash(chunk)`. Values
-computed the obvious way never merge into the root hash.
+Each chunk carries a 32 byte **chaining value**, not a hash. BLAKE3 builds a
+binary tree over the input, and the file hash is the root of that tree. A
+chaining value is an internal node of that tree. `blake3::hash(chunk)` is a
+root hash of the chunk alone, and root hashes do not combine. Chaining values
+do.
 
-That interface also constrains the chunk size. Each chunk must start at an
-offset that is a multiple of the chunk length, and the chunk length must be a
-power of two multiple of 1024 bytes.
+The values come from the `blake3` crate's `hazmat` interface, using
+`set_input_offset` and `finalize_non_root`. They merge back to the file hash
+with `merge_subtrees_non_root` and `merge_subtrees_root`.
 
-So the chunk size is a power of two. Its value is not designed yet. Read the
-`blake3` crate documentation before writing the chunker.
+This is why one pass over a file yields both the per-chunk values and the
+whole-file hash. Computing chunk hashes the obvious way would break it, and the
+failure would be silent.
+
+The interface constrains the chunk size. A chaining value only means something
+for a complete subtree. A subtree must start at an offset that is a multiple of
+its own length, and its length must be a power of two multiple of 1024 bytes.
+
+| Setting | Value |
+|---|---|
+| Chunk size | A power of two |
+| Smallest | 1024 bytes, which is the BLAKE3 chunk length |
+| Largest | 16 mebibytes, which bounds what a receiver buffers |
+| Default | 1 mebibyte |
+
+The `ChunkSize` type enforces those rules, and it is the only way to build a
+manifest.
+
+A chaining value also depends on where the chunk sits in the file. A peer
+therefore cannot pass off chunk 0 as chunk 2. There is a test for that.
 
 ### Resume
 

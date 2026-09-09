@@ -24,6 +24,8 @@
 //! Phase 1 has not started. This crate holds only the types that are already
 //! decided. See `PLAN.md` and `docs/protocol.md`.
 
+pub mod chunk;
 pub mod path;
 
+pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuilder};
 pub use path::{PathError, RemotePath};
