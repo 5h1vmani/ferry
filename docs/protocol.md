@@ -45,8 +45,10 @@ Exact code derivation: not designed yet.
 Every connection after pairing runs a Noise `KK` handshake, using the stored
 static keys.
 
-`KK` proves both identities from the first message. A device that is not paired
-cannot complete the handshake.
+`KK` proves the initiator's identity in message one, because message one
+carries a static-static Diffie-Hellman step that only the real initiator can
+compute. The responder's identity is proven when message two decrypts. A device
+that is not paired cannot complete the handshake.
 
 Noise cipher suite: not designed yet.
 

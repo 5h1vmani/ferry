@@ -274,9 +274,12 @@ Recording these matters as much as the feature list.
   borg do, and it pays off for edited documents and disk images. These files are
   photos and videos, which change as whole files or not at all. Fixed chunks
   plus whole-file deduplication captures the real win.
-- **Fuzzing the frame parser.** After the Noise handshake the peer is
-  authenticated, so the parser never sees hostile bytes. Property tests on the
-  codec round trip catch more real bugs.
+Fuzzing was on this list and has been moved back into scope. The reason given
+was that the parser never sees hostile bytes after the handshake. That reason
+was wrong. Handshake messages are parsed before any peer is authenticated, and
+from any host on the network. The resume manifest is parsed from a file on disk
+that another process may have edited. A paired device that is later compromised
+is authenticated and hostile at the same time.
 
 ## 12. Next actions
 

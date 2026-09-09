@@ -2,7 +2,8 @@
 
 Move files between a Mac and an Android phone. Browse the phone in Finder.
 
-Status: planning. Order 0 spike in progress. There is nothing to install yet.
+Status: the order 0 spike is done. Phase 1 has not started. There is nothing
+to install yet.
 
 ## The problem
 
