@@ -25,9 +25,18 @@
 //! decided. See `PLAN.md` and `docs/protocol.md`.
 
 pub mod chunk;
+pub mod frame;
+pub mod limits;
+pub mod noise;
+pub mod ops;
 pub mod path;
 pub mod transport;
+pub mod version;
+pub mod wire;
 
 pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuilder};
+pub use frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
 pub use path::{PathError, RemotePath};
 pub use transport::{Endpoint, Stream, loopback};
+pub use version::{Agreed, Role, VersionError, negotiate};
+pub use wire::{Decoder, Encoder, WireError};

@@ -1,0 +1,275 @@
+//! The frame codec.
+//!
+//! A frame is the unit the protocol exchanges once a connection is encrypted.
+//! Every frame looks the same:
+//!
+//! ```text
+//! [u32 payload_len][u8 kind][u32 request_id][payload]
+//! ```
+//!
+//! The length comes first and is checked against [`limits::MAX_FRAME_PAYLOAD`]
+//! before any memory is reserved. An unbounded length would let a peer exhaust
+//! memory with four bytes.
+//!
+//! The request identifier lets several requests be in flight at once. Answers
+//! may come back in any order, which is what keeps many small files fast.
+//!
+//! This codec runs over a plain byte stream. When the stream is encrypted, the
+//! Noise layer below splits those bytes into transport messages. Framing does
+//! not know about that split, and does not need to.
+
+use std::fmt;
+use std::io::{self, Read, Write};
+
+use crate::limits;
+use crate::wire::WireError;
+
+/// What a frame is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum FrameKind {
+    /// A call from one side to the other.
+    Request = 1,
+    /// A successful answer to a request with the same identifier.
+    Response = 2,
+    /// A failed answer to a request with the same identifier.
+    Error = 3,
+}
+
+impl FrameKind {
+    /// Read a kind from its byte.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrameError::UnknownKind`] for any other byte. A future version
+    /// may add kinds, so this is a version mismatch rather than an attack.
+    pub fn from_byte(value: u8) -> Result<Self, FrameError> {
+        match value {
+            1 => Ok(Self::Request),
+            2 => Ok(Self::Response),
+            3 => Ok(Self::Error),
+            other => Err(FrameError::UnknownKind(other)),
+        }
+    }
+}
+
+/// One decoded frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    /// What the frame is for.
+    pub kind: FrameKind,
+    /// Ties a response or an error to the request that caused it.
+    pub request_id: u32,
+    /// The body, which the file operations layer decodes.
+    pub payload: Vec<u8>,
+}
+
+/// The reason a frame could not be read or written.
+#[derive(Debug)]
+pub enum FrameError {
+    /// The stream failed.
+    Io(io::Error),
+    /// The declared payload length was over [`limits::MAX_FRAME_PAYLOAD`].
+    PayloadTooLarge(u32),
+    /// The kind byte named nothing this version knows.
+    UnknownKind(u8),
+    /// The payload did not decode.
+    Wire(WireError),
+}
+
+impl fmt::Display for FrameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "stream failed: {e}"),
+            Self::PayloadTooLarge(n) => {
+                write!(
+                    f,
+                    "payload of {n} bytes is over the limit of {}",
+                    limits::MAX_FRAME_PAYLOAD
+                )
+            }
+            Self::UnknownKind(k) => write!(f, "unknown frame kind {k}"),
+            Self::Wire(e) => write!(f, "payload did not decode: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {}
+
+impl From<io::Error> for FrameError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl From<WireError> for FrameError {
+    fn from(value: WireError) -> Self {
+        Self::Wire(value)
+    }
+}
+
+/// The bytes before the payload: length, kind, and request identifier.
+const HEADER_LEN: usize = 4 + 1 + 4;
+
+/// Write one frame.
+///
+/// # Errors
+///
+/// Returns [`FrameError::PayloadTooLarge`] when the payload is over the limit,
+/// and [`FrameError::Io`] when the stream fails.
+pub fn write_frame(out: &mut impl Write, frame: &Frame) -> Result<(), FrameError> {
+    let len = u32::try_from(frame.payload.len()).unwrap_or(u32::MAX);
+    if len > limits::MAX_FRAME_PAYLOAD {
+        return Err(FrameError::PayloadTooLarge(len));
+    }
+    let mut header = [0u8; HEADER_LEN];
+    header[0..4].copy_from_slice(&len.to_be_bytes());
+    header[4] = frame.kind as u8;
+    header[5..9].copy_from_slice(&frame.request_id.to_be_bytes());
+    out.write_all(&header)?;
+    out.write_all(&frame.payload)?;
+    out.flush()?;
+    Ok(())
+}
+
+/// Read one frame.
+///
+/// Blocks until a whole frame arrives.
+///
+/// # Errors
+///
+/// Returns [`FrameError::PayloadTooLarge`] when the peer declares a payload
+/// over the limit. The connection should then be dropped, because the two
+/// sides no longer agree on the format. Returns [`FrameError::Io`] with kind
+/// [`io::ErrorKind::UnexpectedEof`] when the stream ends between frames.
+pub fn read_frame(input: &mut impl Read) -> Result<Frame, FrameError> {
+    let mut header = [0u8; HEADER_LEN];
+    input.read_exact(&mut header)?;
+
+    let len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]);
+    if len > limits::MAX_FRAME_PAYLOAD {
+        // Checked before allocating, so a four byte lie costs nothing.
+        return Err(FrameError::PayloadTooLarge(len));
+    }
+    let kind = FrameKind::from_byte(header[4])?;
+    let request_id = u32::from_be_bytes([header[5], header[6], header[7], header[8]]);
+
+    let mut payload = vec![0u8; len as usize];
+    input.read_exact(&mut payload)?;
+    Ok(Frame {
+        kind,
+        request_id,
+        payload,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Frame, FrameError, FrameKind, read_frame, write_frame};
+    use crate::limits;
+    use std::io::ErrorKind;
+
+    fn frame(payload: Vec<u8>) -> Frame {
+        Frame {
+            kind: FrameKind::Request,
+            request_id: 42,
+            payload,
+        }
+    }
+
+    #[test]
+    fn a_frame_survives_a_round_trip() {
+        let original = frame(b"hello".to_vec());
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &original).unwrap();
+        let decoded = read_frame(&mut buffer.as_slice()).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn an_empty_payload_survives_a_round_trip() {
+        let original = frame(Vec::new());
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &original).unwrap();
+        assert_eq!(read_frame(&mut buffer.as_slice()).unwrap(), original);
+    }
+
+    #[test]
+    fn frames_keep_their_order_and_identifiers() {
+        let mut buffer = Vec::new();
+        for id in 0..5u8 {
+            write_frame(
+                &mut buffer,
+                &Frame {
+                    kind: FrameKind::Response,
+                    request_id: u32::from(id),
+                    payload: vec![id],
+                },
+            )
+            .unwrap();
+        }
+        let mut cursor = buffer.as_slice();
+        for id in 0..5u8 {
+            let f = read_frame(&mut cursor).unwrap();
+            assert_eq!(f.request_id, u32::from(id));
+            assert_eq!(f.payload, vec![id]);
+        }
+    }
+
+    #[test]
+    fn a_payload_over_the_limit_is_refused_on_write() {
+        let big = frame(vec![0u8; limits::MAX_FRAME_PAYLOAD as usize + 1]);
+        let mut buffer = Vec::new();
+        assert!(matches!(
+            write_frame(&mut buffer, &big),
+            Err(FrameError::PayloadTooLarge(_))
+        ));
+        assert!(
+            buffer.is_empty(),
+            "nothing is written when the frame is refused"
+        );
+    }
+
+    #[test]
+    fn a_lie_about_the_length_is_caught_before_allocating() {
+        // Four bytes claiming a four gibibyte payload, and nothing else.
+        let mut buffer = u32::MAX.to_be_bytes().to_vec();
+        buffer.push(FrameKind::Request as u8);
+        buffer.extend_from_slice(&0u32.to_be_bytes());
+        assert!(matches!(
+            read_frame(&mut buffer.as_slice()),
+            Err(FrameError::PayloadTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn an_unknown_kind_is_refused() {
+        let mut buffer = 0u32.to_be_bytes().to_vec();
+        buffer.push(200);
+        buffer.extend_from_slice(&0u32.to_be_bytes());
+        assert!(matches!(
+            read_frame(&mut buffer.as_slice()),
+            Err(FrameError::UnknownKind(200))
+        ));
+    }
+
+    #[test]
+    fn a_stream_that_ends_mid_frame_is_an_error() {
+        let original = frame(b"abcdefgh".to_vec());
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &original).unwrap();
+        buffer.truncate(buffer.len() - 3);
+        match read_frame(&mut buffer.as_slice()) {
+            Err(FrameError::Io(e)) => assert_eq!(e.kind(), ErrorKind::UnexpectedEof),
+            other => panic!("expected an end of file error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_payload_at_exactly_the_limit_is_allowed() {
+        let big = frame(vec![7u8; limits::MAX_FRAME_PAYLOAD as usize]);
+        let mut buffer = Vec::new();
+        write_frame(&mut buffer, &big).unwrap();
+        assert_eq!(read_frame(&mut buffer.as_slice()).unwrap(), big);
+    }
+}
