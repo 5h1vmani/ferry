@@ -26,6 +26,8 @@
 
 pub mod chunk;
 pub mod path;
+pub mod transport;
 
 pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuilder};
 pub use path::{PathError, RemotePath};
+pub use transport::{Endpoint, Stream, loopback};
