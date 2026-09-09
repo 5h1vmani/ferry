@@ -23,6 +23,10 @@ pub enum WireError {
     UnknownTag(u8),
     /// Bytes were left over after the value was decoded.
     TrailingBytes,
+    /// A path was not valid, for a reason other than its length.
+    ///
+    /// See `crate::path::RemotePath::parse`, which runs the checks.
+    InvalidPath,
 }
 
 impl fmt::Display for WireError {
@@ -33,6 +37,7 @@ impl fmt::Display for WireError {
             Self::NotUtf8 => f.write_str("text was not valid UTF-8"),
             Self::UnknownTag(t) => write!(f, "unknown tag byte {t}"),
             Self::TrailingBytes => f.write_str("bytes were left over after decoding"),
+            Self::InvalidPath => f.write_str("path failed validation"),
         }
     }
 }

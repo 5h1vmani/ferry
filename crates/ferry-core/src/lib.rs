@@ -36,6 +36,7 @@ pub mod wire;
 
 pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuilder};
 pub use frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
+pub use ops::{Entry, FileKind, OpError, Request, Response};
 pub use path::{PathError, RemotePath};
 pub use transport::{Endpoint, Stream, loopback};
 pub use version::{Agreed, Role, VersionError, negotiate};
