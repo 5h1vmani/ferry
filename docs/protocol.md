@@ -27,7 +27,34 @@ does not care which transport provides that stream.
 | USB, developer route | A TCP connection through an adb tunnel |
 | USB, Android Open Accessory | The bulk in and bulk out endpoints |
 
-## 3. Pairing
+## 3. Version negotiation
+
+Every connection starts with seven bytes from each side, before anything else:
+
+```text
+[5 bytes "FERRY"][u16 highest supported version]
+```
+
+Both sides send first, then read, so neither waits on the other. Each side
+takes the lower of the two versions. This build supports version 1 only.
+
+This exchange happens in the clear, because the encrypted channel does not
+exist yet. That would normally let an attacker force both sides down to an old
+version. It cannot happen here, because these exact bytes become the Noise
+prologue:
+
+```text
+[initiator's 7 bytes][responder's 7 bytes]
+```
+
+A prologue is mixed into the Noise handshake hash. An attacker who edits one
+byte makes the two sides compute different hashes, so the handshake fails. The
+version exchange is unauthenticated when it happens, and authenticated a moment
+later.
+
+Implemented in `crates/ferry-core/src/version.rs`.
+
+## 4. Pairing
 
 Two devices pair once. Pairing is the only moment when a network attacker can
 get in. Everything after it rests on pairing being correct.
@@ -56,14 +83,34 @@ Each side must be locked in before it sees the other side's input.
 3. The initiator reveals `nonce_a` in the message three payload. The responder
    checks the commitment against the static key it now holds. A mismatch aborts
    the handshake.
-4. Both sides compute the code as a short value derived from the Noise handshake
-   hash, `nonce_a`, and `nonce_b`.
+4. Both sides compute the code from the Noise handshake hash, `nonce_a`, and
+   `nonce_b`.
+
+The commitment is:
+
+```text
+BLAKE3("ferry-pairing-commitment-v1" || static_public_key || nonce)
+```
+
+The code is:
+
+```text
+BLAKE3("ferry-pairing-code-v1" || handshake_hash || nonce_a || nonce_b)
+```
+
+Take the first eight bytes of that hash as a big endian number, reduce it
+modulo one million, and show six digits. Eight bytes reduced to six digits
+leaves a bias far below one part in a trillion.
+
+Each hash carries its own context string, so no value can be reused as
+another.
 
 An attacker must now commit before seeing `nonce_b`, so grinding does not help.
 Its chance per attempt is one in the size of the code space.
 
-Exact code length and derivation: not designed yet. It will not be shorter than
-six digits.
+Implemented in `crates/ferry-core/src/noise.rs`. The test named
+`an_initiator_that_changes_identity_is_caught` runs the attack this design
+exists to stop.
 
 ### Pairing rules
 
@@ -82,7 +129,7 @@ A device can be unpaired. Unpairing deletes the stored static public key and
 every session manifest for that peer. A lost or replaced phone must not stay
 trusted forever.
 
-## 4. Connections
+## 5. Connections
 
 Every connection after pairing runs a Noise `KK` handshake, using the stored
 static keys.
@@ -92,26 +139,60 @@ carries a static-static Diffie-Hellman step that only the real initiator can
 compute. The responder's identity is proven when message two decrypts. A device
 that is not paired cannot complete the handshake.
 
-Noise cipher suite: not designed yet.
+The cipher suites are `Noise_XX_25519_ChaChaPoly_BLAKE2s` for pairing and
+`Noise_KK_25519_ChaChaPoly_BLAKE2s` afterwards.
 
-## 5. Framing
+Handshake messages travel as `[u16 length][message]`, and a message over 1024
+bytes is refused. Real handshake messages are under 200 bytes. The cap stops a
+peer from making the other side hold a buffer before it has proved anything.
 
-Not designed yet.
+Once the handshake finishes, transport messages travel as
+`[u16 length][ciphertext]`. The Noise specification caps one transport message
+at 65535 bytes, and the authentication tag takes 16 of those, so one message
+carries at most 65519 bytes of plaintext. The encrypted stream splits longer
+writes and joins them again, so the framing layer above never sees that cap.
 
-Requirements the framing must meet:
+## 6. Framing
 
-- The first bytes carry a protocol version, so two versions can negotiate.
-- A frame carries a request identifier, so several requests can be in flight at
-  once. Pipelining is what keeps many small files fast.
-- A frame declares its length before its body, and the receiver enforces a
-  maximum. An unbounded length lets a peer exhaust memory.
-- Errors are structured values, not text. A caller must be able to act on the
-  error without parsing English.
-- The document states how a frame maps onto Noise transport messages. The Noise
-  specification caps one transport message at 65,535 bytes, so a large chunk
-  spans several. The codec cannot be written without this rule.
+Designed and implemented. See `crates/ferry-core/src/frame.rs`.
 
-## 6. Limits
+Once a connection is encrypted, every message is a frame:
+
+```text
+[u32 payload_len][u8 kind][u32 request_id][payload]
+```
+
+| Field | Meaning |
+|---|---|
+| `payload_len` | Length of the payload only. Checked against the cap before any memory is reserved. |
+| `kind` | 1 is a request, 2 is a successful response, 3 is a failed response. |
+| `request_id` | Ties a response to its request. Several may be in flight at once. |
+
+The length comes first and is checked before allocation. An unbounded length
+would let a peer exhaust memory with four bytes.
+
+Answers may return in any order, because each carries the identifier of the
+request it answers. That is what keeps many small files fast.
+
+Framing runs over a plain byte stream. It does not know that the stream is
+encrypted, and it does not need to. The Noise layer below splits its bytes into
+transport messages.
+
+### Value encoding
+
+All integers are big endian. A byte string or a piece of text carries a `u32`
+length first. Text is UTF-8, and invalid text is refused rather than replaced.
+
+A decoder rejects trailing bytes. Extra bytes usually mean the two sides
+disagree about the format, so the message is refused rather than half
+understood.
+
+The encoding is written by hand rather than taken from a serialisation crate,
+because this document has to describe every byte.
+
+Implemented in `crates/ferry-core/src/wire.rs`.
+
+## 7. Limits
 
 Every limit below exists so that one peer cannot exhaust the other. Some of
 these trigger during ordinary use, not only under attack. A camera folder with
@@ -119,17 +200,26 @@ these trigger during ordinary use, not only under attack. A camera folder with
 
 | Limit | Why |
 |---|---|
-| Maximum frame length | An unbounded length exhausts memory |
-| Maximum requests in flight per connection | Pipelining without a credit window is a memory attack |
-| Maximum outstanding response bytes per connection | Ten thousand reads of one mebibyte each ask for ten gibibytes |
-| Maximum `read` length in one request | Bounds the buffer the server must hold |
-| `list` returns a page and a cursor | A folder can hold more entries than one frame |
-| Handshake timeout | Half-open handshakes must not accumulate |
-| Maximum connections before a completed handshake | Any host on the network can otherwise fill the table |
+| Limit | Value | Why |
+|---|---|---|
+| Frame payload | 1 MiB plus 64 KiB | An unbounded length exhausts memory |
+| `read` length in one request | 1 MiB | Bounds the buffer the server must hold |
+| `write` bytes in one request | 1 MiB | The same, on the writing side |
+| Requests in flight per connection | 64 | Pipelining without a cap is a memory attack |
+| Outstanding response bytes per connection | 16 MiB | Sixty four reads of 1 MiB would ask a phone for 64 MiB |
+| Entries in one `list` response | 1024 | A folder can hold more entries than one frame |
+| Path length | 1024 bytes | Below every common filesystem limit |
+| Handshake timeout | 10 seconds | Half-open handshakes must not accumulate |
+| Connections awaiting a handshake | 8 | Any host on the network can otherwise fill the table |
+| Plaintext in one Noise message | 65519 bytes | The Noise cap of 65535, less the 16 byte tag |
 
-Values: not designed yet.
+A chunk larger than the `read` limit is fetched with several reads, because
+reads carry a byte range.
 
-## 7. File operations
+Implemented in `crates/ferry-core/src/limits.rs`. If a value changes there,
+change it here too.
+
+## 8. File operations
 
 Nine operations. Either side can serve them.
 
@@ -199,7 +289,7 @@ The lexical rules live in `crates/ferry-core/src/path.rs`. A test there named
 `a_validated_path_can_still_escape_through_a_symlink` records the gap so that
 nobody forgets step 1.
 
-## 8. Transfers
+## 9. Transfers
 
 A transfer is a loop of `read` or `write` calls. Pushing is repeated `write`.
 Pulling is repeated `read`.
@@ -272,7 +362,7 @@ transfer leaves a broken file at the real path.
 
 Ferry never migrates a live stream between transports. See decision record 5.
 
-## 9. Discovery
+## 10. Discovery
 
 Devices announce themselves over mDNS on the local network.
 
@@ -291,7 +381,7 @@ Rules for the advertisement:
 An mDNS answer is not authenticated. An attacker can answer with its own
 address. After pairing, `KK` then fails and the connection stalls, which is
 annoying but not dangerous. During pairing it is the attack described in
-section 3, which the pairing mode and the commitment step address.
+section 4, which the pairing mode and the commitment step address.
 
 Service type and exact TXT contents: not designed yet.
 
@@ -299,7 +389,7 @@ Open question. Android needs a `MulticastLock` for multicast receive, and
 recent macOS requires a local network permission. Both are confirmed during
 phase 1.
 
-## 10. Key storage
+## 11. Key storage
 
 Each device holds one long-lived X25519 static key pair, plus the public keys
 of the devices it has paired with.
@@ -320,7 +410,7 @@ application's code signature. An ad-hoc signature changes on every rebuild, so
 a stable signing certificate is needed during development, not only for
 release.
 
-## 11. Considered and rejected
+## 12. Considered and rejected
 
 **QUIC as the network transport.** It offers stream multiplexing and connection
 migration, which look like a fit. It requires TLS 1.3, which conflicts with the
@@ -331,7 +421,7 @@ latency, pipelined requests over one stream reach nearly the same result.
 **TLS instead of Noise.** See decision record 3.
 
 **A six digit code over plain Noise `XX`.** Forgeable in seconds by an attacker
-in the middle. See section 3.
+in the middle. See section 4.
 
 **Content-defined chunking with a rolling hash.** This is what restic and borg
 use. It pays off for edited documents and disk images. Ferry moves photos and
