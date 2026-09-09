@@ -213,13 +213,15 @@ is free and still gives a Finder mount.
    Yes. It mounts, it browses, and it fetches ranges rather than whole files.
    It is chatty, it writes `.DS_Store`, and it sends open-ended ranges. All
    three are handled on the Mac side.
-3. What throughput does the macOS WebDAV client reach? Still open. Measuring it
-   needs a bulk read through the mount, which macOS blocks for a plain shell
-   process.
-4. Can Finder's thumbnail fetches be suppressed? Still open. Two media files
+3. Can Finder's thumbnail fetches be suppressed? Still open. Two media files
    caused ten content requests, so this matters at scale.
-5. Does mDNS need a `MulticastLock` on Android and a local network permission
+4. Does mDNS need a `MulticastLock` on Android and a local network permission
    on macOS 26? Confirm during phase 1.
+
+Throughput is deliberately not an open question. USB is a reliability feature,
+and the WebDAV route is already chosen. A number would change no decision now.
+Phase 2 produces real numbers as a by-product, against a real phone rather than
+a fake server on localhost.
 
 ## 9. Known risks
 
@@ -280,5 +282,4 @@ Recording these matters as much as the feature list.
 
 1. Sign an Apple ID into Xcode, then answer open question 1. It takes about ten
    minutes and it decides whether phase 4 is free.
-2. Measure macOS WebDAV throughput through a mount. Open question 3.
-3. Start phase 1.
+2. Start phase 1.
