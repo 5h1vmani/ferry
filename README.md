@@ -20,8 +20,9 @@ gap Ferry fills.
 Ferry is built as two layers, not as a file sender.
 
 **The file operations layer** is a small set of remote operations: `list`,
-`stat`, `read(path, offset, length)`, `write(path, offset, bytes)`, `mkdir`,
-and `delete`. Either device can serve it. Either device can call it.
+`stat`, `read(path, offset, length)`, `write(path, offset, bytes)`, `truncate`,
+`rename`, `set_mtime`, `mkdir`, and `delete`. Either device can serve it.
+Either device can call it.
 
 **The transfer engine** sits on top. Pushing a file is repeated `write`.
 Pulling a file is repeated `read`. Both directions share one protocol, one
@@ -50,6 +51,9 @@ A transfer holds an identifier that does not belong to any connection. Both
 sides keep a manifest on disk. When the Wi-Fi drops or the cable is pulled, a
 new connection resumes the same transfer from that manifest.
 
+The manifest is a hint, not the truth. On resume the receiver re-hashes what it
+already holds, because a file on disk can be edited by anything on the machine.
+
 ## Design decisions
 
 Each decision below has a short record in [docs/decisions](docs/decisions).
@@ -59,6 +63,7 @@ Each decision below has a short record in [docs/decisions](docs/decisions).
 - [Noise instead of TLS](docs/decisions/0003-noise-instead-of-tls.md)
 - [USB is a reliability feature, not a speed feature](docs/decisions/0004-usb-is-reliability.md)
 - [Session resume instead of mid-transfer failover](docs/decisions/0005-session-resume-not-failover.md)
+- [Commit and reveal during pairing](docs/decisions/0006-pairing-commit-and-reveal.md)
 
 The wire protocol is written up in [docs/protocol.md](docs/protocol.md).
 

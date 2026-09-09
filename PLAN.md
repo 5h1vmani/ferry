@@ -45,16 +45,31 @@ reliability feature. It works on networks where discovery fails.
 |---|---|---|
 | Wi-Fi on the local network, mDNS and TCP | None | Build. Default path. |
 | USB with an adb tunnel | User must enable USB debugging once | Build. Developer transport and fallback. Reuses the TCP code. |
-| USB with Android Open Accessory | Plug in, accept a prompt on the phone | Build. No USB debugging needed. |
+| USB with Android Open Accessory | Plug in, accept a prompt on the phone | Build, but see the note below. |
 | USB with MTP | Plug in | Skip. This is what everyone else does badly. |
+| USB tethering | Turn tethering on | Test first. See open question 4. |
 | Phone local-only hotspot | Mac drops its Wi-Fi and loses internet | Defer. Fallback when the LAN blocks discovery. |
 | Wi-Fi Direct or AWDL | Not applicable | Cannot build. macOS exposes no public API. |
 | Bluetooth Low Energy | None | Cut. mDNS covers the network case. USB covers the cable case. |
 | Cloud relay | Needs a code or an account | Out of scope. |
 
-USB tethering looks attractive but is not reliable. Android defaults to
-RNDIS, which macOS does not support. CDC-NCM works on macOS but Android gates
-it behind vendor configuration. Do not build on it.
+### An honest note on Android Open Accessory
+
+Its only advantage over the adb tunnel is that the user does not need to enable
+USB debugging. This phone already has USB debugging enabled, because that is
+how the app gets installed. So that advantage serves nobody here.
+
+The adb tunnel already delivers the reliability that decision record 4 chose.
+Android Open Accessory is therefore kept for the portfolio purpose, not the
+personal one. Writing a libusb driver and handling accessory mode is the
+hardest systems work in this project, and that is the reason to do it. The plan
+should not pretend otherwise.
+
+If the tethering test in open question 4 passes, reconsider both USB paths.
+
+USB tethering was previously ruled out here on the grounds that Android
+defaults to RNDIS, which macOS does not support. That claim may be out of date.
+Open question 4 settles it in five minutes.
 
 ## 4. Architecture
 
@@ -78,9 +93,22 @@ that. Range reads are designed in from the start.
 
 ### Security
 
-Noise protocol, not TLS. The `XX` pattern handles first pairing with a short
-confirmation code. The `KK` pattern handles every connection after that, using
-the pinned static key of each device.
+Noise protocol, not TLS. The `XX` pattern handles first pairing. The `KK`
+pattern handles every connection after that, using the pinned static key of
+each device.
+
+Pairing needs more than a short code. In `XX` the initiator sends its static
+key last, so an attacker in the middle can generate keys until the code
+matches. A six digit code falls in seconds. Pairing therefore commits to a
+random nonce before revealing it, runs only inside a user-started pairing mode
+on the phone, needs confirmation on both screens, and prefers the USB cable.
+See decision record 6.
+
+The long-lived private key lives in app-private storage on Android, excluded
+from Auto Backup, and in the Keychain on macOS. Android Auto Backup is on by
+default, so without the exclusion the private key reaches the user's Google
+Drive. macOS Keychain access is tied to the code signature, so a stable signing
+certificate is needed during development.
 
 Reason: the pairing model is "pin the peer's static public key", which is
 exactly what Noise does. There is no certificate generation and no PKI
@@ -92,6 +120,21 @@ needs to connect, and no browser needs to connect.
 
 BLAKE3. It is fast, it parallelises, and its tree structure gives per-chunk
 verification and a whole-file root hash from a single pass.
+
+### Each side shares one root, and only one
+
+The Mac shares a folder the user chooses.
+
+The phone shares a fixed list of top-level folders: `DCIM`, `Pictures`,
+`Movies`, `Music`, `Download`, and `Documents`. The Android app holds broader
+access than that. Limiting the shared root limits the damage if the app or its
+transport is ever compromised.
+
+Path checks in the core are lexical. They cannot see what the filesystem
+resolves. A symlink inside the root that points outside it passes all of them,
+and so does a FIFO. The filesystem layer opens paths with `O_NOFOLLOW_ANY` on
+macOS, refuses anything that is not a regular file or directory, and confirms
+the resolved path still sits inside the root.
 
 ### Sessions outlive connections
 
@@ -133,15 +176,29 @@ The Rust core must not assume that one process owns everything.
 
 ### Build
 
-- Device discovery over mDNS.
-- Pairing with a short confirmation code, then pinned per-device keys.
-- The file operations layer, in both directions.
+- Device discovery over mDNS, advertised by the phone only, with a random
+  instance name and no key material in the TXT record.
+- Pairing with commit and reveal, a pairing mode, and confirmation on both
+  screens. Then pinned per-device keys.
+- Key storage: app-private and backup-excluded on Android, Keychain on macOS.
+- Unpairing, which deletes the peer's key and every manifest for it.
+- The file operations layer, in both directions. Nine operations, including
+  `rename`, `truncate`, and `set_mtime`.
+- A shared root on each side, with symlink and special-file refusal.
 - Chunking with BLAKE3 hashes, and a persisted session manifest.
-- Pipelined chunk requests, so many small files stay fast.
-- Encrypted transport using Noise.
-- Finder mount. Route decided by the order 0 spike.
+- Resume that re-hashes the disk rather than trusting the manifest, and that
+  writes to a temporary name until the root hash verifies.
+- Pipelined chunk requests with a credit window, so many small files stay fast
+  without letting one peer exhaust the other.
+- Encrypted transport using Noise, with the per-connection limits in the
+  protocol document.
+- Finder mount over WebDAV, bound to loopback on a random port, behind a
+  per-launch password and a `Host` header check, unmounted when the app quits.
+- Android platform work: a foreground service, a Wi-Fi lock, a `MulticastLock`,
+  a MediaStore scan after each write, and the all-files-access settings flow.
 - USB transport using an adb tunnel, then Android Open Accessory.
 - A visible indicator of the active transport and its speed.
+- Fuzzing the frame and handshake parsers.
 
 ### Cut
 
@@ -154,6 +211,8 @@ The Rust core must not assume that one process owns everything.
 - Bluetooth Low Energy.
 - Cloud relay and account systems.
 - Mid-transfer failover between transports. Session resume replaces it.
+- Recursive delete. Deleting a non-empty directory returns an error in
+  version 1.
 
 ## 6. Phases
 
@@ -163,9 +222,9 @@ yet decided, so these are working weeks, not calendar weeks.
 | Order | Scope | Estimate | Risk |
 |---|---|---|---|
 | 0 | Spike. File Provider hello world, WebDAV mount test, Apple entitlement check. | 3 to 5 days | Low |
-| 1 | Rust core: file operations layer, frame codec, Noise, pairing, BLAKE3 chunking, session manifest. Loopback transport and property tests. TCP and mDNS. Both apps. Push and pull. adb tunnel as a developer transport. | 5 to 7 weeks | Medium |
-| 2 | Finder mount over a WebDAV bridge, on top of the file operations layer. | 1 to 2 weeks | Low |
-| 3 | Android Open Accessory over USB. Session resume across a dropped transport. | 3 to 5 weeks | Medium |
+| 1 | Rust core: file operations layer, frame codec, Noise with commit-and-reveal pairing, key storage, BLAKE3 chunking, session manifest, resume, per-connection limits. Loopback transport, property tests, and fuzzing. TCP and mDNS. Both apps, including the Android platform work. Push and pull. adb tunnel as a developer transport. | 7 to 9 weeks | Medium |
+| 2 | Finder mount over a WebDAV bridge, on top of the file operations layer. | 2 to 4 weeks | Medium |
+| 3 | USB reliability. Route decided by the tethering test in section 8. | 0 to 5 weeks | Medium |
 | 4 | Optional. File Provider extension, which needs the Apple entitlement question answered. Whole-file deduplication. Hotspot fallback. | Undecided | High |
 
 Phase 2 is the headline feature. It moved ahead of USB for two reasons. It is
@@ -180,6 +239,21 @@ operations layer.
 A File Provider extension is the better long-term answer, because it gets
 bounded byte ranges and the system caches metadata instead of asking the phone.
 It moved to phase 4, and it depends on the Apple entitlement question.
+
+Phase 2 is two to four weeks, not one to two. The bridge carries `LOCK` and
+`UNLOCK`, `PROPFIND` at two depths, `MOVE`, `COPY`, `PROPPATCH`, ETags, bounded
+open-ended ranges with disconnect detection, a listing cache, metadata probe
+handling, authentication, and unmounting on quit. Two of its open questions are
+still open.
+
+Phase 1 grew from five to seven weeks to seven to nine. The added work is
+pairing with commit and reveal, key storage on both platforms, unpairing,
+three more file operations, the per-connection limits, resume, and the Android
+platform work. Each item is small. Together they are two weeks.
+
+Phase 3 has no fixed size until the tethering test runs. If Android tethering
+presents a usable network interface to the Mac, the USB transport is the
+existing TCP transport over that interface, and most of phase 3 disappears.
 
 ## 7. Cost
 
@@ -214,8 +288,19 @@ is free and still gives a Finder mount.
    It is chatty, it writes `.DS_Store`, and it sends open-ended ranges. All
    three are handled on the Mac side.
 3. Can Finder's thumbnail fetches be suppressed? Still open. Two media files
-   caused ten content requests, so this matters at scale.
-4. Does mDNS need a `MulticastLock` on Android and a local network permission
+   caused ten content requests, so this matters at scale. This is an entry
+   condition for phase 2.
+4. Does USB tethering present a usable network interface to the Mac? The plan
+   says Android defaults to RNDIS, which macOS does not support. Newer Android
+   versions may use NCM, which macOS does support. Five minutes settle it. Plug
+   the phone in, turn on USB tethering, and look for a new interface with an
+   address in `ifconfig`. If it works, most of phase 3 disappears. Note that
+   tethering routes the Mac's internet through the phone.
+5. Does FSKit work on macOS 26.6? The risk below cites macOS 26.1 and 26.2, and
+   this machine runs 26.6.2. A working FSKit extension would be a real
+   filesystem, with no HTTP server, no locking, and no authentication problem.
+   A hello-world extension settles it in an afternoon, after the Xcode sign-in.
+6. Does mDNS need a `MulticastLock` on Android and a local network permission
    on macOS 26? Confirm during phase 1.
 
 Throughput is deliberately not an open question. USB is a reliability feature,
@@ -225,9 +310,13 @@ a fake server on localhost.
 
 ## 9. Known risks
 
-- Third-party FSKit extensions are broken on macOS 26. This is an Apple bug and
-  it was still present in macOS 26.1 and 26.2. Build the Finder integration on
-  File Provider or WebDAV, not on FSKit.
+- Third-party FSKit extensions were broken on macOS 26.1 and 26.2. That is four
+  point releases behind this machine, so the claim is stale. Retest before
+  ruling FSKit out. Until then, build the Finder integration on WebDAV.
+- The Android app holds access to all shared storage. If the app or its
+  transport is ever compromised, everything in shared storage is exposed. The
+  fixed shared root in section 4 limits that, and it is the reason the root is
+  fixed rather than free.
 - The File Provider framework is poorly documented and runs in a memory-limited
   process. It will take longer than it looks.
 - macOS's WebDAV client is known to be quirky. The spike measures it rather
@@ -283,6 +372,8 @@ is authenticated and hostile at the same time.
 
 ## 12. Next actions
 
-1. Sign an Apple ID into Xcode, then answer open question 1. It takes about ten
-   minutes and it decides whether phase 4 is free.
-2. Start phase 1.
+1. Run the USB tethering test. Five minutes, and it may remove most of phase 3.
+2. Sign an Apple ID into Xcode. That answers open question 1, and it also gives
+   a stable signing certificate, which phase 1 needs for Keychain storage.
+3. Test FSKit on macOS 26.6, once Xcode is signed in.
+4. Start phase 1.
