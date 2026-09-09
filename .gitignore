@@ -1,0 +1,22 @@
+# Rust
+/target
+**/target
+Cargo.lock.orig
+
+# macOS
+.DS_Store
+
+# Xcode
+*.xcuserstate
+xcuserdata/
+DerivedData/
+*.xcworkspace/xcuserdata/
+build/
+
+# Editors
+.idea/
+*.swp
+
+# Local secrets and scratch
+.env
+/scratch
