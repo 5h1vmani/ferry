@@ -27,6 +27,7 @@
 pub mod chunk;
 pub mod frame;
 pub mod limits;
+pub mod memfs;
 pub mod noise;
 pub mod ops;
 pub mod path;
@@ -37,6 +38,7 @@ pub mod wire;
 
 pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuilder};
 pub use frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
+pub use memfs::MemoryFs;
 pub use ops::{Entry, FileKind, OpError, Request, Response};
 pub use path::{PathError, RemotePath};
 pub use rpc::{Client, FileOps, RpcError, serve};

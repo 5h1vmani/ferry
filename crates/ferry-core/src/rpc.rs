@@ -482,3 +482,253 @@ pub fn serve(stream: &mut (impl Read + Write), ops: &dyn FileOps) -> Result<(), 
         write_frame(stream, &out)?;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use super::{Client, RpcError, serve};
+    use crate::frame::{Frame, FrameKind, read_frame, write_frame};
+    use crate::memfs::MemoryFs;
+    use crate::ops::{FileKind, OpError, Request, Response};
+    use crate::path::RemotePath;
+    use crate::transport::{Endpoint, loopback};
+
+    fn path(text: &str) -> RemotePath {
+        RemotePath::parse(text).unwrap()
+    }
+
+    /// Serve `fs` on one loopback endpoint, in its own thread, and return a
+    /// client connected to the other endpoint.
+    ///
+    /// A test must end by calling [`finish`], which drops the client so the
+    /// server sees end of file, then joins the thread. Otherwise the thread
+    /// would sit forever, waiting for a frame that never arrives.
+    fn spawn_server(fs: MemoryFs) -> (Client<Endpoint>, thread::JoinHandle<Result<(), RpcError>>) {
+        let (client_end, mut server_end) = loopback();
+        let handle = thread::spawn(move || serve(&mut server_end, &fs));
+        (Client::new(client_end), handle)
+    }
+
+    /// Drop the client, then join the server thread and check it ended
+    /// cleanly.
+    fn finish(client: Client<Endpoint>, handle: thread::JoinHandle<Result<(), RpcError>>) {
+        drop(client);
+        assert!(
+            handle.join().unwrap().is_ok(),
+            "serve should return Ok(()) once the client disconnects"
+        );
+    }
+
+    #[test]
+    fn list_reaches_the_server_and_returns_entries() {
+        let fs = MemoryFs::new();
+        fs.insert_file("DCIM/a.jpg", b"a".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        let (entries, next_cursor) = client.list(&path("DCIM"), 0).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "a.jpg");
+        assert_eq!(next_cursor, None);
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn stat_reaches_the_server_and_describes_the_entry() {
+        let fs = MemoryFs::new();
+        fs.insert_file("a.jpg", b"hello".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        let entry = client.stat(&path("a.jpg")).unwrap();
+        assert_eq!(entry.name, "a.jpg");
+        assert_eq!(entry.size, 5);
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn read_reaches_the_server_and_returns_bytes() {
+        let fs = MemoryFs::new();
+        fs.insert_file("a.jpg", b"hello".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        let bytes = client.read(&path("a.jpg"), 1, 3).unwrap();
+        assert_eq!(bytes, b"ell");
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn write_reaches_the_server_and_returns_the_byte_count() {
+        let fs = MemoryFs::new();
+        let (mut client, handle) = spawn_server(fs);
+
+        let written = client.write(&path("a.txt"), 0, b"hi".to_vec()).unwrap();
+        assert_eq!(written, 2);
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn truncate_reaches_the_server() {
+        let fs = MemoryFs::new();
+        fs.insert_file("a.txt", b"hello".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        client.truncate(&path("a.txt"), 2).unwrap();
+        let bytes = client.read(&path("a.txt"), 0, 10).unwrap();
+        assert_eq!(bytes, b"he");
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn rename_then_stat_shows_the_file_at_its_new_name() {
+        let fs = MemoryFs::new();
+        fs.insert_file("old.txt", b"data".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        client.rename(&path("old.txt"), &path("new.txt")).unwrap();
+        let entry = client.stat(&path("new.txt")).unwrap();
+        assert_eq!(entry.name, "new.txt");
+        assert!(matches!(
+            client.stat(&path("old.txt")),
+            Err(RpcError::Remote(OpError::NotFound))
+        ));
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn set_mtime_reaches_the_server() {
+        let fs = MemoryFs::new();
+        fs.insert_file("a.txt", b"data".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        client.set_mtime(&path("a.txt"), 12345).unwrap();
+        let entry = client.stat(&path("a.txt")).unwrap();
+        assert_eq!(entry.modified_unix_secs, 12345);
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn mkdir_reaches_the_server() {
+        let fs = MemoryFs::new();
+        let (mut client, handle) = spawn_server(fs);
+
+        client.mkdir(&path("NewFolder")).unwrap();
+        let entry = client.stat(&path("NewFolder")).unwrap();
+        assert_eq!(entry.kind, FileKind::Directory);
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn delete_reaches_the_server() {
+        let fs = MemoryFs::new();
+        fs.insert_file("a.txt", b"data".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        client.delete(&path("a.txt")).unwrap();
+        assert!(matches!(
+            client.stat(&path("a.txt")),
+            Err(RpcError::Remote(OpError::NotFound))
+        ));
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn a_refused_operation_comes_back_as_remote_not_found_and_the_connection_still_works() {
+        let fs = MemoryFs::new();
+        let (mut client, handle) = spawn_server(fs);
+
+        let result = client.stat(&path("missing.txt"));
+        assert!(matches!(result, Err(RpcError::Remote(OpError::NotFound))));
+
+        // An error frame is not a reason to stop. The next call must still
+        // reach the server.
+        client.mkdir(&path("still-works")).unwrap();
+        let entry = client.stat(&path("still-works")).unwrap();
+        assert_eq!(entry.kind, FileKind::Directory);
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn reading_a_range_that_runs_past_the_end_returns_a_short_result() {
+        let fs = MemoryFs::new();
+        fs.insert_file("a.txt", b"hello".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        let bytes = client.read(&path("a.txt"), 3, 100).unwrap();
+        assert_eq!(bytes, b"lo");
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn a_write_followed_by_a_read_returns_the_same_bytes() {
+        let fs = MemoryFs::new();
+        let (mut client, handle) = spawn_server(fs);
+
+        client
+            .write(&path("a.txt"), 0, b"hello world".to_vec())
+            .unwrap();
+        let bytes = client.read(&path("a.txt"), 0, 11).unwrap();
+        assert_eq!(bytes, b"hello world");
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn delete_of_a_non_empty_directory_is_refused() {
+        let fs = MemoryFs::new();
+        fs.insert_file("DCIM/a.jpg", b"a".to_vec());
+        let (mut client, handle) = spawn_server(fs);
+
+        let result = client.delete(&path("DCIM"));
+        assert!(matches!(result, Err(RpcError::Remote(OpError::NotEmpty))));
+
+        finish(client, handle);
+    }
+
+    #[test]
+    fn serve_returns_ok_when_the_client_disconnects_cleanly() {
+        let fs = MemoryFs::new();
+        let (client, handle) = spawn_server(fs);
+
+        drop(client);
+        assert!(handle.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn a_peer_that_answers_the_wrong_question_is_refused() {
+        // `serve` always answers the question it was asked, so a misbehaving
+        // peer has to be built by hand here, one frame at a time, instead of
+        // going through `serve`.
+        let (client_end, mut fake_server) = loopback();
+        let mut client = Client::new(client_end);
+
+        let fake_server_thread = thread::spawn(move || {
+            let request = read_frame(&mut fake_server).unwrap();
+            assert_eq!(request.kind, FrameKind::Request);
+            // The request identifier matches, so only the content of the
+            // reply is wrong, not its bookkeeping. A `Read` response can
+            // never be a sensible answer to a `Mkdir` request.
+            let reply = Frame {
+                kind: FrameKind::Response,
+                request_id: request.request_id,
+                payload: Response::Read { bytes: Vec::new() }.encode(),
+            };
+            write_frame(&mut fake_server, &reply).unwrap();
+        });
+
+        let result = client.call(&Request::Mkdir { path: path("DCIM") });
+        assert!(matches!(result, Err(RpcError::MismatchedResponse)));
+
+        fake_server_thread.join().unwrap();
+    }
+}
