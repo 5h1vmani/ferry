@@ -20,3 +20,5 @@ build/
 # Local secrets and scratch
 .env
 /scratch
+spike/webdav-probe/probe.log
+spike/webdav-probe/target

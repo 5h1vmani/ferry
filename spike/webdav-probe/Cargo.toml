@@ -1,0 +1,8 @@
+[package]
+name = "webdav-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Throwaway probe. Answers how macOS talks to a WebDAV server."
+
+[dependencies]
