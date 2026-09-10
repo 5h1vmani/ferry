@@ -1,9 +1,9 @@
 # Checks that need a person at the keyboard
 
-Two questions block parts of this project. Neither can be answered by code. One
-needs a cable plugged in, the other needs an Apple ID password.
+One question blocks part of this project, and one is a quick confirmation.
 
-Do them in this order. Task 1 is the shortest and may save the most work.
+Task 1 needs a cable plugged in. It is the one that matters, and it may remove
+weeks of work. Task 2 is now a one minute check.
 
 A third task about FSKit used to sit here. It is answered and removed. Public
 bug reports run to June 2026 and no source confirms a fix, so the Finder mount
@@ -73,103 +73,64 @@ If the phone appears in section 1 but no new port appears in section 2, then
 tethering genuinely does not present a network connection, and the plan stays
 as it is. That is a real answer and a useful one.
 
-## Task 2: check your Apple team, then test the permissions
+## Task 2: confirm which Apple team you have
 
-**Time: about 10 minutes.** You have already signed in, so start at part B.
+**Time: about 1 minute.** This used to be a ten minute test. It shrank, because
+research answered the expensive part.
 
-**Why this matters.** Two things need it. It decides whether the good Finder
-integration is free or costs 99 US dollars a year. It also gives the app a
-stable signing certificate, which it needs to store its encryption key safely
-on the Mac.
+### What is already answered
 
-### Part A: where to see your team
+Apple's own capability table settles the 99 dollar question. Read on
+10 September 2026 at
+<https://developer.apple.com/help/account/reference/supported-capabilities-macos>.
 
-**1.** Open **Xcode**. In the top menu bar click **Xcode**, then **Settings**.
+| Thing Ferry needs | Free personal team | Cost |
+|---|---|---|
+| App Groups | Yes | Free |
+| A real signing certificate for key storage | Yes, lasts about a year | Free |
+| FileProvider Testing Mode | No | 99 US dollars a year |
+| FSKit Module | No | 99 US dollars a year |
+
+So phase 4 costs 99 dollars a year, and nothing before it costs anything.
+Phases 1, 2 and 3 all run on the free account.
+
+Worth knowing: most guides written before 2025 say a free account cannot use
+App Groups at all. Apple's current table says it can. The old advice is out of
+date.
+
+### The one thing left to check
+
+Just confirm your account really is a personal team, so we know which row of
+that table you are in.
+
+**1.** Open **Xcode**. In the menu bar click **Xcode**, then **Settings**.
 
 **2.** Click the **Accounts** tab.
 
-**3.** Your Apple ID appears in the list on the left. **Click it once.**
+**3.** Your Apple ID appears in the list on the left. **Click it once.** This is
+the step people miss.
 
-**4.** The right side of the window now shows a table with a **Team Name**
-column and a **Role** column. This is what you are looking for.
+**4.** The right side now shows a table with a **Team Name** column and a
+**Role** column.
 
 A free account shows a row whose name ends in **(Personal Team)**, with the
-role **User**. A paid account shows your organisation name and the role
-**Agent** or **Admin**.
+role **User**. A paid account shows an organisation name and the role **Agent**
+or **Admin**.
 
-**5.** Take a screenshot of that table. Hold **Command + Shift + 4** and drag a
-box around it.
+**5.** Send me a screenshot of that table. Hold **Command + Shift + 4** and drag
+a box around it.
 
-### Important thing to know before Part B
+### What you do not need to do now
 
-Signing in **does not** create a signing certificate on its own. Xcode makes one
-the first time you build a project that has a team selected.
+You do not need to build a test project. You do not need to try adding App
+Groups. Apple's table already tells us the answer, and your machine will create
+its signing certificate on its own the first time we build the real Mac app.
 
-So if you run a terminal command now and it says `0 valid identities found`,
-nothing is wrong. Part B is what creates the certificate.
-
-### Part B: test whether the free team can use App Groups
-
-This is the part that answers the 99 dollar question.
-
-**1.** In Xcode click **File**, then **New**, then **Project**. Choose **macOS**
-along the top, then **App**. Click **Next**.
-
-**2.** For **Product Name** type `EntitlementProbe`. Leave everything else
-alone. Click **Next**, then save it to your **Desktop**. This gets deleted at
-the end.
-
-**3.** In the file list on the left, click the blue project icon at the very
-top. In the middle panel, under **TARGETS**, click **EntitlementProbe**.
-
-**4.** Click the **Signing & Capabilities** tab along the top.
-
-**5.** Tick **Automatically manage signing**. In the **Team** dropdown, choose
-your Personal Team.
-
-Wait a few seconds. Xcode creates your certificate at this moment. A line
-saying **Signing Certificate: Apple Development** should appear.
-
-**6.** Click **+ Capability** near the top left of that panel. A search window
-opens. Type `App Groups`. Double click **App Groups** in the results.
-
-**7.** A new **App Groups** section appears below. Click the small **+** under
-it. Type `group.com.ferry.probe` and press **Return**.
-
-**Watch that panel now. This is the moment that answers the question.**
-
-**8.** Take a screenshot of the whole **Signing & Capabilities** panel, whether
-or not anything went red.
-
-**9.** Press **Command + B** to build. Note whether it succeeds or fails.
-
-**10.** Run this in Terminal. It shows whether a certificate now exists.
-
-```bash
-echo "=== signing identities ==="; security find-identity -v -p codesigning; echo "=== provisioning profiles ==="; ls ~/Library/Developer/Xcode/UserData/Provisioning\ Profiles/ 2>/dev/null | head
-```
-
-**11.** Drag the `EntitlementProbe` folder from your Desktop to the Trash.
-
-### What to send me
-
-- The screenshot from Part A step 5.
-- The screenshot from Part B step 8.
-- Any **red** text in that panel, copied out as text if you can.
-- Whether the build at step 9 succeeded.
-- The full output of the command at step 10.
-
-### What the answer means
-
-Before you started, step 10 printed `0 valid identities found` and said the
-profiles folder does not exist. Any change is the result.
-
-If App Groups was accepted with no red text, the good Finder integration is
-free. If it was refused, that version costs 99 US dollars a year, and the free
-version we already proved works stays as the plan.
-
-Either way, the certificate from step 5 is what phase 1 needs for key storage.
-So this task is worth doing whatever the App Groups answer turns out to be.
+There is one small unknown left, and it can wait until we build something. Apple
+says a free account's provisioning profiles expire after seven days on a
+device. Nobody documents whether that clock applies when the "device" is the
+same Mac you are building on. We will find out when phase 1 runs, and it costs
+nothing to find out then.
 
 ## Sending results back
 
