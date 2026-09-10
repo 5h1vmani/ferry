@@ -474,6 +474,38 @@ fn a_reachable_engine_has_a_four_character_short_code() {
 }
 
 #[test]
+fn status_reports_reachability_listen_port_and_adb_presence() {
+    let phone = build("Pixel 3 XL");
+
+    let before = phone.engine.status();
+    assert!(!before.reachable, "reachability starts off");
+    assert_ne!(before.listen_port, 0, "a started engine has bound a port");
+    assert_eq!(
+        before.listen_port,
+        phone
+            .engine
+            .listen_addr()
+            .expect("the engine has started")
+            .port(),
+        "status reports the same port the engine bound"
+    );
+    assert_eq!(before.mount, None, "mounting is not built until item 6");
+    assert_eq!(
+        before.adb_present,
+        ferry_core::adb::find_adb().is_some(),
+        "status reports whether this machine has adb, same as the engine found at start"
+    );
+
+    phone.engine.set_reachable(true);
+    assert!(
+        phone.engine.status().reachable,
+        "status follows set_reachable"
+    );
+
+    phone.engine.stop();
+}
+
+#[test]
 fn a_bad_config_is_refused_before_anything_starts() {
     let data = tempfile::tempdir().expect("a temporary folder");
     let shared = tempfile::tempdir().expect("a temporary folder");

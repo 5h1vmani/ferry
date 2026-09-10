@@ -33,7 +33,7 @@ use crate::state::{
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
     Config, DeviceInfo, EngineListener, Entry, EntryKind, FerryError, KeyPair, PairingCandidate,
-    PairingState, TransferInfo, TransferState, Transport,
+    PairingState, Status, TransferInfo, TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -568,6 +568,19 @@ impl Engine {
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {
         lock(&self.shared.state).devices()
+    }
+
+    /// Everything this engine currently is: whether it accepts connections,
+    /// what port it listens on, and whether `adb` was found.
+    #[must_use]
+    pub fn status(&self) -> Status {
+        let state = lock(&self.shared.state);
+        Status {
+            reachable: state.reachable,
+            listen_port: state.listen_addr.map_or(0, |addr| addr.port()),
+            adb_present: self.shared.adb.is_some(),
+            mount: None,
+        }
     }
 
     /// Forget a device: remove its key and every transfer record for it.

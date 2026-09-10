@@ -238,6 +238,21 @@ pub enum Transport {
     Wifi,
 }
 
+/// Everything this engine currently is, as one call rather than several
+/// facts held twice.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Status {
+    /// True while this device advertises and accepts connections.
+    pub reachable: bool,
+    /// The port the listener is bound to. Zero before `start` has run.
+    pub listen_port: u16,
+    /// Whether `adb` was found when the engine started.
+    pub adb_present: bool,
+    /// Where the peer's roots are mounted on this device. `None` until item
+    /// 6 is built.
+    pub mount: Option<String>,
+}
+
 /// One paired device, as the Devices screen shows it.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct DeviceInfo {
