@@ -353,6 +353,11 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_pull_folder(uint64_t ptr, RustB
 void uniffi_ferry_runtime_fn_method_engine_retry(uint64_t ptr, RustBuffer transfer_id, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RETRY_BATCH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RETRY_BATCH
+void uniffi_ferry_runtime_fn_method_engine_retry_batch(uint64_t ptr, RustBuffer batch_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ROOTS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ROOTS
 RustBuffer uniffi_ferry_runtime_fn_method_engine_roots(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -755,6 +760,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_pull_folder(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_RETRY
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_RETRY
 uint16_t uniffi_ferry_runtime_checksum_method_engine_retry(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_RETRY_BATCH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_RETRY_BATCH
+uint16_t uniffi_ferry_runtime_checksum_method_engine_retry_batch(void
     
 );
 #endif

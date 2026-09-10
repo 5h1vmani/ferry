@@ -689,9 +689,11 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * Returns a `PathError` code when the path is refused,
      * `Runtime::NotPaired` when that device is not stored,
      * `Runtime::NotStarted` before [`Engine::start`] has run,
-     * `Runtime::NotReachable` when no dial succeeds, and an `OpError` code
+     * `Runtime::NotReachable` when no dial succeeds, an `OpError` code
      * when the peer refuses, such as `OpError::NotFound` for a folder that
-     * does not exist.
+     * does not exist, and `Runtime::FolderTooLarge` when the peer pages the
+     * folder past the bounds `folder::after_page` checks, such as a
+     * `next_cursor` that never advances.
      */
     func list(deviceKeyHex: String, remotePath: String) throws  -> [Entry]
     
@@ -757,6 +759,19 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * before the error is returned.
      */
     func retry(transferId: String) throws 
+    
+    /**
+     * Retry every `Failed` transfer in a batch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::TransferNotFound`, with the batch id as detail,
+     * when no batch has that identifier. Otherwise behaves as calling
+     * [`Engine::retry`] on each of the batch's `Failed` transfers in turn:
+     * each one that is not paired any more is dropped rather than retried,
+     * and that device's `Runtime::NotPaired` is not itself an error here.
+     */
+    func retryBatch(batchId: String) throws 
     
     /**
      * The roots currently served, as last set by `new` or `set_roots`.
@@ -1060,9 +1075,11 @@ open func forget(keyHex: String)throws   {try rustCallWithError(FfiConverterType
      * Returns a `PathError` code when the path is refused,
      * `Runtime::NotPaired` when that device is not stored,
      * `Runtime::NotStarted` before [`Engine::start`] has run,
-     * `Runtime::NotReachable` when no dial succeeds, and an `OpError` code
+     * `Runtime::NotReachable` when no dial succeeds, an `OpError` code
      * when the peer refuses, such as `OpError::NotFound` for a folder that
-     * does not exist.
+     * does not exist, and `Runtime::FolderTooLarge` when the peer pages the
+     * folder past the bounds `folder::after_page` checks, such as a
+     * `next_cursor` that never advances.
      */
 open func list(deviceKeyHex: String, remotePath: String)throws  -> [Entry]  {
     return try  FfiConverterSequenceTypeEntry.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
@@ -1167,6 +1184,26 @@ open func retry(transferId: String)throws   {try rustCallWithError(FfiConverterT
     uniffi_ferry_runtime_fn_method_engine_retry(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(transferId),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Retry every `Failed` transfer in a batch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::TransferNotFound`, with the batch id as detail,
+     * when no batch has that identifier. Otherwise behaves as calling
+     * [`Engine::retry`] on each of the batch's `Failed` transfers in turn:
+     * each one that is not paired any more is dropped rather than retried,
+     * and that device's `Runtime::NotPaired` is not itself an error here.
+     */
+open func retryBatch(batchId: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_retry_batch(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(batchId),uniffiCallStatus
     )
 }
 }
@@ -1539,9 +1576,9 @@ public func FfiConverterTypeAccessEntry_lower(_ value: AccessEntry) -> RustBuffe
  *
  * `docs/engine-contract.md`, batch D, item 2. Only what does not change
  * once the batch is made is stored on disk. Every other field here —
- * `files_done`, the byte counts, `state`, `speed_bytes_per_sec`, and
- * `ended_unix_secs` — is computed fresh from the transfers named on the
- * batch, every time the app asks.
+ * `files_done`, the byte counts, `state`, `speed_bytes_per_sec`,
+ * `ended_unix_secs`, `transport`, and `error` — is computed fresh from the
+ * transfers named on the batch, every time the app asks.
  */
 public struct BatchInfo: Equatable, Hashable {
     /**
@@ -1600,6 +1637,16 @@ public struct BatchInfo: Equatable, Hashable {
      * batch with no files carries `started_unix_secs` here.
      */
     public var endedUnixSecs: Int64?
+    /**
+     * The transport of any transfer in this batch that is `Active`.
+     * `None` while none are.
+     */
+    public var transport: Transport?
+    /**
+     * The error of the first `Failed` transfer in this batch, in id order.
+     * `None` unless `state` is `Failed`.
+     */
+    public var error: FerryError?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1646,7 +1693,15 @@ public struct BatchInfo: Equatable, Hashable {
          * `Active`, or `Paused`. `None` while one still is. A `retry` clears
          * this the same way it clears that one transfer's own end time. A
          * batch with no files carries `started_unix_secs` here.
-         */endedUnixSecs: Int64?) {
+         */endedUnixSecs: Int64?, 
+        /**
+         * The transport of any transfer in this batch that is `Active`.
+         * `None` while none are.
+         */transport: Transport?, 
+        /**
+         * The error of the first `Failed` transfer in this batch, in id order.
+         * `None` unless `state` is `Failed`.
+         */error: FerryError?) {
         self.id = id
         self.deviceKeyHex = deviceKeyHex
         self.label = label
@@ -1660,6 +1715,8 @@ public struct BatchInfo: Equatable, Hashable {
         self.speedBytesPerSec = speedBytesPerSec
         self.startedUnixSecs = startedUnixSecs
         self.endedUnixSecs = endedUnixSecs
+        self.transport = transport
+        self.error = error
     }
 
     
@@ -1690,7 +1747,9 @@ public struct FfiConverterTypeBatchInfo: FfiConverterRustBuffer {
                 origin: FfiConverterTypeOrigin.read(from: &buf), 
                 speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
                 startedUnixSecs: FfiConverterInt64.read(from: &buf), 
-                endedUnixSecs: FfiConverterOptionInt64.read(from: &buf)
+                endedUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
+                transport: FfiConverterOptionTypeTransport.read(from: &buf), 
+                error: FfiConverterOptionTypeFerryError.read(from: &buf)
         )
     }
 
@@ -1708,6 +1767,8 @@ public struct FfiConverterTypeBatchInfo: FfiConverterRustBuffer {
         FfiConverterOptionUInt64.write(value.speedBytesPerSec, into: &buf)
         FfiConverterInt64.write(value.startedUnixSecs, into: &buf)
         FfiConverterOptionInt64.write(value.endedUnixSecs, into: &buf)
+        FfiConverterOptionTypeTransport.write(value.transport, into: &buf)
+        FfiConverterOptionTypeFerryError.write(value.error, into: &buf)
     }
 }
 
@@ -4187,7 +4248,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_forget() != 37454) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_list() != 53407) {
+    if (uniffi_ferry_runtime_checksum_method_engine_list() != 16273) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 19467) {
@@ -4200,6 +4261,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_retry_batch() != 10629) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_roots() != 12455) {

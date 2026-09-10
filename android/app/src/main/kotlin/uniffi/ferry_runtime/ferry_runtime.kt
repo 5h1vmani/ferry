@@ -739,6 +739,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_retry(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_retry_batch(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_roots(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_download_dir(
@@ -815,6 +817,8 @@ internal object UniffiLib {
     external fun uniffi_ferry_runtime_fn_method_engine_pull_folder(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_retry(`ptr`: Long,`transferId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_retry_batch(`ptr`: Long,`batchId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_roots(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -985,7 +989,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_forget() and 0xFFFF) != 37454) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_list() and 0xFFFF) != 53407) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_list() and 0xFFFF) != 16273) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pick_candidate() and 0xFFFF) != 19467) {
@@ -998,6 +1002,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_retry() and 0xFFFF) != 46891) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_retry_batch() and 0xFFFF) != 10629) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_roots() and 0xFFFF) != 12455) {
@@ -1590,9 +1597,11 @@ public interface EngineInterface {
      * Returns a `PathError` code when the path is refused,
      * `Runtime::NotPaired` when that device is not stored,
      * `Runtime::NotStarted` before [`Engine::start`] has run,
-     * `Runtime::NotReachable` when no dial succeeds, and an `OpError` code
+     * `Runtime::NotReachable` when no dial succeeds, an `OpError` code
      * when the peer refuses, such as `OpError::NotFound` for a folder that
-     * does not exist.
+     * does not exist, and `Runtime::FolderTooLarge` when the peer pages the
+     * folder past the bounds `folder::after_page` checks, such as a
+     * `next_cursor` that never advances.
      */
     fun `list`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): List<Entry>
     
@@ -1658,6 +1667,19 @@ public interface EngineInterface {
      * before the error is returned.
      */
     fun `retry`(`transferId`: kotlin.String)
+    
+    /**
+     * Retry every `Failed` transfer in a batch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::TransferNotFound`, with the batch id as detail,
+     * when no batch has that identifier. Otherwise behaves as calling
+     * [`Engine::retry`] on each of the batch's `Failed` transfers in turn:
+     * each one that is not paired any more is dropped rather than retried,
+     * and that device's `Runtime::NotPaired` is not itself an error here.
+     */
+    fun `retryBatch`(`batchId`: kotlin.String)
     
     /**
      * The roots currently served, as last set by `new` or `set_roots`.
@@ -2037,9 +2059,11 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
      * Returns a `PathError` code when the path is refused,
      * `Runtime::NotPaired` when that device is not stored,
      * `Runtime::NotStarted` before [`Engine::start`] has run,
-     * `Runtime::NotReachable` when no dial succeeds, and an `OpError` code
+     * `Runtime::NotReachable` when no dial succeeds, an `OpError` code
      * when the peer refuses, such as `OpError::NotFound` for a folder that
-     * does not exist.
+     * does not exist, and `Runtime::FolderTooLarge` when the peer pages the
+     * folder past the bounds `folder::after_page` checks, such as a
+     * `next_cursor` that never advances.
      */
     @Throws(FerryException::class)override fun `list`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): List<Entry> {
             return FfiConverterSequenceTypeEntry.lift(
@@ -2167,6 +2191,31 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         it,
         
         FfiConverterString.lower(`transferId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Retry every `Failed` transfer in a batch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::TransferNotFound`, with the batch id as detail,
+     * when no batch has that identifier. Otherwise behaves as calling
+     * [`Engine::retry`] on each of the batch's `Failed` transfers in turn:
+     * each one that is not paired any more is dropped rather than retried,
+     * and that device's `Runtime::NotPaired` is not itself an error here.
+     */
+    @Throws(FerryException::class)override fun `retryBatch`(`batchId`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_retry_batch(
+        it,
+        
+        FfiConverterString.lower(`batchId`),_status)
 }
     }
     
@@ -2538,9 +2587,9 @@ public object FfiConverterTypeAccessEntry: FfiConverterRustBuffer<AccessEntry> {
  *
  * `docs/engine-contract.md`, batch D, item 2. Only what does not change
  * once the batch is made is stored on disk. Every other field here —
- * `files_done`, the byte counts, `state`, `speed_bytes_per_sec`, and
- * `ended_unix_secs` — is computed fresh from the transfers named on the
- * batch, every time the app asks.
+ * `files_done`, the byte counts, `state`, `speed_bytes_per_sec`,
+ * `ended_unix_secs`, `transport`, and `error` — is computed fresh from the
+ * transfers named on the batch, every time the app asks.
  */
 data class BatchInfo (
     /**
@@ -2611,6 +2660,18 @@ data class BatchInfo (
      * batch with no files carries `started_unix_secs` here.
      */
     var `endedUnixSecs`: kotlin.Long?
+    , 
+    /**
+     * The transport of any transfer in this batch that is `Active`.
+     * `None` while none are.
+     */
+    var `transport`: Transport?
+    , 
+    /**
+     * The error of the first `Failed` transfer in this batch, in id order.
+     * `None` unless `state` is `Failed`.
+     */
+    var `error`: FerryException?
     
 ){
     
@@ -2640,6 +2701,8 @@ public object FfiConverterTypeBatchInfo: FfiConverterRustBuffer<BatchInfo> {
             FfiConverterOptionalULong.read(buf),
             FfiConverterLong.read(buf),
             FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalTypeTransport.read(buf),
+            FfiConverterOptionalTypeFerryError.read(buf),
         )
     }
 
@@ -2656,7 +2719,9 @@ public object FfiConverterTypeBatchInfo: FfiConverterRustBuffer<BatchInfo> {
             FfiConverterTypeOrigin.allocationSize(value.`origin`) +
             FfiConverterOptionalULong.allocationSize(value.`speedBytesPerSec`) +
             FfiConverterLong.allocationSize(value.`startedUnixSecs`) +
-            FfiConverterOptionalLong.allocationSize(value.`endedUnixSecs`)
+            FfiConverterOptionalLong.allocationSize(value.`endedUnixSecs`) +
+            FfiConverterOptionalTypeTransport.allocationSize(value.`transport`) +
+            FfiConverterOptionalTypeFerryError.allocationSize(value.`error`)
     )
 
     override fun write(value: BatchInfo, buf: ByteBuffer) {
@@ -2673,6 +2738,8 @@ public object FfiConverterTypeBatchInfo: FfiConverterRustBuffer<BatchInfo> {
             FfiConverterOptionalULong.write(value.`speedBytesPerSec`, buf)
             FfiConverterLong.write(value.`startedUnixSecs`, buf)
             FfiConverterOptionalLong.write(value.`endedUnixSecs`, buf)
+            FfiConverterOptionalTypeTransport.write(value.`transport`, buf)
+            FfiConverterOptionalTypeFerryError.write(value.`error`, buf)
     }
 }
 
