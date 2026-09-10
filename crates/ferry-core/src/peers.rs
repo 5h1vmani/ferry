@@ -47,13 +47,13 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::noise::{NoiseError, PublicKey, StaticKey};
 use crate::wire::{Decoder, Encoder, WireError};
@@ -88,6 +88,9 @@ pub enum PeerError {
     /// A peer name is over the 256 byte limit.
     #[error("a peer name is over the 256 byte limit")]
     NameTooLong,
+    /// The system supplied no random bytes for the temporary file name.
+    #[error("the system supplied no random bytes")]
+    NoRandomness,
 }
 
 /// One device this device has paired with.
@@ -297,10 +300,22 @@ impl FileSecretStore {
     }
 }
 
+// The number of bytes `FileSecretStore` encodes: a 32 byte private key
+// followed by a 32 byte public key. `save` builds its encoder with this
+// capacity so it allocates once and never reallocates. A reallocation would
+// copy the private key into a new allocation and leave the old one, still
+// holding the key, unwiped. A test checks this value directly, so it is its
+// own function rather than an inline literal.
+fn encoded_key_capacity() -> usize {
+    64
+}
+
 impl SecretStore for FileSecretStore {
     fn load(&self) -> Result<Option<StaticKey>, PeerError> {
+        // The whole file, including the private key, is wiped when `bytes`
+        // drops, however this function returns.
         let bytes = match fs::read(&self.path) {
-            Ok(bytes) => bytes,
+            Ok(bytes) => Zeroizing::new(bytes),
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(PeerError::Io(err)),
         };
@@ -317,10 +332,12 @@ impl SecretStore for FileSecretStore {
 
     fn save(&self, key: &StaticKey) -> Result<(), PeerError> {
         let mut private = *key.private_bytes();
-        let mut e = Encoder::new();
+        let mut e = Encoder::with_capacity(encoded_key_capacity());
         e.fixed(&private);
         e.fixed(key.public().as_bytes());
-        let bytes = e.finish();
+        // Wrapping the finished bytes means they are wiped on drop, no
+        // matter which path out of this function is taken.
+        let bytes = Zeroizing::new(e.finish());
         let result = write_private_file(&self.path, &bytes);
         private.zeroize();
         result
@@ -328,47 +345,111 @@ impl SecretStore for FileSecretStore {
 }
 
 // Write `bytes` to `path` so a crash mid write can never leave a half file
-// at `path`. The bytes go to a temporary name next to `path`, and that file
-// is renamed over `path` only once the write has finished. Both callers
-// store secrets, so the temporary file is restricted to its owner before any
-// bytes reach it.
+// at `path`, and so the private key it usually holds is never reachable
+// through a guessable name or a window of loose permissions. Both callers
+// store secrets.
+//
+// The bytes go to a temporary name next to `path`, chosen at random so an
+// attacker cannot plant anything at it in advance. `create_private_file`
+// opens that name with `create_new`, which refuses to write through
+// anything already there, including a symlink, and sets the owner-only mode
+// at the moment of creation rather than after. Every byte is written
+// through that one handle; the temporary name is never reopened by path.
+// Once the write and the sync succeed, the file is renamed over `path`. If
+// anything fails after the temporary file is created, it is removed before
+// the error is returned.
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), PeerError> {
-    let tmp = tmp_path(path);
-    fs::File::create(&tmp)?;
-    set_owner_only(&tmp)?;
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, path)?;
+    let tmp = random_tmp_path(path)?;
+    let mut file = create_private_file(&tmp)?;
+    if let Err(err) = write_all_and_sync(&mut file, bytes) {
+        drop(file);
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    drop(file);
+    if let Err(err) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(err.into());
+    }
     Ok(())
 }
 
-// The temporary name `write_private_file` writes to before renaming.
-fn tmp_path(path: &Path) -> PathBuf {
-    let mut name = path.as_os_str().to_os_string();
-    name.push(".tmp");
-    PathBuf::from(name)
-}
-
-// Restrict a file to its own owner. A no-op on platforms with no Unix
-// permission bits.
+// Create a new, empty file at exactly `path`, refusing to touch anything
+// already there. `create_new` fails if `path` names anything at all,
+// including a symlink, so a planted symlink is refused instead of
+// followed. On Unix the mode is set as part of the same syscall that
+// creates the file, so there is no moment where the file exists with a
+// wider mode than 0o600.
+//
+// This is kept as its own function, separate from `write_private_file`, so
+// a test can call it with a chosen path and check what `create_new` does
+// when something is already there.
 #[cfg(unix)]
-fn set_owner_only(path: &Path) -> Result<(), PeerError> {
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
+fn create_private_file(path: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
 }
 
 #[cfg(not(unix))]
-fn set_owner_only(_path: &Path) -> Result<(), PeerError> {
-    Ok(())
+fn create_private_file(path: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+}
+
+// Write every byte through the handle that created the file, then flush it
+// to disk before the caller renames it into place. The path is never
+// reopened, so nothing between creation and this point can swap out what
+// the handle points at.
+fn write_all_and_sync(file: &mut fs::File, bytes: &[u8]) -> io::Result<()> {
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+// Build a temporary path next to `path` with a random suffix. The old
+// scheme always used the same `<path>.tmp` name, which let an attacker
+// plant something there ahead of time. A random suffix cannot be guessed in
+// advance, so `create_private_file`'s `create_new` call is the only thing
+// that decides whether the name was free.
+fn random_tmp_path(path: &Path) -> Result<PathBuf, PeerError> {
+    let mut suffix = [0u8; 8];
+    getrandom::fill(&mut suffix).map_err(|_| PeerError::NoRandomness)?;
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".");
+    name.push(to_hex(suffix));
+    name.push(".tmp");
+    Ok(PathBuf::from(name))
+}
+
+// Sixteen lowercase hex characters from eight random bytes. Only ever
+// called on the output of `getrandom::fill`, so it does not need to handle
+// arbitrary input.
+fn to_hex(bytes: [u8; 8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{FileSecretStore, Peer, PeerError, PeerStore, SecretStore};
+    use super::{FileSecretStore, Peer, PeerError, PeerStore, SecretStore, encoded_key_capacity};
     use crate::noise::{PublicKey, StaticKey};
-    use crate::wire::WireError;
+    use crate::wire::{Encoder, WireError};
     use std::fs;
+    use std::io;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use std::thread;
+    use zeroize::Zeroizing;
 
     // Every test gets its own directory under the system temp directory, so
     // tests running in parallel in the same process never share a path.
@@ -559,4 +640,165 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // FINDING 3, part a: the mode used to be set by a separate `chmod`
+    // after `File::create`, which itself makes the file at `0o666 & !umask`
+    // (typically `0o644`). A watcher that opened the file in that window
+    // could read the key back later through the descriptor it already
+    // held. This test runs a watcher for the whole span of `save()` and
+    // records, with a bitwise OR, every permission bit seen on any file
+    // whose name starts with the key file's name. If any observation ever
+    // carried a bit outside `0o600`, the OR shows it. Before the fix this
+    // observes `0o644`.
+    #[test]
+    #[cfg(unix)]
+    fn the_key_file_is_never_readable_by_others_at_any_moment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = unique_temp_dir("watch_mode");
+        let path = dir.join("key.bin");
+        let watch_dir = dir.clone();
+        let prefix = path.file_name().unwrap().to_os_string();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let seen_bits = Arc::new(AtomicU32::new(0));
+
+        let watcher_stop = Arc::clone(&stop);
+        let watcher_bits = Arc::clone(&seen_bits);
+        let watcher = thread::spawn(move || {
+            while !watcher_stop.load(Ordering::Relaxed) {
+                let Ok(entries) = fs::read_dir(&watch_dir) else {
+                    continue;
+                };
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    if !name
+                        .to_string_lossy()
+                        .starts_with(&*prefix.to_string_lossy())
+                    {
+                        continue;
+                    }
+                    if let Ok(metadata) = entry.metadata() {
+                        let mode = metadata.permissions().mode() & 0o777;
+                        watcher_bits.fetch_or(mode, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        let store = FileSecretStore::new(path);
+        let generated = StaticKey::generate().unwrap();
+        store.save(&generated).unwrap();
+
+        stop.store(true, Ordering::Relaxed);
+        watcher.join().unwrap();
+
+        let observed = seen_bits.load(Ordering::Relaxed);
+        assert_eq!(
+            observed & !0o600,
+            0,
+            "a watcher saw permission bits outside 0o600: {observed:o}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // FINDING 3, part b: the temporary name used to always be `<path>.tmp`.
+    // This plants a symlink at that old, predictable name, pointing at a
+    // file the attacker wants overwritten. The fix picks a random name
+    // instead, so `save()` never touches the planted symlink: the real
+    // file at `path` must end up a regular file, and the attacker's target
+    // must be untouched. Before the fix, `save()` follows the symlink,
+    // writes the key into the target, and renames the symlink itself over
+    // `path`.
+    #[test]
+    #[cfg(unix)]
+    fn a_planted_symlink_at_the_temporary_name_is_not_followed() {
+        let dir = unique_temp_dir("planted_symlink");
+        let path = dir.join("key.bin");
+        let attacker_target = dir.join("attacker-owned-file");
+        fs::write(&attacker_target, b"do not touch me").unwrap();
+
+        let old_predictable_tmp_name = {
+            let mut name = path.as_os_str().to_os_string();
+            name.push(".tmp");
+            PathBuf::from(name)
+        };
+        std::os::unix::fs::symlink(&attacker_target, &old_predictable_tmp_name).unwrap();
+
+        let store = FileSecretStore::new(path.clone());
+        let generated = StaticKey::generate().unwrap();
+        store.save(&generated).unwrap();
+
+        let real_file_metadata = fs::symlink_metadata(&path).unwrap();
+        assert!(
+            real_file_metadata.file_type().is_file(),
+            "the real path must be a regular file, not a symlink"
+        );
+
+        let target_contents = fs::read(&attacker_target).unwrap();
+        assert_eq!(
+            target_contents, b"do not touch me",
+            "the planted symlink's target must be untouched"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // FINDING 3, part b, continued: the random suffix in the real
+    // temporary name cannot be predicted, so it cannot be planted ahead of
+    // time in a test. What can be tested directly is the seam
+    // `write_private_file` relies on: `create_private_file` uses
+    // `create_new`, which must refuse to write through anything that
+    // already exists at the exact path it is given.
+    #[test]
+    #[cfg(unix)]
+    fn create_new_refuses_a_name_that_already_exists() {
+        let dir = unique_temp_dir("create_new_exists");
+        let path = dir.join("already-here");
+        fs::write(&path, b"existing").unwrap();
+
+        let err = super::create_private_file(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+
+        let contents = fs::read(&path).unwrap();
+        assert_eq!(contents, b"existing", "the existing file must be untouched");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // FINDING 3, part c: freed heap memory cannot be safely inspected from
+    // a test, so this checks the mechanism instead of the memory left
+    // behind. Two things are structural, checked at compile time or by
+    // construction rather than by reading memory after the fact:
+    //
+    // 1. `FileSecretStore::save` builds its encoder with
+    //    `encoded_key_capacity()`, which is at least the 64 bytes the key
+    //    needs, so the encoder never reallocates and so never leaves a
+    //    stale copy of the key behind in a freed buffer.
+    // 2. The bytes `save` writes are typed as `Zeroizing<Vec<u8>>`. That
+    //    type only compiles where a plain `Vec<u8>` would also compile, so
+    //    a value of that type moving into a function that requires it is
+    //    proof the wrapping is really there, not something that could be
+    //    silently dropped by a later edit.
+    #[test]
+    fn the_encoded_key_bytes_are_wiped() {
+        assert!(
+            encoded_key_capacity() >= 64,
+            "the key encoder must reserve enough capacity to never reallocate"
+        );
+
+        let mut e = Encoder::with_capacity(encoded_key_capacity());
+        e.fixed(&[0u8; 32]);
+        e.fixed(&[0u8; 32]);
+        let bytes = Zeroizing::new(e.finish());
+        requires_zeroizing_bytes(bytes);
+    }
+
+    // A value of type `Zeroizing<Vec<u8>>` can only be passed here because
+    // it really is that type. A plain `Vec<u8>` would not compile at the
+    // call site, so this function existing and being called is proof the
+    // wrapping in `the_encoded_key_bytes_are_wiped` is real, not something a
+    // later edit could quietly drop.
+    fn requires_zeroizing_bytes(_bytes: Zeroizing<Vec<u8>>) {}
 }

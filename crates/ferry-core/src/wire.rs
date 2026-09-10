@@ -46,6 +46,23 @@ impl Encoder {
         Self::default()
     }
 
+    /// Start an encoder with room for at least `bytes` bytes already set
+    /// aside.
+    ///
+    /// Use this when the final size is known ahead of time. An encoder
+    /// started with `new` grows its buffer as values are appended, and each
+    /// growth step copies the old bytes into a new, larger allocation and
+    /// frees the old one. For most data that copy is harmless. For secret
+    /// data, such as a private key, the freed allocation still holds a copy
+    /// of the secret and is never cleared. Reserving the right capacity up
+    /// front means the buffer is allocated once and never moves.
+    #[must_use]
+    pub fn with_capacity(bytes: usize) -> Self {
+        Self {
+            out: Vec::with_capacity(bytes),
+        }
+    }
+
     /// Append one byte.
     pub fn u8(&mut self, value: u8) -> &mut Self {
         self.out.push(value);
