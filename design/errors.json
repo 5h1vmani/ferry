@@ -261,6 +261,26 @@
       "why": "Its file is damaged.",
       "todo": "Forget every device and pair again."
     },
+    "RootsError::NoRoots": {
+      "stopped": "Nothing is shared.",
+      "why": "The list of shared folders is empty.",
+      "todo": "Add at least one folder."
+    },
+    "RootsError::RootNameInvalid": {
+      "stopped": "The shared folders were not set.",
+      "why": "A folder's name must be 1 to 64 bytes and hold no slash or control character. It must not be a dot or two dots.",
+      "todo": "Give the folder a plain name and try again."
+    },
+    "RootsError::RootNameTaken": {
+      "stopped": "The shared folders were not set.",
+      "why": "Two folders were given the same name, ignoring case.",
+      "todo": "Give each folder a different name."
+    },
+    "RootsError::RootNotAFolder": {
+      "stopped": "The shared folders were not set.",
+      "why": "A folder's path is not an existing directory.",
+      "todo": "Choose a folder that exists."
+    },
     "RpcError::BadName": {
       "stopped": "The name was refused.",
       "why": "It is empty, longer than 64 bytes, or holds a control character.",
