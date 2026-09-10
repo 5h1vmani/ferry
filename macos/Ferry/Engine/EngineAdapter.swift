@@ -253,25 +253,25 @@ enum EngineAdapter {
             guard let method else { return .choosing }
             return method == .scan ? .offering(offer(expiresUnixSecs: nil)) : .waiting
 
-        case .waiting:
+        case let .waiting(expiresUnixSecs):
             // TODO(engine 12): the engine has no Offering state, so the
             // scan method borrows Waiting and shows a placeholder payload.
             // When `start_pairing_with(Qr)` lands, Offering carries the
             // real bytes and their expiry.
             if method == .scan {
-                return .offering(offer(expiresUnixSecs: nil))
+                return .offering(offer(expiresUnixSecs: expiresUnixSecs))
             }
             return .waiting
 
-        case let .found(candidates):
+        case let .found(candidates, expiresUnixSecs):
             // A scan needs nothing to browse: the phone already knows which
             // Mac it scanned. Candidates only reach the code method.
             if method == .scan {
-                return .offering(offer(expiresUnixSecs: nil))
+                return .offering(offer(expiresUnixSecs: expiresUnixSecs))
             }
             return .found(candidates.map(candidate))
 
-        case let .code(code):
+        case let .code(code, _):
             return .code(digits: FerryFormat.pairingCode(code))
 
         case let .confirmed(device):
@@ -290,8 +290,6 @@ enum EngineAdapter {
     private static func offer(expiresUnixSecs: Int64?) -> PairingOfferSnapshot {
         PairingOfferSnapshot(
             payload: Data(S.pairing.placeholderPayload.utf8),
-            // TODO(engine 10): no deadline is published, so no count is
-            // shown. An unknown part is left out, not guessed.
             expiresIn: expiresUnixSecs.map {
                 FerryFormat.countdown(seconds: $0 - Int64(Date().timeIntervalSince1970))
             },

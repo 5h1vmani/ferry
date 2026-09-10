@@ -82,7 +82,7 @@ Both are stored in the transfer record. The record format goes to version
 2. A version 1 record still loads: its start time is the record file's
 modification time, and its end time is `None`.
 
-### 10. Pairing publishes its deadline — open
+### 10. Pairing publishes its deadline — built
 
 ```rust
 Waiting { expires_unix_secs: i64 },
