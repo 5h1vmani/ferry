@@ -137,8 +137,11 @@ stored. `error.detail` already carries the failing chunk index.
 pub available_transports: Vec<Transport>,
 ```
 
-Holds `Usb` when an adb tunnel to the device is open. Holds `Wifi` when
-the device was seen by discovery within the discovery lifetime. `Usb`
+Holds `Usb` while an adb tunnel to the device is open, and drops it when
+the forward goes away. Holds `Wifi` when a Wi-Fi connection with the
+device succeeded within the last 120 seconds, in either direction, or
+when `reachable_via` is `Wifi` now. Discovery alone proves nothing,
+because a found address is anonymous until a handshake succeeds. `Usb`
 first. `reachable_via`, when it is `Some`, is always in the list.
 
 ## Batch C: the wire
@@ -199,8 +202,12 @@ root is `NotFound`. Writing to a root marked not writable is
 **Where it lands.** `ferry-core` gains a `Roots` type that implements
 `FileOps`, holds one `LocalFs` per root, and dispatches on the first
 segment. `LocalFs` does not change. The engine opens a separate `LocalFs`
-on `download_dir` for pulls, so a pull never writes into a served root.
-`docs/protocol.md` gains the root rule and the version bump.
+on `download_dir` for pulls, so a pull goes through the download folder's
+own handle and never through a root's. If the download folder lies inside
+a shared root, the peer can see and change the pulled files through that
+root. Both shipped defaults do this: Downloads on the Mac and Download on
+the phone. A person who shares Downloads expects that. `docs/protocol.md`
+gains the root rule and the version bump.
 
 **Defaults.** The Mac shares Desktop and Downloads, both writable, and
 pulls into `~/Downloads/Ferry`. The phone shares one root named
@@ -263,10 +270,17 @@ pub struct BatchInfo {
     pub speed_bytes_per_sec: Option<u64>,
     pub started_unix_secs: i64,
     pub ended_unix_secs: Option<i64>,
+    /// The transport of any active transfer in the batch.
+    pub transport: Option<Transport>,
+    /// The error of the first failed transfer, so the row can say why.
+    pub error: Option<FerryError>,
 }
 
 // on TransferInfo
 pub batch_id: Option<String>,
+
+/// Retries every failed transfer in the batch.
+fn retry_batch(&self, batch_id: String) -> Result<(), FerryError>;
 
 /// Copies a whole folder. Lists it over the connection, then queues one
 /// transfer per file under the batch. Blocks until the listing is done,
@@ -288,7 +302,12 @@ reads `batches()` after it. No new listener method.
 
 **The Mac.** The Files section gains "Copy to Mac" on a folder row, which
 calls `pull_folder`. This is the one screen change outside the design.
-Without it the engine feature has no caller.
+Without it the engine feature has no caller. A failed batch row shows the
+error and a retry control, the same as a failed single transfer.
+
+**Still open in this item:** `transport`, `error`, and `retry_batch`.
+They were added after the batch D audit found a failed batch rendered
+with no reason and no retry.
 
 ## Batch E: the access log
 
