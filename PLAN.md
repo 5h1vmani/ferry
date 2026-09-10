@@ -393,7 +393,8 @@ Done, 10 September 2026:
   exchange. Audited once, six findings fixed. See `docs/audit-1.md`.
 - `crates/ferry-runtime`: the Engine both apps link, behind `UniFFI`. Two
   engines pair and move a file in one process in under a second. Builds as a
-  shared library for Android.
+  shared library for Android. Audited once, fourteen findings fixed. See
+  `docs/audit-2.md`.
 - Both app shells build, with every screen in every state from sample data,
   the tokens, the components, and the error words. No Rust is linked yet.
 
