@@ -182,6 +182,7 @@
 
 uniffi::setup_scaffolding!();
 
+mod access;
 mod engine;
 pub mod errors;
 mod guard;
