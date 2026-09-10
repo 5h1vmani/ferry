@@ -161,4 +161,25 @@ mod tests {
         }
         other.join().unwrap();
     }
+
+    #[test]
+    fn a_peer_offering_only_version_one_is_refused() {
+        let (mut a, mut b) = loopback();
+        let other = std::thread::spawn(move || {
+            let mut sent = Vec::with_capacity(7);
+            sent.extend_from_slice(&MAGIC);
+            sent.extend_from_slice(&1u16.to_be_bytes());
+            b.write_all(&sent).unwrap();
+            // Hold the endpoint open so the reader sees the bytes, not an end.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
+        match negotiate(&mut a, Role::Initiator) {
+            Err(VersionError::NoSharedVersion { ours, theirs }) => {
+                assert_eq!(ours, VERSION_MAX);
+                assert_eq!(theirs, 1);
+            }
+            other => panic!("expected NoSharedVersion, got {other:?}"),
+        }
+        other.join().unwrap();
+    }
 }

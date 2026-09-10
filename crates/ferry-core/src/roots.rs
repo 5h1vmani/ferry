@@ -678,4 +678,81 @@ mod tests {
             RootsError::RootNotAFolder
         );
     }
+
+    #[test]
+    fn a_lowercase_first_segment_reaches_a_differently_cased_root() {
+        let dir = TempDir::new("case-insensitive-lookup");
+        std::fs::write(dir.path.join("a.txt"), b"hi").unwrap();
+        let roots = Roots::open(vec![spec("Desktop", &dir, true)]).unwrap();
+        assert_eq!(roots.read(&path("desktop/a.txt"), 0, 2).unwrap(), b"hi");
+    }
+
+    #[test]
+    fn a_symlink_inside_a_root_cannot_be_read_through_it() {
+        // Copies the pattern of `localfs.rs`'s
+        // `a_symlink_out_of_the_root_is_refused`, with the root name as the
+        // path's first segment.
+        let root_dir = TempDir::new("roots-symlink-root");
+        let outside_dir = TempDir::new("roots-symlink-outside");
+        std::fs::write(outside_dir.path.join("secret.txt"), b"outside-secret").unwrap();
+        std::os::unix::fs::symlink(&outside_dir.path, root_dir.path.join("link")).unwrap();
+
+        let roots = Roots::open(vec![spec("Desktop", &root_dir, true)]).unwrap();
+
+        assert_eq!(roots.stat(&path("Desktop/link")), Err(OpError::Unsupported));
+        match roots.read(&path("Desktop/link/secret.txt"), 0, 64) {
+            Err(OpError::NotFound | OpError::Unsupported | OpError::PermissionDenied) => {}
+            Ok(bytes) => panic!("a symlink escaped the root and returned {bytes:?}"),
+            Err(other) => panic!("expected the escape to be refused, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn truncate_and_set_mtime_on_a_read_only_root_are_refused() {
+        let dir = TempDir::new("readonly-truncate-mtime");
+        std::fs::write(dir.path.join("a.txt"), b"hello").unwrap();
+        let roots = Roots::open(vec![spec("Desktop", &dir, false)]).unwrap();
+        assert_eq!(
+            roots.truncate(&path("Desktop/a.txt"), 1),
+            Err(OpError::PermissionDenied)
+        );
+        assert_eq!(
+            roots.set_mtime(&path("Desktop/a.txt"), 123),
+            Err(OpError::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn set_mtime_on_a_roots_own_one_segment_path_is_allowed() {
+        let dir = TempDir::new("set-mtime-root-path");
+        let roots = Roots::open(vec![spec("Desktop", &dir, true)]).unwrap();
+        roots.set_mtime(&path("Desktop"), 12345).unwrap();
+        let entry = roots.stat(&path("Desktop")).unwrap();
+        assert_eq!(entry.modified_unix_secs, 12345);
+    }
+
+    #[test]
+    fn stat_of_a_one_segment_root_path_returns_the_roots_name() {
+        let dir = TempDir::new("stat-root-name");
+        let roots = Roots::open(vec![spec("Desktop", &dir, true)]).unwrap();
+        let entry = roots.stat(&path("Desktop")).unwrap();
+        assert_eq!(entry.name, "Desktop");
+        assert_eq!(entry.kind, FileKind::Directory);
+    }
+
+    #[test]
+    fn the_union_root_refuses_every_operation_that_needs_one_real_root() {
+        let dir = TempDir::new("union-refusals");
+        let roots = Roots::open(vec![spec("Desktop", &dir, true)]).unwrap();
+
+        assert_eq!(roots.read(&path(""), 0, 1), Err(OpError::IsADirectory));
+        assert_eq!(roots.write(&path(""), 0, b"x"), Err(OpError::IsADirectory));
+        assert_eq!(roots.delete(&path("")), Err(OpError::PermissionDenied));
+        assert_eq!(
+            roots.rename(&path(""), &path("Desktop")),
+            Err(OpError::PermissionDenied)
+        );
+        assert_eq!(roots.mkdir(&path("")), Err(OpError::AlreadyExists));
+        assert_eq!(roots.set_mtime(&path(""), 0), Err(OpError::Unsupported));
+    }
 }
