@@ -40,3 +40,51 @@ This follows the Radix Colors documentation at
 - **Steps 11-12, text.** Step 11 is low-contrast text. Step 12 is
   high-contrast text. Both are checked for contrast against a step 2
   background from the same scale.
+
+## Tokens
+
+`tokens.json` is the single source of truth for everything else in the
+design system: type, spacing, radius, semantic colour roles, and icons. It
+sits on top of `colors.json`. A colour role in `tokens.json` does not hold a
+hex value. It names a scale and a step in `colors.json`, such as `gray` step
+`1` for `background`. `on_accent` is the one exception, because white is a
+literal, not a step on either scale.
+
+Each type role, such as `body` or `caption`, names the matching text style
+on each platform: a SwiftUI text style on macOS, a Material 3 typography
+name on Android. It also names a weight and says what the role is for, so a
+person choosing a style for new text can read the intent, not just the
+name.
+
+The icon table is the same shape as the type table. It maps one semantic
+name, such as `paired` or `transfer`, to the symbol on each platform: SF
+Symbols on macOS, Material Symbols on Android.
+
+### The generator
+
+`scripts/gen_tokens.py` reads `tokens.json` and `colors.json` and writes two
+files:
+
+- `macos/Ferry/Generated/Tokens.swift`
+- `android/app/src/main/kotlin/app/ferry/Tokens.kt`
+
+Both files carry a comment at the top saying they are generated and must
+not be hand-edited. To change a token, change `tokens.json` or
+`colors.json`, then run:
+
+```sh
+python3 scripts/gen_tokens.py
+```
+
+Run it with `--check` to verify the two generated files already match what
+the script would write, without changing them. It exits 1 and names the
+file if either one is out of date. This is the gate that stops a hand edit
+to generated code from passing review:
+
+```sh
+python3 scripts/gen_tokens.py --check
+```
+
+The script uses only the Python standard library, so it needs no setup
+beyond Python 3. Given the same two JSON files, it always writes the same
+bytes.
