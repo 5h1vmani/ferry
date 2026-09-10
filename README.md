@@ -39,12 +39,10 @@ Ferry uses whichever path works, and shows which one is active.
 | Transport | Role |
 |---|---|
 | Wi-Fi on the local network, over mDNS and TCP | Default path |
-| USB through an adb tunnel | Developer transport, and a fallback |
-| USB through Android Open Accessory | Works with no USB debugging |
+| USB through an adb tunnel | The USB transport |
 
-USB is not faster than good Wi-Fi. Android Open Accessory runs over USB 2.0
-bulk endpoints, and lands in the same throughput range as 5 GHz Wi-Fi. USB is
-here for reliability. It works on guest networks that block device discovery,
+USB is not faster than good Wi-Fi. It lands in the same throughput range as
+5 GHz Wi-Fi. USB is here for reliability. It works on guest networks that block device discovery,
 and it keeps working when the router does not.
 
 A transfer holds an identifier that does not belong to any connection. Both
@@ -66,6 +64,7 @@ Each decision below has a short record in [docs/decisions](docs/decisions).
 - [Commit and reveal during pairing](docs/decisions/0006-pairing-commit-and-reveal.md)
 - [Blocking input and output, not async](docs/decisions/0007-blocking-io-not-async.md)
 - [The Finder mount uses WebDAV, not FSKit](docs/decisions/0008-webdav-not-fskit.md)
+- [USB runs over the adb tunnel, not Open Accessory or MTP](docs/decisions/0009-usb-over-adb-not-aoa-or-mtp.md)
 
 The wire protocol is written up in [docs/protocol.md](docs/protocol.md).
 

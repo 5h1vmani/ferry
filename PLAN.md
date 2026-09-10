@@ -49,32 +49,20 @@ reliability feature. It works on networks where discovery fails.
 | Transport | Friction | Decision |
 |---|---|---|
 | Wi-Fi on the local network, mDNS and TCP | None | Build. Default path. |
-| USB with an adb tunnel | User must enable USB debugging once | Build. Developer transport and fallback. Reuses the TCP code. |
-| USB with Android Open Accessory | Plug in, accept a prompt on the phone | Build, but see the note below. |
-| USB with MTP | Plug in | Skip. This is what everyone else does badly. |
+| USB with an adb tunnel | USB debugging on, which it already is | Build. This is the USB transport. Reuses the TCP code. |
+| USB with Android Open Accessory | Plug in, accept a prompt on the phone | Deferred to the optional phase. Portfolio only. See decision record 9. |
+| USB with MTP | Plug in | Not built. It cannot write part of a file, allows one session, and serves only the cable. OpenMTP already covers plain USB transfer. See decision record 9. |
 | USB tethering | Turn tethering on | Tested. No. This phone runs Android 12, which tethers over RNDIS, and macOS has no RNDIS driver. |
 | Phone local-only hotspot | Mac drops its Wi-Fi and loses internet | Defer. Fallback when the LAN blocks discovery. |
 | Wi-Fi Direct or AWDL | Not applicable | Cannot build. macOS exposes no public API. |
 | Bluetooth Low Energy | None | Cut. mDNS covers the network case. USB covers the cable case. |
 | Cloud relay | Needs a code or an account | Out of scope. |
 
-### An honest note on Android Open Accessory
+### The USB decision
 
-Its only advantage over the adb tunnel is that the user does not need to enable
-USB debugging. This phone already has USB debugging enabled, because that is
-how the app gets installed. So that advantage serves nobody here.
-
-The adb tunnel already delivers the reliability that decision record 4 chose.
-Android Open Accessory is therefore kept for the portfolio purpose, not the
-personal one. Writing a libusb driver and handling accessory mode is the
-hardest systems work in this project, and that is the reason to do it. The plan
-should not pretend otherwise.
-
-USB tethering was tested on 10 September 2026 and does not work with this
-phone. The phone is a Pixel 3 XL on Android 12, and Android 12 tethers over
-RNDIS, which macOS cannot drive. Newer Android versions tether over NCM, which
-macOS can drive, so this may work on a newer phone. It does not matter here,
-because this is the phone the app is for.
+The USB transport is the adb tunnel. Open Accessory is deferred and MTP is not
+built. Decision record 9 gives the reasons, which replace a slogan the earlier
+plan used in place of an argument.
 
 ## 4. Architecture
 
@@ -212,7 +200,7 @@ The Rust core must not assume that one process owns everything.
   per-launch password and a `Host` header check, unmounted when the app quits.
 - Android platform work: a foreground service, a Wi-Fi lock, a `MulticastLock`,
   a MediaStore scan after each write, and the all-files-access settings flow.
-- USB transport using an adb tunnel, then Android Open Accessory.
+- USB transport over an adb tunnel.
 - A visible indicator of the active transport and its speed.
 - Fuzzing the frame and handshake parsers.
 
@@ -237,38 +225,27 @@ yet decided, so these are working weeks, not calendar weeks.
 
 | Order | Scope | Estimate | Risk |
 |---|---|---|---|
-| 0 | Spike. File Provider hello world, WebDAV mount test, Apple entitlement check. | 3 to 5 days | Low |
-| 1 | Rust core: file operations layer, frame codec, Noise with commit-and-reveal pairing, key storage, BLAKE3 chunking, session manifest, resume, per-connection limits. Loopback transport, property tests, and fuzzing. TCP and mDNS. Both apps, including the Android platform work. Push and pull. adb tunnel as a developer transport. | 7 to 9 weeks | Medium |
+| 0 | Spike. Done. See `docs/spike-0-findings.md`. | Done | Done |
+| 1 | Rust core, done for what runs without hardware. Then UniFFI, both apps, mDNS, the TCP transport, the adb USB transport, key storage, pairing screens, and the Android platform work. Push and pull. | 6 to 8 weeks | Medium |
 | 2 | Finder mount over a WebDAV bridge, on top of the file operations layer. | 2 to 4 weeks | Medium |
-| 3 | USB reliability. adb tunnel first, then Android Open Accessory. | 3 to 5 weeks | Medium |
-| 4 | Optional. File Provider extension, which needs the Apple entitlement question answered. Whole-file deduplication. Hotspot fallback. | Undecided | High |
+| 3 | Optional. File Provider extension, which costs 99 dollars a year. Android Open Accessory, portfolio only. Whole-file deduplication. Hotspot fallback. | Undecided | High |
 
-Phase 2 is the headline feature. It moved ahead of USB for two reasons. It is
-the feature I actually need. It is also the only feature here that no free tool
-provides.
+Phase 2 is the headline feature. It is the feature in daily need, and the only
+one no free tool provides.
 
 The order 0 spike settled the phase 2 route. macOS mounts a WebDAV server with
 no `sudo`, no TLS, no entitlement, and no Apple Developer Program. Finder
-browses it. So the Finder mount ships as a WebDAV bridge over the file
-operations layer.
+browses it. A File Provider extension is the better long-term answer, because
+it gets bounded byte ranges and the system caches metadata instead of asking
+the phone. It costs 99 dollars a year, so it sits in phase 3.
 
-A File Provider extension is the better long-term answer, because it gets
-bounded byte ranges and the system caches metadata instead of asking the phone.
-It moved to phase 4, and it depends on the Apple entitlement question.
-
-Phase 2 is two to four weeks, not one to two. The bridge carries `LOCK` and
-`UNLOCK`, `PROPFIND` at two depths, `MOVE`, `COPY`, `PROPPATCH`, ETags, bounded
+Phase 2 is two to four weeks. The bridge carries `LOCK` and `UNLOCK`,
+`PROPFIND` at two depths, `MOVE`, `COPY`, `PROPPATCH`, ETags, bounded
 open-ended ranges with disconnect detection, a listing cache, metadata probe
-handling, authentication, and unmounting on quit. Two of its open questions are
-still open.
+handling, authentication, and unmounting on quit.
 
-Phase 1 grew from five to seven weeks to seven to nine. The added work is
-pairing with commit and reveal, key storage on both platforms, unpairing,
-three more file operations, the per-connection limits, resume, and the Android
-platform work. Each item is small. Together they are two weeks.
-
-Phase 3 is real work. The tethering shortcut was tested and does not apply to
-this phone.
+The old phase 3, Android Open Accessory, is gone. The adb tunnel reuses the TCP
+transport and lands in phase 1. See decision record 9.
 
 ## 7. Cost
 
@@ -295,7 +272,7 @@ Module** as unavailable to a free personal team. Both need the paid Apple
 Developer Program. **App Groups** is free, which contradicts most guides
 written before 2025.
 
-So phase 4 costs 99 US dollars a year, and everything up to it costs nothing.
+So phase 3 costs 99 US dollars a year, and everything up to it costs nothing.
 The WebDAV Finder mount in phase 2 needs no entitlement at all.
 
 A free personal team also issues a real Apple Development certificate that
@@ -310,7 +287,7 @@ read 10 September 2026.
 1. Can a free Apple personal team provision App Group and File Provider
    entitlements on macOS 26? Answered from Apple's own capability table, read
    on 10 September 2026. App Groups is free. FileProvider Testing Mode is not,
-   and neither is FSKit Module. So phase 4 costs 99 US dollars a year, and
+   and neither is FSKit Module. So phase 3 costs 99 US dollars a year, and
    nothing before it does. A free personal team also gets a real Apple
    Development certificate that lasts about a year, which is what phase 1 needs
    for key storage.
