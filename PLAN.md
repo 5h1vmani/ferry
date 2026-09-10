@@ -184,6 +184,10 @@ The Rust core must not assume that one process owns everything.
   instance name and no key material in the TXT record.
 - Pairing with commit and reveal, a pairing mode, and confirmation on both
   screens. Then pinned per-device keys.
+- A `hello` exchange as the first frame after every handshake, carrying the
+  device's display name. The mDNS name is random and the adb serial is a
+  number, so nothing else can put a name on the Devices screen. Found by the
+  information architecture in `docs/ia.md`.
 - Key storage: app-private and backup-excluded on Android, Keychain on macOS.
 - Unpairing, which deletes the peer's key and every manifest for it.
 - The file operations layer, in both directions. Nine operations, including
@@ -382,5 +386,5 @@ is later compromised is authenticated and hostile at the same time.
 
 ## 12. Next actions
 
-1. Confirm the Xcode account is a personal team. One minute.
-2. Start phase 1.
+Phase 1 is under way. The Rust side is in `crates/ferry-core`. The UX side
+follows `docs/ux-plan.md`, which keeps its own status.
