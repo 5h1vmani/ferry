@@ -16,7 +16,9 @@ use ferry_core::path::RemotePath;
 use ferry_core::peers::PeerStore;
 use ferry_core::tcp::PairedConnection;
 
-use crate::{DeviceInfo, FerryError, PairingCandidate, PairingState, TransferState, Transport};
+use crate::{
+    DeviceInfo, Direction, FerryError, PairingCandidate, PairingState, TransferState, Transport,
+};
 
 /// Take a mutex without ever panicking.
 ///
@@ -233,6 +235,12 @@ pub(crate) struct TransferRow {
     pub(crate) attempt_after: Option<Instant>,
     /// How long the next wait after a failed attempt is.
     pub(crate) backoff: Duration,
+    /// When `pull` created this row.
+    pub(crate) started_unix_secs: i64,
+    /// When the state last became `Done` or `Failed`. Cleared by `retry`.
+    pub(crate) ended_unix_secs: Option<i64>,
+    /// Which way this transfer moves the file. Always `Pull` until item 5.
+    pub(crate) direction: Direction,
 }
 
 impl TransferRow {
@@ -247,6 +255,9 @@ impl TransferRow {
             state: self.state,
             transport: self.transport,
             error: self.error.clone(),
+            started_unix_secs: self.started_unix_secs,
+            ended_unix_secs: self.ended_unix_secs,
+            direction: self.direction,
         }
     }
 }

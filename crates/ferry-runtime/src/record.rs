@@ -30,17 +30,22 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use ferry_core::limits;
 use ferry_core::path::RemotePath;
 use ferry_core::session::{SessionId, Transfer};
 use ferry_core::wire::{Decoder, Encoder};
 
-use crate::FerryError;
 use crate::errors::failed;
+use crate::state::now_unix_secs;
+use crate::{Direction, FerryError};
 
 /// The version byte every record starts with.
-const FORMAT_VERSION: u8 = 1;
+///
+/// Version 1 held no start time, end time, or direction. A version 1 record
+/// still loads: see [`decode_meta`].
+const FORMAT_VERSION: u8 = 2;
 
 /// The stage byte of a record written during the first pass.
 const STAGE_FIRST_PASS: u8 = 0;
@@ -72,13 +77,33 @@ impl FirstPass {
     }
 }
 
+/// The fields item 9 and item 4 add, common to both stages.
+///
+/// A version 1 record held none of these. Loading one back fills in
+/// [`Meta::started_unix_secs`] from the record file's own modification
+/// time, leaves [`Meta::ended_unix_secs`] `None`, and reports
+/// [`Direction::Pull`]. See [`decode_meta`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Meta {
+    /// When `pull` created the transfer this record belongs to.
+    pub(crate) started_unix_secs: i64,
+    /// When the transfer last finished or failed. A record this crate
+    /// writes never carries `Some` here: the record is written while a
+    /// transfer is in progress, and a finished transfer is removed rather
+    /// than rewritten. The field still round-trips, for whatever writes
+    /// one later.
+    pub(crate) ended_unix_secs: Option<i64>,
+    /// Which way the transfer moves the file.
+    pub(crate) direction: Direction,
+}
+
 /// One transfer record, in whichever stage it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Record {
     /// The manifest does not exist yet.
-    FirstPass(FirstPass),
+    FirstPass(Meta, FirstPass),
     /// The manifest is complete, so every later attempt is a resume.
-    Ready(Transfer),
+    Ready(Meta, Transfer),
 }
 
 impl Record {
@@ -87,7 +112,7 @@ impl Record {
         let mut e = Encoder::new();
         e.u8(FORMAT_VERSION);
         match self {
-            Self::FirstPass(pass) => {
+            Self::FirstPass(meta, pass) => {
                 e.u8(STAGE_FIRST_PASS);
                 e.text(pass.source.as_str());
                 e.text(pass.destination.as_str());
@@ -95,10 +120,12 @@ impl Record {
                 e.fixed(&pass.source_mtime.to_be_bytes());
                 e.u32(pass.chunk_size);
                 e.u32(pass.chunks_done);
+                encode_meta(&mut e, meta);
             }
-            Self::Ready(transfer) => {
+            Self::Ready(meta, transfer) => {
                 e.u8(STAGE_READY);
                 e.bytes(&transfer.encode());
+                encode_meta(&mut e, meta);
             }
         }
         e.finish()
@@ -106,19 +133,28 @@ impl Record {
 
     /// Read a record back.
     ///
+    /// `fallback_started_unix_secs` is used only for a version 1 record,
+    /// which stored no start time of its own. The caller reads it from the
+    /// record file's modification time.
+    ///
     /// # Errors
     ///
     /// Returns a `ManifestError::Wire` code for bytes this build cannot
     /// read, which covers a record from a newer format and a record a disk
     /// damaged.
-    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, FerryError> {
-        Self::decode_inner(bytes).ok_or_else(|| failed("ManifestError::Wire"))
+    pub(crate) fn decode(
+        bytes: &[u8],
+        fallback_started_unix_secs: i64,
+    ) -> Result<Self, FerryError> {
+        Self::decode_inner(bytes, fallback_started_unix_secs)
+            .ok_or_else(|| failed("ManifestError::Wire"))
     }
 
     /// The body of [`Record::decode`], where every step may simply fail.
-    fn decode_inner(bytes: &[u8]) -> Option<Self> {
+    fn decode_inner(bytes: &[u8], fallback_started_unix_secs: i64) -> Option<Self> {
         let mut d = Decoder::new(bytes);
-        if d.u8().ok()? != FORMAT_VERSION {
+        let version = d.u8().ok()?;
+        if version == 0 || version > FORMAT_VERSION {
             return None;
         }
         let stage = d.u8().ok()?;
@@ -130,26 +166,78 @@ impl Record {
                 let source_mtime = i64::from_be_bytes(d.fixed::<8>().ok()?);
                 let chunk_size = d.u32().ok()?;
                 let chunks_done = d.u32().ok()?;
-                Self::FirstPass(FirstPass {
-                    source,
-                    destination,
-                    source_size,
-                    source_mtime,
-                    chunk_size,
-                    chunks_done,
-                })
+                let meta = decode_meta(&mut d, version, fallback_started_unix_secs)?;
+                Self::FirstPass(
+                    meta,
+                    FirstPass {
+                        source,
+                        destination,
+                        source_size,
+                        source_mtime,
+                        chunk_size,
+                        chunks_done,
+                    },
+                )
             }
             STAGE_READY => {
                 let inner = d
                     .bytes(limits::MAX_MANIFEST_BYTES + 2 * limits::MAX_PATH_LEN + 64)
                     .ok()?;
-                Self::Ready(Transfer::decode(inner).ok()?)
+                let transfer = Transfer::decode(inner).ok()?;
+                let meta = decode_meta(&mut d, version, fallback_started_unix_secs)?;
+                Self::Ready(meta, transfer)
             }
             _ => return None,
         };
         d.finish().ok()?;
         Some(record)
     }
+}
+
+/// Append [`Meta`] after a stage's own fields.
+fn encode_meta(e: &mut Encoder, meta: &Meta) {
+    e.fixed(&meta.started_unix_secs.to_be_bytes());
+    match meta.ended_unix_secs {
+        Some(ended) => {
+            e.u8(1);
+            e.fixed(&ended.to_be_bytes());
+        }
+        None => {
+            e.u8(0);
+        }
+    }
+    e.u8(match meta.direction {
+        Direction::Pull => 0,
+        Direction::Push => 1,
+    });
+}
+
+/// Read [`Meta`] back, or supply what a version 1 record never wrote:
+/// `fallback_started_unix_secs` for the start time, no end time, and
+/// [`Direction::Pull`].
+fn decode_meta(d: &mut Decoder<'_>, version: u8, fallback_started_unix_secs: i64) -> Option<Meta> {
+    if version == 1 {
+        return Some(Meta {
+            started_unix_secs: fallback_started_unix_secs,
+            ended_unix_secs: None,
+            direction: Direction::Pull,
+        });
+    }
+    let started_unix_secs = i64::from_be_bytes(d.fixed::<8>().ok()?);
+    let ended_unix_secs = match d.u8().ok()? {
+        0 => None,
+        _ => Some(i64::from_be_bytes(d.fixed::<8>().ok()?)),
+    };
+    let direction = match d.u8().ok()? {
+        0 => Direction::Pull,
+        1 => Direction::Push,
+        _ => return None,
+    };
+    Some(Meta {
+        started_unix_secs,
+        ended_unix_secs,
+        direction,
+    })
 }
 
 /// Read the record at `path`.
@@ -162,10 +250,25 @@ impl Record {
 /// read as a record.
 pub(crate) fn read_record(path: &Path) -> Result<Option<Record>, FerryError> {
     match fs::read(path) {
-        Ok(bytes) => Record::decode(&bytes).map(Some),
+        Ok(bytes) => Record::decode(&bytes, fallback_started_unix_secs(path)).map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(failed("TransferError::Local")),
     }
+}
+
+/// The record file's own modification time, in Unix seconds.
+///
+/// Used only for a version 1 record, which stored no start time of its own.
+/// Falls back to now when the file's modification time cannot be read, since
+/// a record that otherwise decodes correctly should not be refused over a
+/// clock.
+fn fallback_started_unix_secs(path: &Path) -> i64 {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok())
+        .unwrap_or_else(now_unix_secs)
 }
 
 /// Write the record at `path`, so a crash can never leave a short one.
@@ -215,13 +318,16 @@ fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FirstPass, Record, read_record, write_record};
+    use super::{FirstPass, Meta, Record, read_record, write_record};
+    use crate::Direction;
     use ferry_core::chunk::{ChunkSize, manifest_from_bytes};
     use ferry_core::path::RemotePath;
     use ferry_core::session::Transfer;
+    use ferry_core::wire::Encoder;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::UNIX_EPOCH;
 
     /// Every test gets its own folder, so tests in parallel never share one.
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -241,20 +347,32 @@ mod tests {
         RemotePath::parse(text).expect("a valid path")
     }
 
+    fn meta() -> Meta {
+        Meta {
+            started_unix_secs: 1_700_000_000,
+            ended_unix_secs: None,
+            direction: Direction::Pull,
+        }
+    }
+
     fn first_pass() -> Record {
-        Record::FirstPass(FirstPass {
-            source: path("holiday.bin"),
-            destination: path("photos/holiday.bin"),
-            source_size: 8 * 1024 * 1024,
-            source_mtime: -12,
-            chunk_size: 1024 * 1024,
-            chunks_done: 2,
-        })
+        Record::FirstPass(
+            meta(),
+            FirstPass {
+                source: path("holiday.bin"),
+                destination: path("photos/holiday.bin"),
+                source_size: 8 * 1024 * 1024,
+                source_mtime: -12,
+                chunk_size: 1024 * 1024,
+                chunks_done: 2,
+            },
+        )
     }
 
     fn ready() -> Record {
         let manifest = manifest_from_bytes(b"some bytes", ChunkSize::one_mebibyte());
         Record::Ready(
+            meta(),
             Transfer::new(manifest, path("holiday.bin"), path("photos/holiday.bin"))
                 .expect("a transfer identifier"),
         )
@@ -291,6 +409,59 @@ mod tests {
         write_record(&file, &record).expect("the record should be written");
         let read = read_record(&file).expect("the record should be readable");
         assert_eq!(read, Some(record), "what was written comes back");
+    }
+
+    #[test]
+    fn a_version_1_record_loads_with_the_files_mtime_no_end_and_pull() {
+        // A hand-built version 1 record: the format before this batch added
+        // a start time, an end time and a direction. This is the shape a
+        // record left by an earlier build of Ferry is in.
+        let dir = temp_dir("v1");
+        let file = dir.join("five.bin");
+        let mut e = Encoder::new();
+        e.u8(1); // FORMAT_VERSION, before this batch
+        e.u8(0); // STAGE_FIRST_PASS
+        e.text("holiday.bin");
+        e.text("photos/holiday.bin");
+        e.u64(8 * 1024 * 1024);
+        e.fixed(&(-12i64).to_be_bytes());
+        e.u32(1024 * 1024);
+        e.u32(2);
+        fs::write(&file, e.finish()).expect("the hand-built record should write");
+
+        let read = read_record(&file)
+            .expect("a version 1 record should still load")
+            .expect("the file is there");
+        let Record::FirstPass(loaded_meta, pass) = read else {
+            panic!("expected a first pass record");
+        };
+        assert_eq!(
+            pass.source_size,
+            8 * 1024 * 1024,
+            "the fields version 1 always had still decode"
+        );
+        assert_eq!(
+            loaded_meta.ended_unix_secs, None,
+            "a version 1 record has no end time"
+        );
+        assert_eq!(
+            loaded_meta.direction,
+            Direction::Pull,
+            "a version 1 record is always a pull"
+        );
+
+        let mtime = fs::metadata(&file)
+            .expect("the file should have metadata")
+            .modified()
+            .expect("the file should carry a modified time")
+            .duration_since(UNIX_EPOCH)
+            .expect("the modified time is after the epoch")
+            .as_secs();
+        assert_eq!(
+            loaded_meta.started_unix_secs,
+            i64::try_from(mtime).expect("the mtime fits in an i64"),
+            "its start time is the record file's modification time"
+        );
     }
 
     #[test]

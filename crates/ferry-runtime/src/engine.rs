@@ -32,8 +32,8 @@ use crate::state::{
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
-    Config, DeviceInfo, EngineListener, Entry, EntryKind, FerryError, KeyPair, PairingCandidate,
-    PairingState, Status, TransferInfo, TransferState, Transport,
+    Config, DeviceInfo, Direction, EngineListener, Entry, EntryKind, FerryError, KeyPair,
+    PairingCandidate, PairingState, Status, TransferInfo, TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -804,6 +804,9 @@ impl Engine {
                     running: false,
                     attempt_after: None,
                     backoff: BACKOFF_MIN,
+                    started_unix_secs: now_unix_secs(),
+                    ended_unix_secs: None,
+                    direction: Direction::Pull,
                 },
             );
             id
@@ -908,6 +911,7 @@ impl Engine {
             }
             row.state = TransferState::Queued;
             row.error = None;
+            row.ended_unix_secs = None;
         }
         notify(&self.shared, Change::Transfers);
         transfer::spawn(&self.shared, &transfer_id);
@@ -1133,26 +1137,29 @@ fn load_saved_transfers(shared: &Arc<Shared>) {
 
 /// The row one stored record becomes.
 fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow {
-    let (source, destination, bytes_total, bytes_done, source_size, source_mtime) = match record {
-        Record::FirstPass(pass) => (
-            pass.source.clone(),
-            pass.destination.clone(),
-            pass.source_size,
-            pass.bytes_done(),
-            Some(pass.source_size),
-            Some(pass.source_mtime),
-        ),
-        // A ready record's bytes are counted again by the resume itself,
-        // which reads the partial file back and hashes it.
-        Record::Ready(transfer) => (
-            transfer.source.clone(),
-            transfer.destination.clone(),
-            transfer.manifest.length(),
-            0,
-            None,
-            None,
-        ),
-    };
+    let (source, destination, bytes_total, bytes_done, source_size, source_mtime, meta) =
+        match record {
+            Record::FirstPass(meta, pass) => (
+                pass.source.clone(),
+                pass.destination.clone(),
+                pass.source_size,
+                pass.bytes_done(),
+                Some(pass.source_size),
+                Some(pass.source_mtime),
+                meta,
+            ),
+            // A ready record's bytes are counted again by the resume itself,
+            // which reads the partial file back and hashes it.
+            Record::Ready(meta, transfer) => (
+                transfer.source.clone(),
+                transfer.destination.clone(),
+                transfer.manifest.length(),
+                0,
+                None,
+                None,
+                meta,
+            ),
+        };
     TransferRow {
         id,
         device_key_hex: key_hex,
@@ -1169,6 +1176,13 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
         running: false,
         attempt_after: None,
         backoff: BACKOFF_MIN,
+        started_unix_secs: meta.started_unix_secs,
+        // A row loaded from disk is about to be requeued by `resume_all`,
+        // the same as an explicit `retry`, so its end time is cleared the
+        // same way. A record this crate writes never carries `Some` here
+        // regardless; see `Meta::ended_unix_secs`.
+        ended_unix_secs: None,
+        direction: meta.direction,
     }
 }
 

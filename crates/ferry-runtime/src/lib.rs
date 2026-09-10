@@ -285,6 +285,17 @@ pub enum TransferState {
     Failed,
 }
 
+/// Which way a transfer moves a file.
+///
+/// Always `Pull` until item 5 lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Direction {
+    /// This device fetched the file from the peer.
+    Pull,
+    /// This device sent the file to the peer.
+    Push,
+}
+
 /// One transfer, as the Transfers screen shows it.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TransferInfo {
@@ -304,6 +315,12 @@ pub struct TransferInfo {
     pub transport: Option<Transport>,
     /// Why it failed or paused, when it did.
     pub error: Option<FerryError>,
+    /// When `pull` created this transfer.
+    pub started_unix_secs: i64,
+    /// When the state last became `Done` or `Failed`. Cleared by `retry`.
+    pub ended_unix_secs: Option<i64>,
+    /// Which way this transfer moves the file.
+    pub direction: Direction,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

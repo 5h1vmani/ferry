@@ -60,9 +60,9 @@ use crate::engine::{
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
 use crate::guard::{Cut, StopAware};
 use crate::notify::Change;
-use crate::record::{FirstPass, Record, read_record, write_record};
-use crate::state::{key_from_hex, lock};
-use crate::{FerryError, TransferState, Transport};
+use crate::record::{FirstPass, Meta, Record, read_record, write_record};
+use crate::state::{key_from_hex, lock, now_unix_secs};
+use crate::{Direction, FerryError, TransferState, Transport};
 
 /// The shortest wait before trying again.
 pub(crate) const BACKOFF_MIN: Duration = Duration::from_secs(1);
@@ -287,6 +287,9 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
         if state == TransferState::Done {
             row.bytes_done = row.bytes_total;
         }
+        if matches!(state, TransferState::Done | TransferState::Failed) {
+            row.ended_unix_secs = Some(now_unix_secs());
+        }
     }
     notify(shared, Change::Transfers);
     notify(shared, Change::Devices);
@@ -303,6 +306,12 @@ struct Plan {
     /// The 32 hex characters that name this transfer's own partial file
     /// during the first pass.
     suffix: String,
+    /// When `pull` created this transfer. Written into every record this
+    /// attempt writes.
+    started_unix_secs: i64,
+    /// Which way this transfer moves the file. Written into every record
+    /// this attempt writes.
+    direction: Direction,
 }
 
 /// Read the plan for one transfer out of the state.
@@ -318,6 +327,8 @@ fn plan_for(shared: &Arc<Shared>, id: &str) -> Option<Plan> {
         source_size: row.source_size,
         source_mtime: row.source_mtime,
         suffix: id.rsplit('-').next().unwrap_or(id).to_owned(),
+        started_unix_secs: row.started_unix_secs,
+        direction: row.direction,
     })
 }
 
@@ -402,8 +413,12 @@ fn load_or_build<S: Read + Write>(
     client: &mut Client<S>,
 ) -> Result<Transfer, Outcome> {
     match read_record(&shared.record_path(id)) {
-        Ok(Some(Record::Ready(record))) => Ok(record),
-        Ok(Some(Record::FirstPass(pass))) => first_pass(shared, id, plan, fs, client, Some(&pass)),
+        // The meta an earlier attempt of this same row wrote is not needed
+        // again: the row it came from is this attempt's own plan.
+        Ok(Some(Record::Ready(_meta, record))) => Ok(record),
+        Ok(Some(Record::FirstPass(_meta, pass))) => {
+            first_pass(shared, id, plan, fs, client, Some(&pass))
+        }
         Ok(None) => first_pass(shared, id, plan, fs, client, None),
         Err(error) => Err(Outcome::Fatal(error)),
     }
@@ -462,11 +477,22 @@ fn first_pass<S: Read + Write>(
             chunk_size: chunk.get(),
             chunks_done: chunks_in(start, chunk),
         },
+        // The record is only ever written while this attempt is in
+        // progress, so its end time is never anything but `None`.
+        meta: Meta {
+            started_unix_secs: plan.started_unix_secs,
+            ended_unix_secs: None,
+            direction: plan.direction,
+        },
         builder: ManifestBuilder::new(chunk),
     };
     // The record goes down before the first byte is asked for. A pass with
     // no record leaves a partial file that nothing knows about.
-    write_record(&pass.record, &Record::FirstPass(pass.state.clone())).map_err(Outcome::Fatal)?;
+    write_record(
+        &pass.record,
+        &Record::FirstPass(pass.meta.clone(), pass.state.clone()),
+    )
+    .map_err(Outcome::Fatal)?;
 
     rehash_local(fs, &temporary, chunk, start, &mut pass.builder)
         .map_err(|e| Outcome::Fatal(from_op(e)))?;
@@ -489,8 +515,11 @@ fn first_pass<S: Read + Write>(
         .map_err(|e| Outcome::Fatal(from_transfer(&e)))?;
     fs.rename(&temporary, &landing)
         .map_err(|e| Outcome::Fatal(from_op(e)))?;
-    write_record(&shared.record_path(id), &Record::Ready(record.clone()))
-        .map_err(Outcome::Fatal)?;
+    write_record(
+        &shared.record_path(id),
+        &Record::Ready(pass.meta.clone(), record.clone()),
+    )
+    .map_err(Outcome::Fatal)?;
     Ok(record)
 }
 
@@ -505,6 +534,10 @@ struct Pass {
     record: PathBuf,
     /// The record as it stands, rewritten at every chunk boundary.
     state: FirstPass,
+    /// The start time and direction written into every record this attempt
+    /// writes. The end time is always `None`: the record is written only
+    /// while the transfer is in progress.
+    meta: Meta,
     /// The manifest being built out of the bytes as they arrive.
     builder: ManifestBuilder,
 }
@@ -562,8 +595,11 @@ fn fetch_rest<S: Read + Write>(
         // The record is rewritten at every chunk boundary, so a first pass
         // that stops here starts again from this point and not from zero.
         pass.state.chunks_done = chunks_in(offset, span.chunk);
-        write_record(&pass.record, &Record::FirstPass(pass.state.clone()))
-            .map_err(Outcome::Fatal)?;
+        write_record(
+            &pass.record,
+            &Record::FirstPass(pass.meta.clone(), pass.state.clone()),
+        )
+        .map_err(Outcome::Fatal)?;
         reporter.moved(offset, span.size);
         if shared.stopping() {
             return Err(Outcome::Retry(failed("Runtime::NotReachable")));

@@ -39,7 +39,8 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
-    Config, Engine, EngineListener, FerryError, KeyPair, PairingState, TransferState, generate_key,
+    Config, Direction, Engine, EngineListener, FerryError, KeyPair, PairingState, TransferState,
+    generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -779,6 +780,21 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     wait_transfer(&side, &id, "two chunks to arrive", |t| {
         t.bytes_done >= 2 * MIB
     });
+    let before_stop = side
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the transfer should be listed before stop");
+    assert_eq!(
+        before_stop.direction,
+        Direction::Pull,
+        "a pull is always Direction::Pull until item 5"
+    );
+    assert_eq!(
+        before_stop.ended_unix_secs, None,
+        "a transfer still moving has no end time"
+    );
     side.engine.stop();
 
     // A new engine on the same folders, as if the app had been restarted.
@@ -809,6 +825,19 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
         "it comes back at the last verified chunk"
     );
     assert_eq!(found.bytes_total, 8 * MIB, "it knows the size of the file");
+    assert_eq!(
+        found.started_unix_secs, before_stop.started_unix_secs,
+        "the start time survives the restart, item 9's whole point"
+    );
+    assert_eq!(
+        found.ended_unix_secs, None,
+        "a record this crate writes never carries an end time"
+    );
+    assert_eq!(
+        found.direction,
+        Direction::Pull,
+        "a restarted transfer is still a pull"
+    );
 
     // The peer is reachable again, so the transfer finishes on its own.
     engine.offer_candidate(peer.addr);
@@ -823,6 +852,23 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     });
     let landed = std::fs::read(side.shared_root().join("big.bin")).expect("the file should land");
     assert_eq!(landed, sample_bytes(mib(8)), "every byte must match");
+
+    let done = engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the finished transfer is still listed");
+    assert_eq!(
+        done.started_unix_secs, before_stop.started_unix_secs,
+        "the start time is the same one throughout the transfer's life"
+    );
+    let ended = done
+        .ended_unix_secs
+        .expect("a done transfer has an end time");
+    assert!(
+        ended >= done.started_unix_secs,
+        "the end time is not before the start time"
+    );
 
     engine.stop();
     peer.close();
