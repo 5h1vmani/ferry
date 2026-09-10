@@ -1,6 +1,6 @@
 # The Ferry wire protocol
 
-Status: draft. Version 1 is not frozen. Sections marked "not designed yet" hold
+Status: draft. Version 2 is not frozen. Sections marked "not designed yet" hold
 no commitment.
 
 This document describes what two Ferry devices say to each other. It is written
@@ -36,7 +36,11 @@ Every connection starts with seven bytes from each side, before anything else:
 ```
 
 Both sides send first, then read, so neither waits on the other. Each side
-takes the lower of the two versions. This build supports version 1 only.
+takes the lower of the two versions. This build supports version 2 only. Both
+the oldest and the newest version it speaks moved from 1 to 2 together, in one
+step: version 2 changes the wire, so no build in the field should read version
+1 with anyone but its own author, and a stale build must fail with
+`NoSharedVersion` rather than read version 2 paths as version 1.
 
 This exchange happens in the clear, because the encrypted channel does not
 exist yet. That would normally let an attacker force both sides down to an old
@@ -160,11 +164,16 @@ other. The name is shown on the other device and never trusted. Identity is
 proven by the handshake's keys, not by this exchange. A peer that sends
 anything else first is disconnected.
 
+Since version 2, the payload also carries the sending device's kind: a
+phone or a Mac. It is shown alongside the name and is likewise never
+trusted for anything. Do not confuse this with the frame's own `kind`
+field below, which names the frame type and is unrelated.
+
 | Field | Size | Meaning |
 |---|---|---|
 | `kind` | 1 byte | Always 4. |
 | `request_id` | 4 bytes | Always 0. |
-| payload | 1 to 64 bytes | One text field: the display name, with no control character. |
+| payload | 2 to 65 bytes | The display name (1 to 64 bytes, no control character), then one byte for the device's kind: 1 is a phone, 2 is a Mac. |
 
 ## 6. Framing
 
@@ -294,31 +303,48 @@ behind.
 
 `set_mtime` exists so that a copied photo keeps its original time.
 
-`delete` is not recursive in version 1. Deleting a directory that is not empty
+`delete` is not recursive in version 2. Deleting a directory that is not empty
 returns an error. A recursive delete is the largest single action a peer can
-trigger, and version 1 does not offer it.
+trigger, and version 2 does not offer it.
 
-### The shared root
+### Named roots
 
-Each side serves exactly one shared root, and never anything above it.
+Since version 2, each side serves one or more named roots, not one shared
+folder. A peer never sees anything above any root, and never sees a root's
+real path, only its name.
 
-On the Mac the root is a folder the user chooses.
+Every path begins with a root's name as its first segment: `Desktop/Q3
+notes.md` names a file inside the root called `Desktop`. `list("")` returns
+one directory entry per root: the root's name, size 0, and the modified time
+of its folder, in one page, with no cursor. `stat("")` is a directory entry
+for that same top level.
 
-On the phone the root is a fixed list of top-level folders: `DCIM`, `Pictures`,
-`Movies`, `Music`, `Download`, and `Documents`. The Android app holds broader
-access than that, so limiting the root limits the damage if the app is ever
-compromised.
+A path whose first segment names no root is `NotFound`. Writing, truncating,
+making a directory, deleting, or renaming anything inside a root marked not
+writable is `PermissionDenied`. Creating, deleting, or renaming a root
+itself, addressed by a path of exactly one segment, is `PermissionDenied` as
+well: a root is configured on the device, not made or removed through file
+operations. `rename` across two different roots is `Unsupported`; a file
+moves within a root, never between two.
+
+On the Mac each root is a folder the user chooses. On the phone each root is
+a folder such as its internal storage. Two roots may point at the same
+folder on disk.
+
+Implemented in `crates/ferry-core/src/roots.rs`, which dispatches each call
+to a `LocalFs` per root; `LocalFs` itself is unchanged and still serves one
+folder.
 
 ### Paths
 
-A path is relative to the shared root, and uses `/` as the separator.
+A path is relative to the root it names, and uses `/` as the separator.
 
 A receiver rejects any path that is absolute, that holds a `.` or `..`
 component, that holds a NUL byte or a backslash, or that is longer than 1024
 bytes.
 
-The empty path names the shared root itself. It may be listed and stat'ed.
-Every other operation on it is refused.
+The empty path names the top level: every root, together. It may be listed
+and stat'ed. Every other operation on it is refused.
 
 Those checks are lexical. They are not enough on their own. A symlink inside
 the root that points outside it passes all of them. So does a FIFO, which would
