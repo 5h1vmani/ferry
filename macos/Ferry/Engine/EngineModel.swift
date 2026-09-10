@@ -54,7 +54,7 @@ final class EngineModel: ObservableObject {
         // next try would be refused.
         var built: Engine?
         do {
-            EngineModel.addHomebrewToPath()
+            EngineModel.addAdbToPath()
             let dataDir = try EngineModel.makeDataDirectory()
             try EngineModel.makeDirectory(at: sharedFolderPath)
             let config = Config(
@@ -240,17 +240,30 @@ final class EngineModel: ObservableObject {
         return trimmed.isEmpty ? S.app.defaultDeviceName : trimmed
     }
 
-    /// A GUI app is launched with a short PATH that has no Homebrew in it.
-    /// The engine reads PATH when it is created to find adb, and adb lives
-    /// in /opt/homebrew/bin on this Mac. Without this, USB is never
-    /// available. See docs/decisions/0010-no-mac-sandbox.md.
-    private static func addHomebrewToPath() {
-        let homebrew = "/opt/homebrew/bin:/usr/local/bin"
+    /// A GUI app is launched with a short PATH that has no adb on it. The
+    /// engine reads PATH when it is created to find adb. Without this, USB
+    /// is never available. See docs/decisions/0010-no-mac-sandbox.md.
+    ///
+    /// adb is not in Homebrew's bin folder. The Homebrew command line tools
+    /// put it under share, and Android Studio puts it under the home
+    /// folder. Every known place is added, and the one that exists wins.
+    private static func addAdbToPath() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let known = [
+            "/opt/homebrew/share/android-commandlinetools/platform-tools",
+            "/usr/local/share/android-commandlinetools/platform-tools",
+            home + "/Library/Android/sdk/platform-tools",
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
         let current = ProcessInfo.processInfo.environment["PATH"] ?? ""
-        if current.contains("/opt/homebrew/bin") {
+        let present = Set(current.split(separator: ":").map(String.init))
+        let missing = known.filter { !present.contains($0) }
+        if missing.isEmpty {
             return
         }
-        let combined = current.isEmpty ? homebrew : homebrew + ":" + current
+        let prefix = missing.joined(separator: ":")
+        let combined = current.isEmpty ? prefix : prefix + ":" + current
         setenv("PATH", combined, 1)
     }
 }
