@@ -54,11 +54,19 @@ pub fn find_adb() -> Option<PathBuf> {
 }
 
 /// Check every directory on PATH for an executable named `adb`.
+///
+/// An empty PATH element (from a leading, trailing, or doubled separator)
+/// means the current directory on POSIX. Skipping it, and then only
+/// accepting an absolute candidate, keeps this from ever returning a bare
+/// relative name such as `adb`. A relative path would resolve against
+/// whatever the working directory happens to be later, at spawn time, which
+/// may not be the file that was just checked here.
 fn find_on_path() -> Option<PathBuf> {
     let path = env::var_os("PATH")?;
     env::split_paths(&path)
+        .filter(|dir| !dir.as_os_str().is_empty())
         .map(|dir| dir.join("adb"))
-        .find(|candidate| is_executable_file(candidate))
+        .find(|candidate| candidate.is_absolute() && is_executable_file(candidate))
 }
 
 /// Check the default Android SDK install location under the home directory.
@@ -142,6 +150,15 @@ pub enum AdbError {
     /// expected to be.
     #[error("could not parse adb output: {0}")]
     Unparseable(String),
+    /// The `adb` binary path was not absolute when a command tried to run
+    /// it.
+    ///
+    /// `Command` resolves a relative program name against PATH again at
+    /// spawn time. That second lookup could land on a different file than
+    /// the one that was checked when this path was chosen, so Ferry refuses
+    /// to spawn a relative path rather than risk running the wrong binary.
+    #[error("adb binary path is not absolute: {}", .0.display())]
+    RelativeBinary(PathBuf),
 }
 
 /// A handle to one `adb` binary, used to list devices and manage forwards.
@@ -161,8 +178,19 @@ impl Adb {
     const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
     /// Point Ferry at one `adb` binary, typically the result of [`find_adb`].
+    ///
+    /// A relative path is canonicalized to an absolute one here, so the file
+    /// that gets checked now is still the file that runs later, even if the
+    /// working directory changes in between. If canonicalizing fails, for
+    /// example because the path does not exist, the path is kept as given;
+    /// [`Adb::run`] then refuses to spawn it, since it is still relative.
     #[must_use]
     pub fn new(binary: PathBuf) -> Self {
+        let binary = if binary.is_absolute() {
+            binary
+        } else {
+            std::fs::canonicalize(&binary).unwrap_or(binary)
+        };
         Self::with_timeout(binary, Self::DEFAULT_TIMEOUT)
     }
 
@@ -232,6 +260,14 @@ impl Adb {
 
     /// Run `adb` with `args` and return what it printed to standard output.
     fn run(&self, args: &[&str]) -> Result<String, AdbError> {
+        // `Command::new` resolves a relative program name against PATH
+        // again, at spawn time. That second lookup is not necessarily the
+        // file that was checked when this path was chosen, so a relative
+        // path is refused instead of trusted.
+        if !self.binary.is_absolute() {
+            return Err(AdbError::RelativeBinary(self.binary.clone()));
+        }
+
         let mut child = Command::new(&self.binary)
             .args(args)
             // Ferry never has input for adb. Closing stdin keeps the child
@@ -241,16 +277,28 @@ impl Adb {
             .stderr(Stdio::piped())
             .spawn()?;
 
-        let status = self.wait_with_timeout(&mut child)?;
+        // Both pipes are drained on background threads while the child is
+        // still running, not after. A child that writes more than one pipe
+        // buffer blocks on that write until something reads the other end.
+        // Reading only after the child has exited would then deadlock: the
+        // parent is waiting for the child to exit, and the child is waiting
+        // for the parent to read.
+        let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
+        let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
 
-        let mut stdout = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            pipe.read_to_string(&mut stdout)?;
-        }
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            pipe.read_to_string(&mut stderr)?;
-        }
+        let status = self.wait_with_timeout(&mut child);
+
+        // The readers are joined whether the wait succeeded or timed out.
+        // On a timeout, `wait_with_timeout` has already killed and waited
+        // for the child, so both pipes are already at end of file and these
+        // joins return right away.
+        let stdout_bytes = join_pipe_reader(stdout_reader);
+        let stderr_bytes = join_pipe_reader(stderr_reader);
+
+        let status = status?;
+
+        let stdout = bytes_to_output(stdout_bytes)?;
+        let stderr = bytes_to_output(stderr_bytes)?;
 
         if status.success() {
             Ok(stdout)
@@ -286,6 +334,64 @@ impl Adb {
     }
 }
 
+/// Bytes kept from one child pipe before the rest of it is thrown away.
+///
+/// A child that will not stop printing must not be able to make Ferry hold
+/// an unbounded amount of memory. A well-behaved `adb` never gets close to
+/// this, so the cap only matters for a broken or malicious one.
+const MAX_CAPTURED_OUTPUT: usize = 1024 * 1024;
+
+/// Read `pipe` to end on its own thread, capped at [`MAX_CAPTURED_OUTPUT`].
+///
+/// This has to run while the child is still alive, not after. See the
+/// comment in [`Adb::run`] for why reading only after the child exits can
+/// deadlock.
+fn spawn_pipe_reader<R>(mut pipe: R) -> thread::JoinHandle<Vec<u8>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut captured = Vec::new();
+        let mut buffer = [0_u8; 8192];
+        loop {
+            let read = match pipe.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => read,
+            };
+            // Once `captured` reaches the cap, `remaining` is `0` and this
+            // keeps reading into `buffer` without growing `captured` any
+            // further. The pipe still gets drained either way, which is the
+            // point: a chatty child must not be able to block on a full
+            // pipe just because Ferry stopped keeping its output.
+            let remaining = MAX_CAPTURED_OUTPUT - captured.len();
+            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+        }
+        captured
+    })
+}
+
+/// Join a reader thread started by [`spawn_pipe_reader`], if there was one.
+///
+/// There is nothing more useful to do with a thread that panicked than to
+/// treat it as having captured nothing, so a join failure is not reported as
+/// an error.
+fn join_pipe_reader(reader: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
+    reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default()
+}
+
+/// Turn captured pipe bytes into the `String` the rest of this module wants.
+///
+/// `adb` output is expected to be UTF-8. Bytes that are not are reported the
+/// same way a failed read would be, since [`Read::read_to_string`] used to
+/// be the thing doing this check before pipes were read on their own
+/// threads.
+fn bytes_to_output(bytes: Vec<u8>) -> Result<String, AdbError> {
+    String::from_utf8(bytes)
+        .map_err(|error| AdbError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))
+}
+
 /// Pull the serials in the `device` state out of `adb devices -l` output.
 ///
 /// The first line is a header and is skipped. Each remaining line starts
@@ -309,12 +415,61 @@ fn parse_devices(output: &str) -> Vec<String> {
 mod tests {
     use super::{Adb, AdbError, find_adb};
     use std::env;
+    use std::ffi::OsString;
     use std::fs;
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    /// Serializes tests that change PATH or the current directory.
+    ///
+    /// Both are process-wide state, and cargo runs tests on several threads
+    /// of the same process by default, so two such tests running at once
+    /// would corrupt each other's environment.
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    /// Restores PATH and the working directory when it drops, even if the
+    /// test panics first.
+    ///
+    /// PATH and the working directory are process-wide. A test that changes
+    /// either one has to put it back, and Rust runs destructors during a
+    /// panic's unwind, so a `Drop` impl is the way to make that happen
+    /// regardless of how the test ends.
+    struct EnvGuard {
+        path: Option<OsString>,
+        dir: PathBuf,
+    }
+
+    impl EnvGuard {
+        /// Record the current PATH and working directory, to restore later.
+        fn capture() -> Self {
+            Self {
+                path: env::var_os("PATH"),
+                dir: env::current_dir().expect("read the current directory"),
+            }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // Safety: the caller holds `ENV_MUTEX` for as long as this guard
+            // lives, which keeps any other test from reading or writing PATH
+            // at the same time.
+            #[allow(unsafe_code)]
+            unsafe {
+                match &self.path {
+                    Some(value) => env::set_var("PATH", value),
+                    None => env::remove_var("PATH"),
+                }
+            }
+            // The working directory has no equivalent of "unset"; if it was
+            // readable at capture time, setting it back is expected to work.
+            let _ = env::set_current_dir(&self.dir);
+        }
+    }
 
     /// A fresh directory under the system temp directory, unique to one call.
     ///
@@ -426,12 +581,17 @@ mod tests {
     #[test]
     #[allow(unsafe_code)]
     fn find_adb_returns_none_when_path_and_home_hold_nothing() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
         let empty_home = unique_temp_dir("find-adb-empty-home");
         let original_path = env::var_os("PATH");
         let original_home = env::var_os("HOME");
 
-        // Safety: this test does not run alongside other tests that read or
-        // write PATH or HOME, and both are restored before it returns.
+        // Safety: `ENV_MUTEX` above keeps this from running alongside
+        // another test that reads or writes PATH or HOME, and both are
+        // restored before this test returns.
         unsafe {
             env::set_var("PATH", "");
             env::set_var("HOME", &empty_home);
@@ -452,5 +612,81 @@ mod tests {
         }
 
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn a_child_that_prints_more_than_a_pipe_buffer_does_not_deadlock() {
+        // A pipe buffer is a few tens of KiB on every platform Ferry
+        // supports, so 256 KiB on stdout and 256 KiB on stderr both overflow
+        // it. Before the fix, `Adb::run` only read a pipe after the child
+        // had already exited, so a child stuck writing to a full pipe would
+        // never exit, and `devices()` would run out the full timeout.
+        let binary = fake_adb(
+            "pipe-buffer",
+            "yes | head -c 262144\nyes | head -c 262144 1>&2\nprintf 'AAA1\\tdevice product:foo\\n'\nexit 0\n",
+        );
+        let adb = Adb::new(binary);
+
+        let start = Instant::now();
+        let serials = adb.devices().expect("the fake adb should succeed");
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "devices() took {elapsed:?}; the pipes were not drained while adb ran"
+        );
+        assert_eq!(serials, vec!["AAA1".to_string()]);
+    }
+
+    #[test]
+    fn an_empty_path_element_never_yields_a_relative_binary() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = EnvGuard::capture();
+
+        let dir = unique_temp_dir("empty-path-element");
+        write_fake_adb(&dir, "printf 'List of devices attached\\n'\n");
+        env::set_current_dir(&dir).expect("switch to the temp dir with the fake adb");
+
+        // Safety: `ENV_MUTEX` above keeps this from running alongside
+        // another test that reads or writes PATH, and `_guard` restores the
+        // original PATH and working directory when this test ends, even if
+        // an assertion below panics.
+        #[allow(unsafe_code)]
+        unsafe {
+            env::set_var("PATH", "/nonexistent-a::/nonexistent-b");
+        }
+
+        let found = find_adb();
+
+        if let Some(path) = found {
+            assert!(
+                path.is_absolute(),
+                "find_adb returned a relative path: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_adb_built_from_a_relative_path_is_refused() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let binary = PathBuf::from("adb");
+        if std::fs::canonicalize(&binary).is_ok() {
+            // The current directory happens to hold a file named `adb`, so
+            // `Adb::new` would canonicalize this to an absolute path rather
+            // than keep it relative. That is the correct behavior, but it
+            // means this particular case does not apply right now.
+            return;
+        }
+
+        let adb = Adb::new(binary);
+        match adb.devices() {
+            Err(AdbError::RelativeBinary(path)) => assert_eq!(path, PathBuf::from("adb")),
+            other => panic!("expected AdbError::RelativeBinary, got {other:?}"),
+        }
     }
 }
