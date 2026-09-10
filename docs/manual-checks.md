@@ -111,6 +111,60 @@ one step in Xcode to choose the team.
 
 Nothing more to do here.
 
+---
+
+## Task 4: the designed screens
+
+**Open.** Added 11 September 2026. The Mac app took its designed screens
+and the engine gained what they read. Nothing below has run on a real
+phone yet. Build both apps as in task 3, pair, and then check each part.
+
+### Part A: presence and the menu bar
+
+1. The Ferry icon sits in the menu bar. Click it. It should say whether
+   the phone can find this Mac, and the switch should match the one at the
+   bottom of the Devices sidebar.
+2. Turn the switch off. Within a few seconds the phone's device list
+   should show the Mac as not reachable. Turn it back on.
+
+### Part B: shared folders
+
+1. Open Settings. It should list Desktop and Downloads as shared, and say
+   pulled files land in `~/Downloads/Ferry`.
+2. On the phone, open the Mac. The first listing should show exactly two
+   folders, Desktop and Downloads.
+3. Add a folder in Settings. Without restarting anything, list the Mac
+   from the phone again. The new folder should appear.
+4. Remove it again. The last folder cannot be removed; the button should
+   be disabled when one is left.
+
+### Part C: a folder copy
+
+1. On the Mac, open the phone, go into `DCIM`, and click Copy to Mac on the
+   `Camera` folder.
+2. The Transfers section should show one row, "Camera", counting files up
+   and bytes up, with a speed. The files should land in
+   `~/Downloads/Ferry/Camera/` with their names kept.
+3. Pull the cable or turn Wi-Fi off half way. The row should pause, then
+   resume on the other transport, and end Done with every file present.
+4. Quit the Mac app half way through a copy and open it again. The row
+   should still show the same batch, with the files already done still
+   counted.
+
+### Part D: the access log
+
+1. On the phone's device screen on the Mac, scroll to the access log. After
+   parts B and C it should show, grouped by day, that the phone listed the
+   Mac's folders, and that this Mac read the Camera folder with a file
+   count.
+2. On the phone, open a file the Mac shares. The Mac's log should gain a
+   "read" line for it within a second.
+
+### What to send back
+
+For each part, one line: worked, or what you saw instead. Paste the exact
+words from any error block.
+
 ## Sending results back
 
 You do not need to write anything neat. Copy and paste is fine. Paste text
