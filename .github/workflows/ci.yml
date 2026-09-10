@@ -37,3 +37,23 @@ jobs:
 
       - name: Test
         run: cargo test --all --all-features
+
+      # A plain run catches a feature gate that hides a compile error.
+      - name: Test without optional features
+        run: cargo test --all
+
+  advisories:
+    name: dependency advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Ferry depends on snow, blake3, zeroize and getrandom for work that has
+      # to be correct. A known advisory in any of them should fail the build.
+      - name: Check advisories
+        run: cargo audit --deny warnings

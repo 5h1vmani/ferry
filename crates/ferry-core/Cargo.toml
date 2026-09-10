@@ -8,6 +8,11 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Exposes MemoryFs, the reference filesystem. It is a test double, so it stays
+# out of the normal build and out of the published API surface.
+testing = []
+
 [lints]
 workspace = true
 
@@ -18,3 +23,5 @@ snow = "0.10"
 zeroize = "1"
 
 [dev-dependencies]
+proptest = "1"
+
