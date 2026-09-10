@@ -742,10 +742,11 @@ impl Engine {
     /// Every transfer, as the app shows them.
     #[must_use]
     pub fn transfers(&self) -> Vec<TransferInfo> {
+        let chunk_size = *lock(&self.shared.chunk_size);
         lock(&self.shared.state)
             .transfers
             .values()
-            .map(TransferRow::info)
+            .map(|row| row.info(chunk_size))
             .collect()
     }
 

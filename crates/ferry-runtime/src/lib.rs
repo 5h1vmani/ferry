@@ -324,6 +324,10 @@ pub struct TransferInfo {
     /// Bytes per second, measured over this transfer's own bytes across the
     /// last two seconds. `None` unless the state is `Active`.
     pub speed_bytes_per_sec: Option<u64>,
+    /// The chunk count of the file, known once the size is.
+    pub chunks_total: u32,
+    /// How many chunks have a verified hash so far.
+    pub chunks_verified: u32,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

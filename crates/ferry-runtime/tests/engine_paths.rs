@@ -799,6 +799,10 @@ fn stop_stops_serving_a_connected_peer() {
 // ---------------------------------------------------------------------------
 
 #[test]
+// One long, linear narrative is the point of this test: a transfer cut
+// short, restarted, and checked at each stage. Splitting it into smaller
+// functions would hide that it is one path, not several.
+#[allow(clippy::too_many_lines)]
 fn an_interrupted_first_pass_resumes_after_a_restart() {
     let side = build("Vamana");
     let peer = start_peer(&side.key, sample_bytes(mib(8)));
@@ -870,6 +874,14 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
         Direction::Pull,
         "a restarted transfer is still a pull"
     );
+    // Item 7: 8 MiB at a 1 MiB chunk size is 8 chunks, and 2 MiB verified in
+    // place is exactly 2 whole chunks, so both numbers land on an exact
+    // count rather than needing to round.
+    assert_eq!(found.chunks_total, 8, "8 MiB at 1 MiB chunks is 8 chunks");
+    assert_eq!(
+        found.chunks_verified, 2,
+        "2 MiB verified in place is 2 whole chunks"
+    );
 
     // The peer is reachable again, so the transfer finishes on its own.
     engine.offer_candidate(peer.addr);
@@ -900,6 +912,10 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     assert!(
         ended >= done.started_unix_secs,
         "the end time is not before the start time"
+    );
+    assert_eq!(
+        done.chunks_verified, done.chunks_total,
+        "every chunk is verified once the transfer is Done"
     );
 
     engine.stop();

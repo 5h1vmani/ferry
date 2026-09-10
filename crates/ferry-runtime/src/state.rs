@@ -11,6 +11,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ferry_core::chunk::ChunkSize;
 use ferry_core::noise::PublicKey;
 use ferry_core::path::RemotePath;
 use ferry_core::peers::PeerStore;
@@ -250,9 +251,29 @@ pub(crate) struct TransferRow {
     pub(crate) speed_bytes_per_sec: Option<u64>,
 }
 
+/// The chunk count a size implies, and how many of those chunks are
+/// verified, given how many bytes are verified in place.
+///
+/// Nothing new is stored for this. Both numbers come from `bytes_total`,
+/// `bytes_done`, and the chunk size this run uses.
+fn chunk_counts(bytes_total: u64, bytes_done: u64, chunk_size: ChunkSize) -> (u32, u32) {
+    let total = u32::try_from(bytes_total.div_ceil(chunk_size.as_u64())).unwrap_or(u32::MAX);
+    let verified = if bytes_total > 0 && bytes_done >= bytes_total {
+        total
+    } else {
+        u32::try_from(bytes_done / chunk_size.as_u64()).unwrap_or(u32::MAX)
+    };
+    (total, verified)
+}
+
 impl TransferRow {
     /// The view of this row that crosses the boundary.
-    pub(crate) fn info(&self) -> crate::TransferInfo {
+    ///
+    /// `chunk_size` is this run's chunk size, needed to derive the chunk
+    /// counts. See [`chunk_counts`].
+    pub(crate) fn info(&self, chunk_size: ChunkSize) -> crate::TransferInfo {
+        let (chunks_total, chunks_verified) =
+            chunk_counts(self.bytes_total, self.bytes_done, chunk_size);
         crate::TransferInfo {
             id: self.id.clone(),
             device_key_hex: self.device_key_hex.clone(),
@@ -268,6 +289,8 @@ impl TransferRow {
             speed_bytes_per_sec: (self.state == TransferState::Active)
                 .then_some(self.speed_bytes_per_sec)
                 .flatten(),
+            chunks_total,
+            chunks_verified,
         }
     }
 }
