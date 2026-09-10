@@ -29,6 +29,11 @@ network. It works well.
 LocalSend does not let you browse the phone inside Finder. Nothing does. That
 is the gap this project fills, and it is the headline feature.
 
+The gap is not abstract. On 10 September 2026 the tool in daily use here,
+Android File Transfer over USB, showed a warning that its support for Apple
+silicon is ending. Google discontinued it in 2024 and it is now stopping
+altogether. That is the transfer this project has to replace first.
+
 The second feature is a USB path. USB is not faster than good Wi-Fi. USB is
 more reliable. It works when the network blocks device discovery, when you are
 on guest Wi-Fi, and when the router is bad. See section 3.
@@ -47,7 +52,7 @@ reliability feature. It works on networks where discovery fails.
 | USB with an adb tunnel | User must enable USB debugging once | Build. Developer transport and fallback. Reuses the TCP code. |
 | USB with Android Open Accessory | Plug in, accept a prompt on the phone | Build, but see the note below. |
 | USB with MTP | Plug in | Skip. This is what everyone else does badly. |
-| USB tethering | Turn tethering on | Test first. See open question 4. |
+| USB tethering | Turn tethering on | Tested. No. This phone runs Android 12, which tethers over RNDIS, and macOS has no RNDIS driver. |
 | Phone local-only hotspot | Mac drops its Wi-Fi and loses internet | Defer. Fallback when the LAN blocks discovery. |
 | Wi-Fi Direct or AWDL | Not applicable | Cannot build. macOS exposes no public API. |
 | Bluetooth Low Energy | None | Cut. mDNS covers the network case. USB covers the cable case. |
@@ -65,11 +70,11 @@ personal one. Writing a libusb driver and handling accessory mode is the
 hardest systems work in this project, and that is the reason to do it. The plan
 should not pretend otherwise.
 
-If the tethering test in open question 4 passes, reconsider both USB paths.
-
-USB tethering was previously ruled out here on the grounds that Android
-defaults to RNDIS, which macOS does not support. That claim may be out of date.
-Open question 4 settles it in five minutes.
+USB tethering was tested on 10 September 2026 and does not work with this
+phone. The phone is a Pixel 3 XL on Android 12, and Android 12 tethers over
+RNDIS, which macOS cannot drive. Newer Android versions tether over NCM, which
+macOS can drive, so this may work on a newer phone. It does not matter here,
+because this is the phone the app is for.
 
 ## 4. Architecture
 
@@ -146,6 +151,17 @@ resumes the same session from the manifest.
 The app never migrates a live stream between transports. That is a hard
 problem and it buys nothing here. Resuming a session gives the user the same
 result for a small fraction of the work.
+
+### Target devices
+
+The phone is a Google Pixel 3 XL on Android 12, and Android 12 is the last
+version it will ever run. The Mac runs macOS 26.6.2 on Apple silicon.
+
+The Android app targets the current Android version and sets its minimum to
+Android 12, which is API level 31. Nothing in this plan needs a newer API.
+Open Accessory, network service discovery, all files access, and foreground
+services all exist on Android 12. So building for current Android costs this
+phone nothing, and a newer phone gains nothing it cannot already do.
 
 ### Technology
 
@@ -224,7 +240,7 @@ yet decided, so these are working weeks, not calendar weeks.
 | 0 | Spike. File Provider hello world, WebDAV mount test, Apple entitlement check. | 3 to 5 days | Low |
 | 1 | Rust core: file operations layer, frame codec, Noise with commit-and-reveal pairing, key storage, BLAKE3 chunking, session manifest, resume, per-connection limits. Loopback transport, property tests, and fuzzing. TCP and mDNS. Both apps, including the Android platform work. Push and pull. adb tunnel as a developer transport. | 7 to 9 weeks | Medium |
 | 2 | Finder mount over a WebDAV bridge, on top of the file operations layer. | 2 to 4 weeks | Medium |
-| 3 | USB reliability. Route decided by the tethering test in section 8. | 0 to 5 weeks | Medium |
+| 3 | USB reliability. adb tunnel first, then Android Open Accessory. | 3 to 5 weeks | Medium |
 | 4 | Optional. File Provider extension, which needs the Apple entitlement question answered. Whole-file deduplication. Hotspot fallback. | Undecided | High |
 
 Phase 2 is the headline feature. It moved ahead of USB for two reasons. It is
@@ -251,9 +267,8 @@ pairing with commit and reveal, key storage on both platforms, unpairing,
 three more file operations, the per-connection limits, resume, and the Android
 platform work. Each item is small. Together they are two weeks.
 
-Phase 3 has no fixed size until the tethering test runs. If Android tethering
-presents a usable network interface to the Mac, the USB transport is the
-existing TCP transport over that interface, and most of phase 3 disappears.
+Phase 3 is real work. The tethering shortcut was tested and does not apply to
+this phone.
 
 ## 7. Cost
 
@@ -307,12 +322,9 @@ read 10 September 2026.
 3. Can Finder's thumbnail fetches be suppressed? Still open. Two media files
    caused ten content requests, so this matters at scale. This is an entry
    condition for phase 2.
-4. Does USB tethering present a usable network interface to the Mac? The plan
-   says Android defaults to RNDIS, which macOS does not support. Newer Android
-   versions may use NCM, which macOS does support. Five minutes settle it. Plug
-   the phone in, turn on USB tethering, and look for a new interface with an
-   address in `ifconfig`. If it works, most of phase 3 disappears. Note that
-   tethering routes the Mac's internet through the phone.
+4. Does USB tethering present a usable network interface to the Mac? Answered
+   on 10 September 2026. No. The phone is a Pixel 3 XL on Android 12, which
+   tethers over RNDIS, and macOS has no driver for it. Phase 3 stays.
 5. Does mDNS need a `MulticastLock` on Android and a local network permission
    on macOS 26? Confirm during phase 1.
 
@@ -393,7 +405,5 @@ is later compromised is authenticated and hostile at the same time.
 
 ## 12. Next actions
 
-1. Run the USB tethering test. Five minutes, and it may remove most of phase 3.
-2. Sign an Apple ID into Xcode. That answers open question 1, and it also gives
-   a stable signing certificate, which phase 1 needs for Keychain storage.
-3. Start phase 1.
+1. Confirm the Xcode account is a personal team. One minute.
+2. Start phase 1.

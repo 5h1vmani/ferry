@@ -1,9 +1,7 @@
 # Checks that need a person at the keyboard
 
-One question blocks part of this project, and one is a quick confirmation.
-
-Task 1 needs a cable plugged in. It is the one that matters, and it may remove
-weeks of work. Task 2 is now a one minute check.
+Both questions that needed a person are now settled or nearly so. Task 1 is
+answered and recorded below. Task 2 is a one minute confirmation.
 
 A third task about FSKit used to sit here. It is answered and removed. Public
 bug reports run to June 2026 and no source confirms a fix, so the Finder mount
@@ -16,62 +14,14 @@ send me" list at the end of every task.
 
 ## Task 1: does USB tethering give the Mac a network connection?
 
-**Time: about 5 minutes.**
+**Answered on 10 September 2026. No.**
 
-**Why this matters.** The plan says building the USB path takes three to five
-weeks. If the phone can already give the Mac a network connection over the
-cable, most of those weeks disappear.
+The phone is a Pixel 3 XL on Android 12. Android 12 tethers over RNDIS, and
+macOS has no RNDIS driver, so no network port appears. Newer Android versions
+tether over NCM, which macOS can drive, so a newer phone might pass. This is
+the phone the app is for, so the plan builds the USB path properly.
 
-**Status: not answered yet.** The first attempt showed no change at all. That is
-the same result you get when tethering never actually switched on, so it does
-not tell us which happened. The steps below separate the two cases.
-
-**One warning.** While tethering is on, your Mac's internet goes through the
-phone's mobile data. Turn it off when you finish.
-
-### Steps
-
-**1.** Plug the phone into the Mac. Use a cable you know moves data, not a
-charge-only one. On the phone, allow any prompt about trusting the computer,
-and pick the option about **File transfer** or **Data** rather than **Charging
-only**.
-
-**2.** On the phone, open **Settings** and search for **Tethering**. On most
-Android phones it sits under **Network and internet**, then **Hotspot and
-tethering**. Turn on **USB tethering**.
-
-Note what happens to that switch. There are three cases and all three matter:
-
-- It turns on and stays on.
-- It is greyed out and will not turn on.
-- It turns on and then switches itself off after a second.
-
-**3.** Wait ten seconds. Then run this on the Mac.
-
-```bash
-echo "=== 1. USB devices the Mac can see ==="; system_profiler SPUSBDataType -json 2>/dev/null | grep -i '"_name"' | sed 's/.*: //' | sort -u; echo; echo "=== 2. Network ports ==="; networksetup -listallhardwareports; echo "=== 3. Interfaces holding an address ==="; ifconfig | grep -E "^[a-z0-9]+:|inet " | grep -B1 "inet " | grep -v "^--"
-```
-
-**4.** Turn USB tethering off on the phone when you are done.
-
-### What to send me
-
-- Which of the three cases happened at step 2.
-- The whole output of the command in step 3.
-- The make and model of the phone.
-
-### What the answer means
-
-Section 1 of the output tells us whether the Mac sees the phone at all. If the
-phone is not listed there, the cable or the USB mode is the problem, and
-nothing else in the test can work.
-
-Section 2 lists network ports by a readable name. A tethered phone usually
-appears here even when `ifconfig -l` looks unchanged.
-
-If the phone appears in section 1 but no new port appears in section 2, then
-tethering genuinely does not present a network connection, and the plan stays
-as it is. That is a real answer and a useful one.
+Nothing more to do here.
 
 ## Task 2: confirm which Apple team you have
 
