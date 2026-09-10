@@ -305,10 +305,6 @@ calls `pull_folder`. This is the one screen change outside the design.
 Without it the engine feature has no caller. A failed batch row shows the
 error and a retry control, the same as a failed single transfer.
 
-**Still open in this item:** `transport`, `error`, and `retry_batch`.
-They were added after the batch D audit found a failed batch rendered
-with no reason and no retry.
-
 ## Batch E: the access log
 
 ### 13. The access log: built

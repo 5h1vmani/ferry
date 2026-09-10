@@ -386,9 +386,9 @@ pub enum Origin {
 ///
 /// `docs/engine-contract.md`, batch D, item 2. Only what does not change
 /// once the batch is made is stored on disk. Every other field here —
-/// `files_done`, the byte counts, `state`, `speed_bytes_per_sec`, and
-/// `ended_unix_secs` — is computed fresh from the transfers named on the
-/// batch, every time the app asks.
+/// `files_done`, the byte counts, `state`, `speed_bytes_per_sec`,
+/// `ended_unix_secs`, `transport`, and `error` — is computed fresh from the
+/// transfers named on the batch, every time the app asks.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct BatchInfo {
     /// Stable for the life of the batch, across restarts.
@@ -421,6 +421,12 @@ pub struct BatchInfo {
     /// this the same way it clears that one transfer's own end time. A
     /// batch with no files carries `started_unix_secs` here.
     pub ended_unix_secs: Option<i64>,
+    /// The transport of any transfer in this batch that is `Active`.
+    /// `None` while none are.
+    pub transport: Option<Transport>,
+    /// The error of the first `Failed` transfer in this batch, in id order.
+    /// `None` unless `state` is `Failed`.
+    pub error: Option<FerryError>,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

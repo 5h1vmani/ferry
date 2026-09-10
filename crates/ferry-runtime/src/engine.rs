@@ -26,8 +26,8 @@ use zeroize::Zeroize;
 use crate::access::{self, AccessLog, EntryFields, RollUp};
 use crate::batch::{self, BatchRecord};
 use crate::errors::{
-    bad_config, failed, from_chunk_size, from_noise, from_op, from_path, from_peer, from_roots,
-    from_rpc, from_tcp,
+    bad_config, failed, failed_with, from_chunk_size, from_noise, from_op, from_path, from_peer,
+    from_roots, from_rpc, from_tcp,
 };
 use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAware};
@@ -1451,6 +1451,47 @@ impl Engine {
         }
         notify(&self.shared, Change::Transfers);
         transfer::spawn(&self.shared, &transfer_id);
+        Ok(())
+    }
+
+    /// Retry every `Failed` transfer in a batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::TransferNotFound`, with the batch id as detail,
+    /// when no batch has that identifier. Otherwise behaves as calling
+    /// [`Engine::retry`] on each of the batch's `Failed` transfers in turn:
+    /// each one that is not paired any more is dropped rather than retried,
+    /// and that device's `Runtime::NotPaired` is not itself an error here.
+    pub fn retry_batch(&self, batch_id: String) -> Result<(), FerryError> {
+        let ids: Vec<String> = {
+            let state = lock(&self.shared.state);
+            let batch = state
+                .batches
+                .get(&batch_id)
+                .ok_or_else(|| failed_with("Runtime::TransferNotFound", &batch_id))?;
+            batch
+                .transfer_ids
+                .iter()
+                .filter(|id| {
+                    state
+                        .transfers
+                        .get(id.as_str())
+                        .is_some_and(|row| row.state == TransferState::Failed)
+                })
+                .cloned()
+                .collect()
+        };
+        for id in ids {
+            match self.retry(id) {
+                Ok(()) => {}
+                // `retry` itself already dropped the transfer and its
+                // record; the whole batch retry is not a failure because
+                // one device in it was forgotten mid-retry.
+                Err(FerryError::Failed { code, .. }) if code == "Runtime::NotPaired" => {}
+                Err(other) => return Err(other),
+            }
+        }
         Ok(())
     }
 }

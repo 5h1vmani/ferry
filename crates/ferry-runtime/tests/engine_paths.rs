@@ -1882,6 +1882,64 @@ fn a_batch_whose_transfers_all_finished_is_dropped_and_its_file_deleted_at_load(
 }
 
 // ---------------------------------------------------------------------------
+// Item 2 additions, I1: a batch reports its transport and error, and
+// retry_batch retries every failed transfer in it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_failed_batch_reports_its_error_and_retry_batch_requeues_it() {
+    let side = build("Vamana");
+
+    let unknown = side
+        .engine
+        .retry_batch("no-such-batch".to_owned())
+        .expect_err("an unknown batch id cannot be retried");
+    assert_eq!(code_of_error(&unknown), "Runtime::TransferNotFound");
+
+    let peer = start_peer_with(&side.key, Arc::new(AlwaysMissingFs));
+    pair_with_peer(&side, &peer);
+
+    let batch_id = side
+        .engine
+        .pull_folder(key_hex(&peer.key), "Camera".to_owned())
+        .expect("the folder copy is accepted; its one file fails once fetched");
+
+    let engine = Arc::clone(&side.engine);
+    let wanted = batch_id.clone();
+    poll_until("the batch to fail", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted && b.state == TransferState::Failed)
+    });
+    let failed_batch = side
+        .engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the failed batch is listed");
+    assert!(
+        failed_batch.error.is_some(),
+        "a Failed batch reports the failing transfer's error"
+    );
+
+    side.engine
+        .retry_batch(batch_id.clone())
+        .expect("a batch with a failed transfer can be retried");
+
+    let engine = Arc::clone(&side.engine);
+    let wanted = batch_id.clone();
+    poll_until("retry_batch to requeue the failed transfer", move || {
+        engine.transfers().iter().any(|t| {
+            t.batch_id.as_deref() == Some(wanted.as_str()) && t.state == TransferState::Queued
+        })
+    });
+
+    side.engine.stop();
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 7: no callback after stop returned.
 // ---------------------------------------------------------------------------
 

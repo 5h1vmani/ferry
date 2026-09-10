@@ -407,6 +407,19 @@ impl BatchRow {
                 .max()
                 .or(Some(self.started_unix_secs))
         };
+        // Item 1's additions: the transport of any row that is Active, and
+        // the first Failed row's error, in id order rather than queued
+        // order, so which one is reported does not depend on how the batch
+        // happened to be built.
+        let transport = rows
+            .iter()
+            .find(|row| row.state == TransferState::Active)
+            .and_then(|row| row.transport);
+        let error = rows
+            .iter()
+            .filter(|row| row.state == TransferState::Failed)
+            .min_by_key(|row| &row.id)
+            .and_then(|row| row.error.clone());
         crate::BatchInfo {
             id: self.id.clone(),
             device_key_hex: self.device_key_hex.clone(),
@@ -421,6 +434,8 @@ impl BatchRow {
             speed_bytes_per_sec,
             started_unix_secs: self.started_unix_secs,
             ended_unix_secs,
+            transport,
+            error,
         }
     }
 }
