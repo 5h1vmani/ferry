@@ -260,6 +260,10 @@ fn assert_expires_about_two_minutes_out(expires_unix_secs: i64) {
     );
 }
 
+fn is_waiting(state: &PairingState) -> bool {
+    matches!(state, PairingState::Waiting { .. })
+}
+
 fn is_code(state: &PairingState) -> bool {
     matches!(state, PairingState::Code { .. })
 }
@@ -292,6 +296,19 @@ fn two_engines_pair_and_move_a_file() {
     phone.engine.set_reachable(true);
     phone.engine.start_pairing();
     mac.engine.start_pairing();
+
+    // Item 10: every pairing state that has a deadline states it, including
+    // Waiting, the state a side that is not looking for anyone starts in.
+    let waiting = phone
+        .inbox
+        .wait_pairing("the phone to wait for pairing", is_waiting);
+    let PairingState::Waiting {
+        expires_unix_secs: waiting_expires,
+    } = waiting
+    else {
+        panic!("expected Waiting, got {waiting:?}");
+    };
+    assert_expires_about_two_minutes_out(waiting_expires);
 
     let phone_addr = loopback_addr(&phone);
     mac.engine.offer_candidate(phone_addr);
@@ -842,6 +859,53 @@ fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
         after.into_iter().map(|e| e.name).collect::<Vec<_>>(),
         vec!["Renamed".to_owned()],
         "the already-open connection sees the new root without reconnecting"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// Batch B and C audit, C6: `set_roots` refuses a bad set, and the roots it
+/// already had keep serving.
+#[test]
+fn a_bad_set_roots_call_is_refused_and_the_old_roots_keep_serving() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let phone_key = pair(&mac, &phone);
+
+    let outer = tempfile::tempdir().expect("a temporary folder for the outer root");
+    let inner_path = outer.path().join("inner");
+    std::fs::create_dir(&inner_path).expect("a nested folder for the inner root");
+
+    let error = phone
+        .engine
+        .set_roots(vec![
+            Root {
+                name: "Outer".to_owned(),
+                path: outer.path().to_string_lossy().into_owned(),
+                writable: true,
+            },
+            Root {
+                name: "Inner".to_owned(),
+                path: inner_path.to_string_lossy().into_owned(),
+                writable: true,
+            },
+        ])
+        .expect_err("a root nested inside another root should be refused");
+    assert_eq!(
+        code_of_error(&error),
+        "RootsError::RootOverlaps",
+        "the RootsError code crosses the boundary"
+    );
+
+    let entries = mac
+        .engine
+        .list(phone_key, String::new())
+        .expect("the old roots should still serve");
+    assert_eq!(
+        entries.into_iter().map(|e| e.name).collect::<Vec<_>>(),
+        vec!["Root".to_owned()],
+        "a refused set_roots call leaves the previous roots serving"
     );
 
     mac.engine.stop();

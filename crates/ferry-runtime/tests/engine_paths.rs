@@ -864,6 +864,108 @@ fn set_download_dir_before_start_is_where_the_next_pull_lands() {
 }
 
 // ---------------------------------------------------------------------------
+// Batch B and C audit, C6: a retried transfer clears its end time.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn retry_clears_the_transfers_end_time() {
+    let side = build("Vamana");
+    let peer = start_peer(&side.key, sample_bytes(16));
+    pair_with_peer(&side, &peer);
+
+    // `ScriptedFs::stat` answers `NotFound` for anything but "big.bin", so
+    // this fails at once, the peer having refused the very first call.
+    let id = side
+        .engine
+        .pull(
+            key_hex(&peer.key),
+            "missing.bin".to_owned(),
+            "missing.bin".to_owned(),
+        )
+        .expect("the pull is accepted; the peer refuses it once dialled");
+    wait_transfer(&side, &id, "the pull to fail", |t| {
+        t.state == TransferState::Failed
+    });
+    let failed = side
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the failed transfer is listed");
+    assert!(
+        failed.ended_unix_secs.is_some(),
+        "a failed transfer has an end time"
+    );
+
+    side.engine
+        .retry(id.clone())
+        .expect("a failed transfer can be retried");
+    // Caught the moment retry has cleared the row and requeued it, before
+    // the same refusal fails it again.
+    wait_transfer(&side, &id, "retry to clear the end time", |t| {
+        t.state == TransferState::Queued && t.ended_unix_secs.is_none()
+    });
+
+    side.engine.stop();
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
+// Batch B and C audit, C6: a version 1 peer file assumes this device's
+// opposite kind.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_phone_loading_a_version_1_peer_file_assumes_each_peer_is_a_mac() {
+    let data = tempfile::tempdir().expect("a temporary folder for engine files");
+    let shared_root = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
+    let key = generate_key().expect("a fresh key pair");
+    let peer_key = generate_key().expect("a fresh key pair for the stored peer");
+
+    // A version 1 peer file, written by hand in the format `PeerStore`
+    // wrote before item 11 added a kind byte per peer: version, count, then
+    // each peer's key, name, and paired time, with no kind byte at all.
+    let mut e = ferry_core::wire::Encoder::new();
+    e.u8(1);
+    e.u32(1);
+    e.fixed(public_key(&peer_key).as_bytes());
+    e.text("An old Mac");
+    e.u64(u64::from_ne_bytes(1_700_000_000i64.to_ne_bytes()));
+    std::fs::write(data.path().join("peers.bin"), e.finish())
+        .expect("the hand-built version 1 peer file should write");
+
+    let inbox = Arc::new(Inbox::default());
+    let engine = Engine::new(
+        Config {
+            data_dir: data.path().to_string_lossy().into_owned(),
+            shared_roots: vec![Root {
+                name: "Root".to_owned(),
+                path: shared_root.path().to_string_lossy().into_owned(),
+                writable: true,
+            }],
+            download_dir: download.path().to_string_lossy().into_owned(),
+            display_name: "Pixel 3 XL".to_owned(),
+            listen_port: 0,
+            key,
+            kind: RuntimeDeviceKind::Phone,
+        },
+        Box::new(Recorder {
+            inbox: Arc::clone(&inbox),
+        }),
+    )
+    .expect("a version 1 peer file should still load");
+
+    let devices = engine.devices();
+    assert_eq!(devices.len(), 1, "the stored peer should load");
+    assert_eq!(
+        devices[0].kind,
+        RuntimeDeviceKind::Mac,
+        "a version 1 file predates the kind byte; a phone assumes every peer in it is a Mac"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Finding 1: stop during a transfer.
 // ---------------------------------------------------------------------------
 
