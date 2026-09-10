@@ -54,6 +54,7 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello};
 use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress};
 use ferry_core::tcp;
 
+use crate::access::{self, EntryFields};
 use crate::engine::{Shared, dial_targets, mark_reachable, notify, remove_record};
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
 use crate::guard::{Cut, StopAware};
@@ -381,12 +382,70 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     }
     notify(shared, Change::Transfers);
 
+    // Past this point the attempt may read from the peer, so it now has a
+    // connection worth the access log's attention. `bytes_before` is this
+    // transfer's own running total, which every read past here only ever
+    // advances (`Reporter::moved`), so the delta after the attempt is
+    // exactly what this attempt itself received (docs/engine-contract.md,
+    // item 13).
+    let connection = shared.next_connection_id();
+    let bytes_before = bytes_done_of(shared, id);
+
     let mut client = Client::new(stream);
     let record = match load_or_build(shared, id, &plan, fs.as_ref(), &mut client) {
         Ok(record) => record,
-        Err(outcome) => return outcome,
+        Err(outcome) => {
+            record_attempt_read(shared, id, &plan, connection, bytes_before);
+            return outcome;
+        }
     };
-    verify_and_land(shared, id, &plan, fs.as_ref(), &mut client, &record)
+    let outcome = verify_and_land(shared, id, &plan, fs.as_ref(), &mut client, &record);
+    record_attempt_read(shared, id, &plan, connection, bytes_before);
+    outcome
+}
+
+/// This transfer's own `bytes_done`, right now.
+fn bytes_done_of(shared: &Arc<Shared>, id: &str) -> u64 {
+    lock(&shared.state)
+        .transfers
+        .get(id)
+        .map_or(0, |row| row.bytes_done)
+}
+
+/// Record what this attempt received from the peer, as actor `This`, and
+/// end the roll-up's connection for it. Skips logging when nothing was
+/// received: a dial that never reached the file layer, or one that failed
+/// before a byte arrived, has nothing to report.
+fn record_attempt_read(
+    shared: &Arc<Shared>,
+    id: &str,
+    plan: &Plan,
+    connection: u64,
+    bytes_before: u64,
+) {
+    let received = bytes_done_of(shared, id).saturating_sub(bytes_before);
+    if received == 0 {
+        return;
+    }
+    let now = now_unix_secs();
+    let mut log = lock(&shared.access_log);
+    let Some(rollup) = log.as_mut() else {
+        return;
+    };
+    rollup.touch(
+        now,
+        connection,
+        EntryFields {
+            device_key_hex: plan.device_key_hex.clone(),
+            actor: access::Actor::This,
+            verb: access::AccessVerb::Read,
+            path: plan.source.as_str().to_owned(),
+            bytes: Some(received),
+            entries: None,
+            files: None,
+        },
+    );
+    rollup.connection_ended(now, connection);
 }
 
 /// Find a way to reach the device, best path first.

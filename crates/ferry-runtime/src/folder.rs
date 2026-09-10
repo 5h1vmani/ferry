@@ -38,11 +38,14 @@ pub(crate) enum ListRecursiveError {
 }
 
 /// List `root` and every folder under it, and return every file found, as a
-/// path from `fs`'s own root, in the order the walk visited them.
+/// path from `fs`'s own root paired with its size, in the order the walk
+/// visited them.
 ///
 /// Each folder is paged with `fs.list`'s own cursor, the same way
 /// `Engine::list` pages one folder. A subfolder is walked as soon as it is
-/// seen, before the folder that holds it finishes paging.
+/// seen, before the folder that holds it finishes paging. The size travels
+/// with the path so `pull_folder` can log its access log entry without a
+/// second round trip (docs/engine-contract.md, item 13).
 ///
 /// # Errors
 ///
@@ -52,7 +55,7 @@ pub(crate) enum ListRecursiveError {
 pub(crate) fn list_recursive(
     fs: &dyn FileOps,
     root: &RemotePath,
-) -> Result<Vec<RemotePath>, ListRecursiveError> {
+) -> Result<Vec<(RemotePath, u64)>, ListRecursiveError> {
     let mut out = Vec::new();
     walk(fs, root, 1, &mut out)?;
     Ok(out)
@@ -62,7 +65,7 @@ fn walk(
     fs: &dyn FileOps,
     dir: &RemotePath,
     depth: u32,
-    out: &mut Vec<RemotePath>,
+    out: &mut Vec<(RemotePath, u64)>,
 ) -> Result<(), ListRecursiveError> {
     if depth > MAX_FOLDER_DEPTH {
         return Err(ListRecursiveError::TooLarge);
@@ -74,7 +77,7 @@ fn walk(
             let child = join(dir, &entry.name)?;
             match entry.kind {
                 FileKind::File => {
-                    out.push(child);
+                    out.push((child, entry.size));
                     if out.len() > MAX_FOLDER_FILES {
                         return Err(ListRecursiveError::TooLarge);
                     }
@@ -198,7 +201,7 @@ mod tests {
         fs.insert_file("Camera/sub/c.jpg", b"c".to_vec());
 
         let files = list_recursive(&fs, &path("Camera")).expect("within bounds");
-        let names: Vec<String> = files.iter().map(|p| p.as_str().to_owned()).collect();
+        let names: Vec<String> = files.iter().map(|(p, _)| p.as_str().to_owned()).collect();
         assert_eq!(
             names,
             vec![
@@ -207,6 +210,12 @@ mod tests {
                 "Camera/sub/c.jpg".to_owned(),
             ],
             "every file is found, each with its full path from the fs root"
+        );
+        let sizes: Vec<u64> = files.iter().map(|(_, size)| *size).collect();
+        assert_eq!(
+            sizes,
+            vec![1, 1, 1],
+            "each file's size travels with its path"
         );
     }
 

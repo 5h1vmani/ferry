@@ -292,6 +292,7 @@ impl EngineListener for Recorder {
     fn pairing_changed(&self, state: PairingState) {
         self.inbox.pairing(state);
     }
+    fn access_log_changed(&self) {}
 }
 
 /// The one engine under test, and the folders it owns.

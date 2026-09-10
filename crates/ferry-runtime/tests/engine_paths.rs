@@ -39,8 +39,8 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
-    Config, DeviceKind as RuntimeDeviceKind, Direction, Engine, EngineListener, FerryError,
-    KeyPair, PairingState, Root, TransferState, generate_key,
+    AccessVerb, Config, DeviceKind as RuntimeDeviceKind, Direction, Engine, EngineListener,
+    FerryError, KeyPair, PairingState, Root, TransferState, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -146,6 +146,10 @@ impl EngineListener for Recorder {
 
     fn pairing_changed(&self, state: PairingState) {
         self.inbox.pairing(state);
+    }
+
+    fn access_log_changed(&self) {
+        self.inbox.tick();
     }
 }
 
@@ -1521,4 +1525,93 @@ fn a_device_that_is_not_reachable_refuses_a_new_connection() {
     );
     assert!(accepted.is_ok(), "it accepts again once it is reachable");
     phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Batch E, item 13: the access log.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_day_file_older_than_30_days_is_pruned_at_start() {
+    let data = tempfile::tempdir().expect("a temporary folder for engine files");
+    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
+    let access_log_dir = data.path().join("access_log");
+    std::fs::create_dir_all(&access_log_dir).expect("the access log folder should be makeable");
+    // 2020 is always more than 30 days before whenever this test runs.
+    let old_day = access_log_dir.join("20200101");
+    std::fs::write(&old_day, []).expect("a day file should write");
+
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        generate_key().expect("a fresh key pair"),
+        data.path(),
+        shared.path(),
+        download.path(),
+        &inbox,
+    )
+    .expect("the engine should build");
+    engine.start().expect("the engine should start");
+
+    assert!(
+        !old_day.exists(),
+        "a day file over 30 days old must be pruned at start"
+    );
+    engine.stop();
+}
+
+#[test]
+fn access_log_entries_survive_a_restart() {
+    let side = build("Vamana");
+    let peer = start_peer(&side.key, sample_bytes(16));
+    pair_with_peer(&side, &peer);
+
+    let id = pull_big(&side, &peer, "big.bin");
+    wait_transfer(&side, &id, "the pull to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    let before = side.engine.access_log(None, 10);
+    let before_read = before
+        .iter()
+        .find(|e| e.verb == AccessVerb::Read && e.path == "big.bin")
+        .expect("the pull should log a Read entry before the restart")
+        .clone();
+
+    side.engine.stop();
+    peer.close();
+
+    // A new engine on the same folder, as if the app had been restarted.
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        side.key.clone(),
+        side.data.path(),
+        side.shared.path(),
+        side.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+    engine.start().expect("the engine should start");
+
+    let after = engine.access_log(None, 10);
+    let after_read = after
+        .iter()
+        .find(|e| e.id == before_read.id)
+        .expect("the same entry should still be there after the restart");
+    assert_eq!(
+        after_read.bytes, before_read.bytes,
+        "the byte count survives the restart"
+    );
+    assert_eq!(
+        after_read.at_unix_secs, before_read.at_unix_secs,
+        "the time survives the restart"
+    );
+    assert_eq!(
+        after_read.device_key_hex, before_read.device_key_hex,
+        "the device survives the restart"
+    );
+
+    engine.stop();
 }

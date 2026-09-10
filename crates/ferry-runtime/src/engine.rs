@@ -23,13 +23,14 @@ use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
 use zeroize::Zeroize;
 
+use crate::access::{self, AccessLog, EntryFields, RollUp};
 use crate::batch::{self, BatchRecord};
 use crate::errors::{
     bad_config, failed, from_chunk_size, from_noise, from_op, from_path, from_peer, from_roots,
     from_rpc, from_tcp,
 };
 use crate::folder::{self, ListRecursiveError, RemoteLister};
-use crate::guard::{GuardedFs, RootsHandle, RootsState, StopAware};
+use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAware};
 use crate::notify::{Change, Notify};
 use crate::record::{Record, read_record};
 use crate::state::{
@@ -38,9 +39,9 @@ use crate::state::{
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
-    BatchInfo, Config, DeviceInfo, DeviceKind, Direction, EngineListener, Entry, EntryKind,
-    FerryError, KeyPair, Origin, PairingCandidate, PairingState, Root, Status, TransferInfo,
-    TransferState, Transport,
+    AccessEntry, AccessVerb, Actor, BatchInfo, Config, DeviceInfo, DeviceKind, Direction,
+    EngineListener, Entry, EntryKind, FerryError, KeyPair, Origin, PairingCandidate, PairingState,
+    Root, Status, TransferInfo, TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -57,6 +58,15 @@ const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often the engine asks `adb` which devices are plugged in.
 const ADB_POLL: Duration = Duration::from_secs(3);
+
+/// How often the access log roll-up is ticked, so an idle entry is
+/// finalised within this long of going quiet, and the listener is told
+/// within this long of that. Matches `notify.rs`'s own `HOLD`.
+const ACCESS_LOG_TICK: Duration = Duration::from_millis(250);
+
+/// How often the access log is pruned of day files past its retention
+/// window, after the pass `start` already ran.
+const ACCESS_LOG_PRUNE: Duration = Duration::from_secs(3600);
 
 /// How long the discovery loop waits for one mDNS event before looking at
 /// the stop flag again.
@@ -113,6 +123,103 @@ impl From<CoreDeviceKind> for DeviceKind {
     }
 }
 
+impl From<access::AccessVerb> for AccessVerb {
+    fn from(verb: access::AccessVerb) -> Self {
+        match verb {
+            access::AccessVerb::List => Self::List,
+            access::AccessVerb::Stat => Self::Stat,
+            access::AccessVerb::Read => Self::Read,
+            access::AccessVerb::Write => Self::Write,
+            access::AccessVerb::Truncate => Self::Truncate,
+            access::AccessVerb::Rename => Self::Rename,
+            access::AccessVerb::Mkdir => Self::Mkdir,
+            access::AccessVerb::Delete => Self::Delete,
+        }
+    }
+}
+
+impl From<access::Actor> for Actor {
+    fn from(actor: access::Actor) -> Self {
+        match actor {
+            access::Actor::Peer => Self::Peer,
+            access::Actor::This => Self::This,
+        }
+    }
+}
+
+/// The sum of every listed file's size, saturating rather than overflowing.
+fn total_listed_bytes(found: &[(RemotePath, u64)]) -> u64 {
+    found
+        .iter()
+        .fold(0u64, |total, (_, size)| total.saturating_add(*size))
+}
+
+/// Build one `TransferRow`, still without a batch id, for each file
+/// `list_recursive` found under a `pull_folder` call.
+///
+/// Every row is built before anything touches state, so a failure part way
+/// through — only `SessionId::generate` starving of randomness can cause
+/// one — leaves nothing behind, matching `pull_folder`'s "creates nothing"
+/// rule on error.
+fn rows_for_folder(
+    found_files: &[(RemotePath, u64)],
+    device_key_hex: &str,
+    leaf: &str,
+    prefix: &str,
+    started_unix_secs: i64,
+) -> Result<Vec<TransferRow>, FerryError> {
+    let mut rows = Vec::with_capacity(found_files.len());
+    for (full_path, _size) in found_files {
+        let relative = full_path
+            .as_str()
+            .strip_prefix(prefix)
+            .unwrap_or(full_path.as_str());
+        let destination = RemotePath::parse(&format!("{leaf}/{relative}")).map_err(from_path)?;
+        let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
+        let id = format!("{device_key_hex}-{session}");
+        let file_name = leaf_of(&destination);
+        rows.push(TransferRow {
+            id,
+            device_key_hex: device_key_hex.to_owned(),
+            file_name,
+            source: full_path.clone(),
+            destination,
+            bytes_total: 0,
+            bytes_done: 0,
+            state: TransferState::Queued,
+            transport: None,
+            error: None,
+            source_size: None,
+            source_mtime: None,
+            running: false,
+            attempt_after: None,
+            backoff: BACKOFF_MIN,
+            started_unix_secs,
+            ended_unix_secs: None,
+            direction: Direction::Pull,
+            speed_bytes_per_sec: None,
+            // Filled in by the caller, once the batch id exists.
+            batch_id: None,
+        });
+    }
+    Ok(rows)
+}
+
+/// One access log entry, from the store's own type to the boundary's.
+fn access_entry_from_core(entry: access::Entry) -> AccessEntry {
+    AccessEntry {
+        id: entry.id,
+        device_key_hex: entry.device_key_hex,
+        actor: entry.actor.into(),
+        verb: entry.verb.into(),
+        path: entry.path,
+        bytes: entry.bytes,
+        entries: entry.entries,
+        files: entry.files,
+        at_unix_secs: entry.at_unix_secs,
+    }
+}
+
 /// Everything the engine's threads share.
 pub(crate) struct Shared {
     /// Where change notifications go, while the engine is running.
@@ -123,6 +230,9 @@ pub(crate) struct Shared {
     pub(crate) display_name: String,
     /// What kind of device this is. Sent in `hello`.
     pub(crate) kind: CoreDeviceKind,
+    /// Where this engine keeps its own files. Read once, by `start`, which
+    /// opens the access log under it.
+    pub(crate) data_dir: PathBuf,
     /// Where transfer records live.
     pub(crate) transfers_dir: PathBuf,
     /// Where batch records live.
@@ -188,6 +298,15 @@ pub(crate) struct Shared {
     pub(crate) peers_write: Mutex<()>,
     /// The claim on the data folder, held for as long as the engine is.
     pub(crate) dir_lock: DirLock,
+    /// The access log's roll-up, open once `start` has run and dropped
+    /// again by `stop`. Held behind a mutex that is never kept locked
+    /// across I/O on a connection thread for longer than one `touch`
+    /// (docs/engine-contract.md, item 13).
+    pub(crate) access_log: AccessLogHandle,
+    /// The next connection id handed to a served connection's `GuardedFs`,
+    /// or to a calling-side operation's own roll-up entry. One counter for
+    /// both sides, so two connections open at once never share an id.
+    pub(crate) next_connection: AtomicU64,
 }
 
 impl Shared {
@@ -230,6 +349,11 @@ impl Shared {
     /// Where one batch's record is stored.
     pub(crate) fn batch_path(&self, id: &str) -> PathBuf {
         self.batches_dir.join(id)
+    }
+
+    /// A connection id no other open connection is using right now.
+    pub(crate) fn next_connection_id(&self) -> u64 {
+        self.next_connection.fetch_add(1, Ordering::SeqCst)
     }
 
     /// Report a pairing state to the app and remember it.
@@ -372,6 +496,46 @@ fn notify_timer(shared: &Arc<Shared>) {
     }
 }
 
+/// Record one finished operation on the calling side, as actor `This`, and
+/// finalise it at once.
+///
+/// Unlike a served connection, which stays open across many operations, a
+/// calling-side operation such as `list` or one transfer attempt owns its
+/// connection for exactly one round of work. So every call here gets a
+/// fresh connection id and ends it in the same breath, the way
+/// `pull_folder` finalises its own listing (docs/engine-contract.md, item
+/// 13, "Rolling up").
+fn record_this(
+    shared: &Arc<Shared>,
+    device_key_hex: &str,
+    verb: access::AccessVerb,
+    path: &str,
+    bytes: Option<u64>,
+    entries: Option<u32>,
+    files: Option<u32>,
+) {
+    let connection = shared.next_connection_id();
+    let now = now_unix_secs();
+    let mut log = lock(&shared.access_log);
+    let Some(rollup) = log.as_mut() else {
+        return;
+    };
+    rollup.touch(
+        now,
+        connection,
+        EntryFields {
+            device_key_hex: device_key_hex.to_owned(),
+            actor: access::Actor::This,
+            verb,
+            path: path.to_owned(),
+            bytes,
+            entries,
+            files,
+        },
+    );
+    rollup.connection_ended(now, connection);
+}
+
 /// Change the paired device list and write it out.
 ///
 /// The state lock is not held across the write, because writing calls
@@ -484,6 +648,7 @@ impl Engine {
             key,
             display_name: config.display_name.clone(),
             kind,
+            data_dir,
             transfers_dir,
             batches_dir,
             listen_port: config.listen_port,
@@ -505,6 +670,8 @@ impl Engine {
             wire_bytes: Arc::new(AtomicU64::new(0)),
             peers_write: Mutex::new(()),
             dir_lock,
+            access_log: Arc::new(Mutex::new(None)),
+            next_connection: AtomicU64::new(0),
         });
 
         load_saved_transfers(&shared);
@@ -542,6 +709,15 @@ impl Engine {
             .map_err(|_| bad_config("The download folder could not be made."))?;
         let download_fs = LocalFs::open(&self.shared.download_dir_config)
             .map_err(|_| bad_config("The download folder could not be opened."))?;
+
+        // docs/engine-contract.md, item 13: opened at start, pruned of
+        // anything past its retention window right away, and dropped at
+        // stop.
+        let access_log = AccessLog::open(&self.shared.data_dir)
+            .map_err(|_| bad_config("The access log folder could not be opened."))?;
+        let mut access_log = RollUp::new(access_log);
+        drop(access_log.prune(now_unix_secs()));
+        *lock(&self.shared.access_log) = Some(access_log);
         let addr = SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::UNSPECIFIED,
             self.shared.listen_port,
@@ -576,6 +752,12 @@ impl Engine {
             self.shared
                 .keep(std::thread::spawn(move || adb_loop(&shared)));
         }
+
+        // Unlike `adb_loop`, this runs on every build: pruning and the
+        // access log's idle rule do not depend on `adb` being present.
+        let shared = Arc::clone(&self.shared);
+        self.shared
+            .keep(std::thread::spawn(move || access_log_loop(&shared)));
 
         transfer::resume_all(&self.shared);
         Ok(())
@@ -613,6 +795,7 @@ impl Engine {
         }
         *lock(&self.shared.roots) = None;
         *lock(&self.shared.download_fs) = None;
+        *lock(&self.shared.access_log) = None;
 
         // The accept loop is blocked inside `accept`. A connection to our own
         // port is the only way to bring it back, since the listener has no
@@ -929,6 +1112,22 @@ impl Engine {
             .collect()
     }
 
+    /// The access log, newest first. `None` for `device_key_hex` returns
+    /// every device's. `limit` is capped at 1,000. Empty before `start` has
+    /// opened the store.
+    ///
+    /// `docs/engine-contract.md`, batch E, item 13.
+    #[must_use]
+    pub fn access_log(&self, device_key_hex: Option<String>, limit: u32) -> Vec<AccessEntry> {
+        lock(&self.shared.access_log)
+            .as_ref()
+            .map(|rollup| rollup.store().query(device_key_hex.as_deref(), limit))
+            .unwrap_or_default()
+            .into_iter()
+            .map(access_entry_from_core)
+            .collect()
+    }
+
     /// Fetch one file from a paired device into the shared root.
     ///
     /// Returns the transfer identifier. The work runs on its own thread and
@@ -1065,46 +1264,27 @@ impl Engine {
         let prefix = format!("{}/", source.as_str());
         let started_unix_secs = now_unix_secs();
 
-        // Every row is built before anything touches state, so a failure
-        // part way through — only `SessionId::generate` starving of
-        // randomness can cause one — leaves nothing behind, matching
-        // "creates nothing" for the bounds above.
-        let mut rows: Vec<TransferRow> = Vec::with_capacity(found_files.len());
-        for full_path in &found_files {
-            let relative = full_path
-                .as_str()
-                .strip_prefix(&prefix)
-                .unwrap_or(full_path.as_str());
-            let destination =
-                RemotePath::parse(&format!("{leaf}/{relative}")).map_err(from_path)?;
-            let session =
-                SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
-            let id = format!("{device_key_hex}-{session}");
-            let file_name = leaf_of(&destination);
-            rows.push(TransferRow {
-                id,
-                device_key_hex: device_key_hex.clone(),
-                file_name,
-                source: full_path.clone(),
-                destination,
-                bytes_total: 0,
-                bytes_done: 0,
-                state: TransferState::Queued,
-                transport: None,
-                error: None,
-                source_size: None,
-                source_mtime: None,
-                running: false,
-                attempt_after: None,
-                backoff: BACKOFF_MIN,
-                started_unix_secs,
-                ended_unix_secs: None,
-                direction: Direction::Pull,
-                speed_bytes_per_sec: None,
-                // Filled in below, once the batch id exists.
-                batch_id: None,
-            });
-        }
+        // docs/engine-contract.md, item 13: one Read entry for the whole
+        // listing, with the file count and the byte total the listing
+        // itself already reported, before a single byte of any file has
+        // moved.
+        record_this(
+            &self.shared,
+            &device_key_hex,
+            access::AccessVerb::Read,
+            source.as_str(),
+            Some(total_listed_bytes(&found_files)),
+            None,
+            Some(u32::try_from(found_files.len()).unwrap_or(u32::MAX)),
+        );
+
+        let mut rows = rows_for_folder(
+            &found_files,
+            &device_key_hex,
+            &leaf,
+            &prefix,
+            started_unix_secs,
+        )?;
 
         let batch_session =
             SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
@@ -1194,6 +1374,15 @@ impl Engine {
             };
             cursor = next_cursor;
         }
+        record_this(
+            &self.shared,
+            &device_key_hex,
+            access::AccessVerb::List,
+            path.as_str(),
+            None,
+            Some(u32::try_from(entries.len()).unwrap_or(u32::MAX)),
+            None,
+        );
         Ok(entries)
     }
 
@@ -2017,10 +2206,23 @@ fn serve_named_stream(
     }
     // `GuardedFs` holds this handle, not a snapshot, so a `set_roots` call
     // reaches this connection on its very next operation.
-    let guarded = GuardedFs::new(Arc::clone(&shared.roots), Arc::clone(allowed));
+    let connection = shared.next_connection_id();
+    let guarded = GuardedFs::new(
+        Arc::clone(&shared.roots),
+        Arc::clone(allowed),
+        Arc::clone(&shared.access_log),
+        connection,
+        key_hex.clone(),
+    );
     // A connection that ends is the ordinary outcome. The error, if any, has
     // nowhere useful to go: the person did not ask for this connection.
     drop(serve(&mut stream, &guarded));
+
+    // docs/engine-contract.md, item 13: a served connection ending is what
+    // finalises whatever it was still in the middle of.
+    if let Some(rollup) = lock(&shared.access_log).as_mut() {
+        rollup.connection_ended(now_unix_secs(), connection);
+    }
 
     release_serving(shared, &key_hex, allowed);
     notify(shared, Change::Devices);
@@ -2121,6 +2323,39 @@ fn add_candidate(shared: &Arc<Shared>, shown: &PairingCandidate, addr: SocketAdd
         );
     }
     notify(shared, Change::Found);
+}
+
+/// Finalise idle access log entries and prune old day files, for the whole
+/// session `start` runs.
+///
+/// One loop does both jobs, so pruning needs no periodic thread of its
+/// own: it already has to wake every [`ACCESS_LOG_TICK`] to give the
+/// roll-up's five second idle rule somewhere to run, which is the same
+/// cadence `notify.rs` reports on, and an hourly job can ride along on top
+/// of that (docs/engine-contract.md, item 13).
+fn access_log_loop(shared: &Arc<Shared>) {
+    let mut next_prune = Instant::now() + ACCESS_LOG_PRUNE;
+    loop {
+        let changed = {
+            let mut log = lock(&shared.access_log);
+            log.as_mut().is_some_and(|rollup| {
+                rollup.tick(now_unix_secs());
+                rollup.take_changed()
+            })
+        };
+        if changed {
+            notify(shared, Change::AccessLog);
+        }
+        if Instant::now() >= next_prune {
+            if let Some(rollup) = lock(&shared.access_log).as_mut() {
+                drop(rollup.prune(now_unix_secs()));
+            }
+            next_prune = Instant::now() + ACCESS_LOG_PRUNE;
+        }
+        if !shared.rest(ACCESS_LOG_TICK) {
+            return;
+        }
+    }
 }
 
 /// Ask `adb` what is plugged in, every three seconds.

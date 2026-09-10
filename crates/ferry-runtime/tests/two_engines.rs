@@ -39,8 +39,8 @@ use ferry_core::peers::DeviceKind as CoreDeviceKind;
 use ferry_core::rpc::{Client, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
-    Config, DeviceKind, Engine, EngineListener, KeyPair, PairingState, Root, TransferState,
-    generate_key,
+    AccessVerb, Actor, Config, DeviceKind, Engine, EngineListener, KeyPair, PairingState, Root,
+    TransferState, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -56,6 +56,9 @@ struct Notes {
     pairings: Vec<PairingState>,
     /// How many times anything changed. It only has to move.
     ticks: u64,
+    /// How many times `access_log_changed` fired, counted apart from
+    /// `ticks` so a test can tell that call apart from the others.
+    access_log_ticks: u64,
 }
 
 /// Collects callbacks and lets the test wait for one.
@@ -74,6 +77,11 @@ impl Inbox {
 
     fn tick(&self) {
         self.lock().ticks += 1;
+        self.ready.notify_all();
+    }
+
+    fn access_log_tick(&self) {
+        self.lock().access_log_ticks += 1;
         self.ready.notify_all();
     }
 
@@ -138,6 +146,10 @@ impl EngineListener for Recorder {
 
     fn pairing_changed(&self, state: PairingState) {
         self.inbox.pairing(state);
+    }
+
+    fn access_log_changed(&self) {
+        self.inbox.access_log_tick();
     }
 }
 
@@ -640,6 +652,112 @@ fn pull_folder_groups_its_transfers_into_one_batch() {
         Some(empty_batch.started_unix_secs),
         "a batch with zero files ends when it starts"
     );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Item 13: the access log records what each side did.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, batch E, item 13, end to end: a listing and a
+/// pull each leave a `Peer` entry on the served side and a matching `This`
+/// entry on the calling side, the device filter narrows to one device, and
+/// `access_log_changed` fires on both engines.
+#[test]
+fn access_log_records_a_listing_and_a_pull_on_both_sides() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("Photos"))
+        .expect("the phone's shared folder should accept a new folder");
+    let bytes = sample_bytes();
+    std::fs::write(phone.shared_root.join("Photos/holiday.bin"), &bytes)
+        .expect("the phone's shared folder should accept a file");
+
+    let entries = mac
+        .engine
+        .list(phone_key.clone(), "Root/Photos".to_owned())
+        .expect("the folder should list");
+    assert_eq!(entries.len(), 1, "one file sits under Photos");
+
+    let id = mac
+        .engine
+        .pull(
+            phone_key.clone(),
+            "Root/Photos/holiday.bin".to_owned(),
+            "holiday.bin".to_owned(),
+        )
+        .expect("the pull should be accepted");
+    let engine = Arc::clone(&mac.engine);
+    let wanted_id = id.clone();
+    mac.inbox.wait_until("the transfer to finish", move || {
+        engine
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted_id && t.state == TransferState::Done)
+    });
+
+    // The calling side ("This"): both calls finalise their own entry at
+    // once, so nothing here needs to wait.
+    let mac_log = mac.engine.access_log(None, 100);
+    let this_list = mac_log
+        .iter()
+        .find(|e| e.actor == Actor::This && e.verb == AccessVerb::List)
+        .expect("the calling side should record its own listing");
+    assert_eq!(this_list.path, "Root/Photos");
+    assert_eq!(this_list.entries, Some(1));
+
+    let this_read = mac_log
+        .iter()
+        .find(|e| e.actor == Actor::This && e.verb == AccessVerb::Read)
+        .expect("the calling side should record its own pull");
+    assert_eq!(this_read.path, "Root/Photos/holiday.bin");
+    assert_eq!(this_read.bytes, Some(bytes.len() as u64));
+
+    assert!(
+        mac.inbox.lock().access_log_ticks > 0,
+        "access_log_changed should have fired on the calling side"
+    );
+
+    // The served side ("Peer"): the entries finalise once the served
+    // connection ends, which happens on the phone's own serving thread, so
+    // this polls instead of assuming it has already happened.
+    let phone_engine = Arc::clone(&phone.engine);
+    phone
+        .inbox
+        .wait_until("the phone to record what it served", move || {
+            let log = phone_engine.access_log(None, 100);
+            log.iter()
+                .any(|e| e.actor == Actor::Peer && e.verb == AccessVerb::List)
+                && log
+                    .iter()
+                    .any(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+        });
+    let phone_log = phone.engine.access_log(None, 100);
+    let peer_list = phone_log
+        .iter()
+        .find(|e| e.actor == Actor::Peer && e.verb == AccessVerb::List)
+        .expect("the served side should record the listing");
+    assert_eq!(peer_list.entries, Some(1));
+    let peer_read = phone_log
+        .iter()
+        .find(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+        .expect("the served side should record the read");
+    assert_eq!(peer_read.bytes, Some(bytes.len() as u64));
+
+    assert!(
+        phone.inbox.lock().access_log_ticks > 0,
+        "access_log_changed should have fired on the served side"
+    );
+
+    // The device filter: an unrelated key hex sees nothing, the real one
+    // sees what was just recorded.
+    let stranger = "ff".repeat(32);
+    assert!(mac.engine.access_log(Some(stranger), 100).is_empty());
+    assert!(!mac.engine.access_log(Some(phone_key), 100).is_empty());
 
     mac.engine.stop();
     phone.engine.stop();

@@ -513,6 +513,68 @@ pub enum FerryError {
     },
 }
 
+/// One kind of file operation the access log records.
+///
+/// `docs/engine-contract.md`, batch E, item 13. `set_mtime` has no member
+/// here: it is never logged, because it always follows a write that already
+/// is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum AccessVerb {
+    /// A folder listing. One entry covers every page of it.
+    List,
+    /// A single file or folder's metadata.
+    Stat,
+    /// Bytes read from a file.
+    Read,
+    /// Bytes written to a file.
+    Write,
+    /// A file shortened or extended to a given length.
+    Truncate,
+    /// A file or folder renamed.
+    Rename,
+    /// A folder created.
+    Mkdir,
+    /// A file or folder removed.
+    Delete,
+}
+
+/// Who performed an access log entry's operation.
+///
+/// `docs/engine-contract.md`, batch E, item 13.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Actor {
+    /// The peer, on this device's files.
+    Peer,
+    /// This device, on the peer's files.
+    This,
+}
+
+/// One access log entry, as [`Engine::access_log`] returns it.
+///
+/// `docs/engine-contract.md`, batch E, item 13.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AccessEntry {
+    /// `"<day>-<sequence>"`. Stable across restarts.
+    pub id: String,
+    /// The paired device this entry is about, as 64 lowercase hex
+    /// characters.
+    pub device_key_hex: String,
+    /// Who performed the operation.
+    pub actor: Actor,
+    /// Which kind of operation.
+    pub verb: AccessVerb,
+    /// Root-relative, beginning with the root name: `"Desktop/Q3 notes.md"`.
+    pub path: String,
+    /// Bytes moved, for a read or a write.
+    pub bytes: Option<u64>,
+    /// For a list, how many entries were returned.
+    pub entries: Option<u32>,
+    /// For a folder copy, how many files it covered.
+    pub files: Option<u32>,
+    /// When the operation this entry describes first happened.
+    pub at_unix_secs: i64,
+}
+
 /// How the engine tells the app something changed.
 ///
 /// Every method is called from an engine thread, never from the thread the
@@ -526,4 +588,7 @@ pub trait EngineListener: Send + Sync {
     fn transfers_changed(&self);
     /// Pairing moved to a new state.
     fn pairing_changed(&self, state: PairingState);
+    /// An access log entry became final. At most once every 250
+    /// milliseconds. The app then calls [`Engine::access_log`].
+    fn access_log_changed(&self);
 }

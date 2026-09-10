@@ -16,7 +16,8 @@ use ferry_core::path::RemotePath;
 use ferry_core::roots::Roots;
 use ferry_core::rpc::FileOps;
 
-use crate::state::lock;
+use crate::access::{AccessVerb, Actor, EntryFields, RollUp};
+use crate::state::{lock, now_unix_secs};
 
 /// The served roots, and the spec list [`crate::Engine::roots`] last
 /// reported.
@@ -44,6 +45,10 @@ pub(crate) struct RootsState {
 /// next operation on every open connection sees it at once.
 pub(crate) type RootsHandle = Arc<Mutex<Option<RootsState>>>;
 
+/// The access log's roll-up, shared by every served connection. `None`
+/// before `start` has opened it, and again after `stop` has dropped it.
+pub(crate) type AccessLogHandle = Arc<Mutex<Option<RollUp>>>;
+
 /// The served roots, given to one connection, with an off switch.
 ///
 /// A connection that is already serving cannot be closed from outside. The
@@ -51,15 +56,38 @@ pub(crate) type RootsHandle = Arc<Mutex<Option<RootsState>>>;
 /// it. So `forget` flips the switch instead. The socket stays open until the
 /// peer goes away or the idle timeout fires, but every operation on it is
 /// refused from the moment the switch goes off.
+///
+/// Every successful operation but `set_mtime` also records itself in the
+/// access log, as actor `Peer` (docs/engine-contract.md, item 13): `list`
+/// with the page's entry count, `read` with the bytes returned, `write`
+/// with the bytes written, and the rest with no amount.
 pub(crate) struct GuardedFs {
     roots: RootsHandle,
     allowed: Arc<AtomicBool>,
+    access_log: AccessLogHandle,
+    /// This connection's own id in the access log roll-up, learned once,
+    /// when the connection starts serving.
+    connection: u64,
+    /// The peer's key, as 64 lowercase hex characters.
+    device_key_hex: String,
 }
 
 impl GuardedFs {
     /// Wrap the served roots for one connection.
-    pub(crate) fn new(roots: RootsHandle, allowed: Arc<AtomicBool>) -> Self {
-        Self { roots, allowed }
+    pub(crate) fn new(
+        roots: RootsHandle,
+        allowed: Arc<AtomicBool>,
+        access_log: AccessLogHandle,
+        connection: u64,
+        device_key_hex: String,
+    ) -> Self {
+        Self {
+            roots,
+            allowed,
+            access_log,
+            connection,
+            device_key_hex,
+        }
     }
 
     /// The roots to use for this call, read fresh: an error once this
@@ -73,31 +101,87 @@ impl GuardedFs {
             .map(|state| Arc::clone(&state.opened))
             .ok_or(OpError::PermissionDenied)
     }
+
+    /// Record one successful operation, as actor `Peer`. Never called for
+    /// `set_mtime`, which always follows a write that already is.
+    fn record(&self, verb: AccessVerb, path: &str, bytes: Option<u64>, entries: Option<u32>) {
+        let mut log = lock(&self.access_log);
+        let Some(rollup) = log.as_mut() else {
+            return;
+        };
+        rollup.touch(
+            now_unix_secs(),
+            self.connection,
+            EntryFields {
+                device_key_hex: self.device_key_hex.clone(),
+                actor: Actor::Peer,
+                verb,
+                path: path.to_owned(),
+                bytes,
+                entries,
+                files: None,
+            },
+        );
+    }
 }
 
 impl FileOps for GuardedFs {
     fn list(&self, path: &RemotePath, cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
-        self.current()?.list(path, cursor)
+        let result = self.current()?.list(path, cursor);
+        if let Ok((entries, _)) = &result {
+            let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
+            self.record(AccessVerb::List, path.as_str(), None, Some(count));
+        }
+        result
     }
 
     fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
-        self.current()?.stat(path)
+        let result = self.current()?.stat(path);
+        if result.is_ok() {
+            self.record(AccessVerb::Stat, path.as_str(), None, None);
+        }
+        result
     }
 
     fn read(&self, path: &RemotePath, offset: u64, length: u32) -> Result<Vec<u8>, OpError> {
-        self.current()?.read(path, offset, length)
+        let result = self.current()?.read(path, offset, length);
+        if let Ok(bytes) = &result {
+            let count = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            self.record(AccessVerb::Read, path.as_str(), Some(count), None);
+        }
+        result
     }
 
     fn write(&self, path: &RemotePath, offset: u64, bytes: &[u8]) -> Result<u32, OpError> {
-        self.current()?.write(path, offset, bytes)
+        let result = self.current()?.write(path, offset, bytes);
+        if let Ok(written) = &result {
+            self.record(
+                AccessVerb::Write,
+                path.as_str(),
+                Some(u64::from(*written)),
+                None,
+            );
+        }
+        result
     }
 
     fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), OpError> {
-        self.current()?.truncate(path, length)
+        let result = self.current()?.truncate(path, length);
+        if result.is_ok() {
+            self.record(AccessVerb::Truncate, path.as_str(), None, None);
+        }
+        result
     }
 
     fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), OpError> {
-        self.current()?.rename(from, to)
+        let result = self.current()?.rename(from, to);
+        if result.is_ok() {
+            // The destination, not the source: a person searching the log
+            // months later looks for where a file ended up, not where it
+            // used to be.
+            self.record(AccessVerb::Rename, to.as_str(), None, None);
+        }
+        result
     }
 
     fn set_mtime(&self, path: &RemotePath, modified_unix_secs: i64) -> Result<(), OpError> {
@@ -105,11 +189,19 @@ impl FileOps for GuardedFs {
     }
 
     fn mkdir(&self, path: &RemotePath) -> Result<(), OpError> {
-        self.current()?.mkdir(path)
+        let result = self.current()?.mkdir(path);
+        if result.is_ok() {
+            self.record(AccessVerb::Mkdir, path.as_str(), None, None);
+        }
+        result
     }
 
     fn delete(&self, path: &RemotePath) -> Result<(), OpError> {
-        self.current()?.delete(path)
+        let result = self.current()?.delete(path);
+        if result.is_ok() {
+            self.record(AccessVerb::Delete, path.as_str(), None, None);
+        }
+        result
     }
 }
 

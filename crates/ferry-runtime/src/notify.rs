@@ -34,6 +34,9 @@ pub(crate) enum Change {
     Transfers,
     /// The pairing candidate list.
     Found,
+    /// An access log entry became final. Job 9, `docs/engine-contract.md`
+    /// item 13.
+    AccessLog,
 }
 
 /// One kind of change, and when it may next be reported.
@@ -90,6 +93,7 @@ struct Outbox {
     devices: Slot,
     transfers: Slot,
     found: Slot,
+    access_log: Slot,
     /// True while a thread is waiting to report what is held back.
     timer: bool,
 }
@@ -100,12 +104,18 @@ impl Outbox {
             Change::Devices => &mut self.devices,
             Change::Transfers => &mut self.transfers,
             Change::Found => &mut self.found,
+            Change::AccessLog => &mut self.access_log,
         }
     }
 }
 
 /// Which kinds may be reported now.
+///
+/// One bool per [`Change`] variant, not a state machine: every kind can be
+/// independently due at once, so a flag each is the direct shape rather
+/// than an enumeration of every combination.
 #[derive(Debug, Clone, Copy, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Due {
     /// The device list changed.
     pub(crate) devices: bool,
@@ -113,12 +123,14 @@ pub(crate) struct Due {
     pub(crate) transfers: bool,
     /// The pairing candidate list changed.
     pub(crate) found: bool,
+    /// An access log entry became final.
+    pub(crate) access_log: bool,
 }
 
 impl Due {
     /// True when there is nothing to report.
     pub(crate) fn is_empty(self) -> bool {
-        !self.devices && !self.transfers && !self.found
+        !self.devices && !self.transfers && !self.found && !self.access_log
     }
 }
 
@@ -138,6 +150,7 @@ impl Notify {
                 devices: Slot::new(HOLD),
                 transfers: Slot::new(HOLD),
                 found: Slot::new(HOLD_FOUND),
+                access_log: Slot::new(HOLD),
                 timer: false,
             }),
         }
@@ -177,6 +190,7 @@ impl Notify {
             devices: outbox.devices.take(now, force),
             transfers: outbox.transfers.take(now, force),
             found: outbox.found.take(now, force),
+            access_log: outbox.access_log.take(now, force),
         }
     }
 
@@ -192,6 +206,9 @@ impl Notify {
         if due.transfers {
             listener.transfers_changed();
         }
+        if due.access_log {
+            listener.access_log_changed();
+        }
     }
 
     /// How long until the next kind may be reported.
@@ -202,10 +219,15 @@ impl Notify {
     pub(crate) fn next_turn(&self) -> Option<Duration> {
         let now = Instant::now();
         let mut outbox = lock(&self.outbox);
-        let soonest = [&outbox.devices, &outbox.transfers, &outbox.found]
-            .into_iter()
-            .filter_map(|slot| slot.left(now))
-            .min();
+        let soonest = [
+            &outbox.devices,
+            &outbox.transfers,
+            &outbox.found,
+            &outbox.access_log,
+        ]
+        .into_iter()
+        .filter_map(|slot| slot.left(now))
+        .min();
         if soonest.is_none() {
             outbox.timer = false;
         }
@@ -217,9 +239,14 @@ impl Notify {
     pub(crate) fn claim_timer(&self) -> bool {
         let now = Instant::now();
         let mut outbox = lock(&self.outbox);
-        let waiting = [&outbox.devices, &outbox.transfers, &outbox.found]
-            .into_iter()
-            .any(|slot| slot.left(now).is_some());
+        let waiting = [
+            &outbox.devices,
+            &outbox.transfers,
+            &outbox.found,
+            &outbox.access_log,
+        ]
+        .into_iter()
+        .any(|slot| slot.left(now).is_some());
         if !waiting || outbox.timer {
             return false;
         }
@@ -254,6 +281,10 @@ mod tests {
         }
 
         fn pairing_changed(&self, _state: PairingState) {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn access_log_changed(&self) {
             self.calls.fetch_add(1, Ordering::SeqCst);
         }
     }

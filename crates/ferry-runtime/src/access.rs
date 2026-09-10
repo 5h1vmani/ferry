@@ -39,16 +39,15 @@
 //! on it, or the connection ends. `set_mtime` is never logged, because it
 //! always follows a write that already is.
 //!
-//! # Not wired in yet
+//! # Where it is wired in
 //!
-//! Nothing outside this module calls into it, by design: batch E builds the
-//! store on its own, and a later batch adds the calls in `guard.rs` and
-//! `engine.rs` plus the `uniffi` records on the boundary. Until then every
-//! public item here is unused from the rest of the crate, which is exactly
-//! what `dead_code` warns about, so it is silenced here rather than earned
-//! with a fake caller. Remove this line in the batch that wires the module
-//! in.
-#![allow(dead_code)]
+//! `engine.rs` opens the store at `start` from `data_dir`, holds the
+//! [`RollUp`] behind a mutex, and drops it at `stop`. `guard.rs` calls
+//! [`RollUp::touch`] as actor [`Actor::Peer`] for a served connection, and
+//! `engine.rs` and `transfer.rs` call it as actor [`Actor::This`] for `list`,
+//! a transfer attempt's reads, and `pull_folder`. The boundary's
+//! `AccessEntry`, `AccessVerb`, and `Actor` in `lib.rs` are built from the
+//! plain types here in one place, in `engine.rs`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -707,6 +706,17 @@ impl RollUp {
     #[must_use]
     pub(crate) fn store(&self) -> &AccessLog {
         &self.store
+    }
+
+    /// Delete day files older than the retention window, from the store this
+    /// roll-up writes to. See [`AccessLog::prune`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AccessLogError::Io`] when a file that should be removed
+    /// cannot be.
+    pub(crate) fn prune(&mut self, now: i64) -> Result<(), AccessLogError> {
+        self.store.prune(now)
     }
 
     /// Record one operation on `connection`.
