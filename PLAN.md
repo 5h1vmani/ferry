@@ -399,14 +399,18 @@ Done, 10 September 2026:
   a static library and keeps its key in the Keychain. The phone packages the
   runtime as a shared library, keeps its key in private storage, runs a
   foreground service while reachable, and asks for all files access on first
-  run. The Mac browses the phone's shared storage and pulls a file. Neither
-  app has run on a device yet.
+  run. The Mac browses the phone's shared storage and pulls a file.
+- First run on real devices, 10 September 2026: the phone app installed,
+  the Mac app paired with the Pixel over Wi-Fi, copied a photo, and kept
+  working over the cable with Wi-Fi off. Two fixes came out of it: where the
+  Mac app looks for `adb`, and signing the Mac app with the owner's team so
+  the Keychain and the network prompts remember it. See
+  `docs/manual-checks.md` task 3.
 
 Not done, in order:
 
-1. Run it for real: a Mac and the Pixel, over Wi-Fi, then over the cable.
-   `docs/manual-checks.md` task 3 is the script. The outcome metrics in
-   `docs/jobs.md` are the acceptance criteria. Fix what the run finds.
+1. Use it for a week. The outcome metrics in `docs/jobs.md` are the
+   acceptance criteria, and only ordinary use shows whether they hold.
 2. Phase 2 work the runtime recorded as limits: a responder that tries each
    stored key against the first KK message instead of guessing; a manifest
    request so the first pass of a pull verifies too; a way for `stop` to

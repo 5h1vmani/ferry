@@ -102,6 +102,15 @@ For each part, one line: worked, or what you saw instead. Paste the exact
 words from any error block. If a step does not match what you see, stop
 there and describe the screen in words.
 
+**Answered on 10 September 2026.** All five parts worked. Two things were
+fixed on the way. The Mac app looked for `adb` in Homebrew's bin folder,
+where it is not; it now looks in every known place. And the app was signed
+ad hoc, so every rebuild was a new app to the Keychain and asked for the
+login password; it is now signed with the owner's Apple team, which needed
+one step in Xcode to choose the team.
+
+Nothing more to do here.
+
 ## Sending results back
 
 You do not need to write anything neat. Copy and paste is fine. Paste text
