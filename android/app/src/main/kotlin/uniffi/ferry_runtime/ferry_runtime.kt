@@ -727,7 +727,13 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_retry(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_roots(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_set_download_dir(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_reachable(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_set_roots(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_short_code(
     ): Int
@@ -790,7 +796,13 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_retry(`ptr`: Long,`transferId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_roots(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_set_download_dir(`ptr`: Long,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_reachable(`ptr`: Long,`on`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_set_roots(`ptr`: Long,`roots`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_short_code(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -959,7 +971,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_retry() and 0xFFFF) != 46891) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_roots() and 0xFFFF) != 9755) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_download_dir() and 0xFFFF) != 37682) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_reachable() and 0xFFFF) != 6511) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_roots() and 0xFFFF) != 12930) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_short_code() and 0xFFFF) != 63413) {
@@ -980,7 +1001,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_transfers() and 0xFFFF) != 21287) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_constructor_engine_new() and 0xFFFF) != 30291) {
+    if ((lib.uniffi_ferry_runtime_checksum_constructor_engine_new() and 0xFFFF) != 65534) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_enginelistener_devices_changed() and 0xFFFF) != 48471) {
@@ -1572,12 +1593,45 @@ public interface EngineInterface {
     fun `retry`(`transferId`: kotlin.String)
     
     /**
+     * The roots currently served, as last set by `new` or `set_roots`.
+     */
+    fun `roots`(): List<Root>
+    
+    /**
+     * Change where a pulled file lands.
+     *
+     * Creates the folder if it does not exist. The app is responsible for
+     * persisting `path` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::BadConfig` when the folder cannot be made or
+     * opened.
+     */
+    fun `setDownloadDir`(`path`: kotlin.String)
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
      * New ones are refused as soon as they are accepted.
      */
     fun `setReachable`(`on`: kotlin.Boolean)
+    
+    /**
+     * Replace the served roots.
+     *
+     * Takes effect for every already-connected peer on its next operation;
+     * nobody needs to reconnect. The app is responsible for persisting
+     * `roots` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when `roots` is refused: no roots at all,
+     * an invalid or duplicate name, a path that is not an existing folder,
+     * or two roots that overlap.
+     */
+    fun `setRoots`(`roots`: List<Root>)
     
     /**
      * The last four characters of this device's own mDNS name, while it is
@@ -1679,10 +1733,12 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
      * # Errors
      *
      * Returns `Runtime::BadConfig` when a directory cannot be made, the
-     * device list cannot be read, or another engine is already using the
-     * directory, `Runtime::NameTooLong` when the display name is over 64
-     * bytes, and a `NoiseError` code when the key is not two lots of 32
-     * bytes.
+     * device list cannot be read, `shared_roots` is empty, or another
+     * engine is already using the directory; a `RootsError` code when
+     * `shared_roots` is not empty but is otherwise refused, such as two
+     * roots that overlap; `Runtime::NameTooLong` when the display name is
+     * over 64 bytes; and a `NoiseError` code when the key is not two lots
+     * of 32 bytes.
      */
     constructor(`config`: Config, `listener`: EngineListener) :
         this(UniffiWithHandle, 
@@ -1965,6 +2021,47 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * The roots currently served, as last set by `new` or `set_roots`.
+     */override fun `roots`(): List<Root> {
+            return FfiConverterSequenceTypeRoot.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_roots(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Change where a pulled file lands.
+     *
+     * Creates the folder if it does not exist. The app is responsible for
+     * persisting `path` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::BadConfig` when the folder cannot be made or
+     * opened.
+     */
+    @Throws(FerryException::class)override fun `setDownloadDir`(`path`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_set_download_dir(
+        it,
+        
+        FfiConverterString.lower(`path`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
@@ -1977,6 +2074,33 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         it,
         
         FfiConverterBoolean.lower(`on`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Replace the served roots.
+     *
+     * Takes effect for every already-connected peer on its next operation;
+     * nobody needs to reconnect. The app is responsible for persisting
+     * `roots` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when `roots` is refused: no roots at all,
+     * an invalid or duplicate name, a path that is not an existing folder,
+     * or two roots that overlap.
+     */
+    @Throws(FerryException::class)override fun `setRoots`(`roots`: List<Root>)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_set_roots(
+        it,
+        
+        FfiConverterSequenceTypeRoot.lower(`roots`),_status)
 }
     }
     
@@ -2152,9 +2276,14 @@ data class Config (
     var `dataDir`: kotlin.String
     , 
     /**
-     * The folder served to paired devices, and where pulled files land.
+     * The named folders served to paired devices. At least one.
      */
-    var `sharedRoot`: kotlin.String
+    var `sharedRoots`: List<Root>
+    , 
+    /**
+     * Where a pulled file lands. Never served to a peer by being here.
+     */
+    var `downloadDir`: kotlin.String
     , 
     /**
      * The name sent in `hello`. At most 64 bytes. Defaults to the model.
@@ -2170,6 +2299,11 @@ data class Config (
      * This device's long-lived key. The app loaded it from secure storage.
      */
     var `key`: KeyPair
+    , 
+    /**
+     * What kind of device this is. Sent in `hello`.
+     */
+    var `kind`: DeviceKind
     
 ){
     
@@ -2187,27 +2321,33 @@ public object FfiConverterTypeConfig: FfiConverterRustBuffer<Config> {
     override fun read(buf: ByteBuffer): Config {
         return Config(
             FfiConverterString.read(buf),
+            FfiConverterSequenceTypeRoot.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterUShort.read(buf),
             FfiConverterTypeKeyPair.read(buf),
+            FfiConverterTypeDeviceKind.read(buf),
         )
     }
 
     override fun allocationSize(value: Config) = (
             FfiConverterString.allocationSize(value.`dataDir`) +
-            FfiConverterString.allocationSize(value.`sharedRoot`) +
+            FfiConverterSequenceTypeRoot.allocationSize(value.`sharedRoots`) +
+            FfiConverterString.allocationSize(value.`downloadDir`) +
             FfiConverterString.allocationSize(value.`displayName`) +
             FfiConverterUShort.allocationSize(value.`listenPort`) +
-            FfiConverterTypeKeyPair.allocationSize(value.`key`)
+            FfiConverterTypeKeyPair.allocationSize(value.`key`) +
+            FfiConverterTypeDeviceKind.allocationSize(value.`kind`)
     )
 
     override fun write(value: Config, buf: ByteBuffer) {
             FfiConverterString.write(value.`dataDir`, buf)
-            FfiConverterString.write(value.`sharedRoot`, buf)
+            FfiConverterSequenceTypeRoot.write(value.`sharedRoots`, buf)
+            FfiConverterString.write(value.`downloadDir`, buf)
             FfiConverterString.write(value.`displayName`, buf)
             FfiConverterUShort.write(value.`listenPort`, buf)
             FfiConverterTypeKeyPair.write(value.`key`, buf)
+            FfiConverterTypeDeviceKind.write(value.`kind`, buf)
     }
 }
 
@@ -2253,6 +2393,11 @@ data class DeviceInfo (
      * list.
      */
     var `availableTransports`: List<Transport>
+    , 
+    /**
+     * What kind of device it said it was, in `hello` at pairing time.
+     */
+    var `kind`: DeviceKind
     
 ){
     
@@ -2276,6 +2421,7 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalULong.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterSequenceTypeTransport.read(buf),
+            FfiConverterTypeDeviceKind.read(buf),
         )
     }
 
@@ -2286,7 +2432,8 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalTypeTransport.allocationSize(value.`reachableVia`) +
             FfiConverterOptionalULong.allocationSize(value.`speedBytesPerSec`) +
             FfiConverterOptionalLong.allocationSize(value.`lastSeenUnixSecs`) +
-            FfiConverterSequenceTypeTransport.allocationSize(value.`availableTransports`)
+            FfiConverterSequenceTypeTransport.allocationSize(value.`availableTransports`) +
+            FfiConverterTypeDeviceKind.allocationSize(value.`kind`)
     )
 
     override fun write(value: DeviceInfo, buf: ByteBuffer) {
@@ -2297,6 +2444,7 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalULong.write(value.`speedBytesPerSec`, buf)
             FfiConverterOptionalLong.write(value.`lastSeenUnixSecs`, buf)
             FfiConverterSequenceTypeTransport.write(value.`availableTransports`, buf)
+            FfiConverterTypeDeviceKind.write(value.`kind`, buf)
     }
 }
 
@@ -2464,6 +2612,64 @@ public object FfiConverterTypePairingCandidate: FfiConverterRustBuffer<PairingCa
             FfiConverterString.write(value.`id`, buf)
             FfiConverterTypeTransport.write(value.`transport`, buf)
             FfiConverterString.write(value.`shortCode`, buf)
+    }
+}
+
+
+
+/**
+ * One named, shared folder, as the peer sees it.
+ *
+ * `docs/engine-contract.md`, batch C, item 15.
+ */
+data class Root (
+    /**
+     * What the peer sees as this root's first path segment, such as
+     * `"Desktop"`.
+     */
+    var `name`: kotlin.String
+    , 
+    /**
+     * Where this root lives on disk. Must be an existing directory.
+     */
+    var `path`: kotlin.String
+    , 
+    /**
+     * False for a root the peer may read but not write.
+     */
+    var `writable`: kotlin.Boolean
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRoot: FfiConverterRustBuffer<Root> {
+    override fun read(buf: ByteBuffer): Root {
+        return Root(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: Root) = (
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`path`) +
+            FfiConverterBoolean.allocationSize(value.`writable`)
+    )
+
+    override fun write(value: Root, buf: ByteBuffer) {
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`path`, buf)
+            FfiConverterBoolean.write(value.`writable`, buf)
     }
 }
 
@@ -2675,6 +2881,51 @@ public object FfiConverterTypeTransferInfo: FfiConverterRustBuffer<TransferInfo>
             FfiConverterUInt.write(value.`chunksVerified`, buf)
     }
 }
+
+
+
+/**
+ * What kind of device this is, or a peer said it is in `hello`.
+ *
+ * `docs/engine-contract.md`, batch C, item 11.
+ */
+
+enum class DeviceKind {
+    
+    /**
+     * An Android phone.
+     */
+    PHONE,
+    /**
+     * A Mac.
+     */
+    MAC;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDeviceKind: FfiConverterRustBuffer<DeviceKind> {
+    override fun read(buf: ByteBuffer) = try {
+        DeviceKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: DeviceKind) = 4UL
+
+    override fun write(value: DeviceKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
 
 
 
@@ -3510,6 +3761,34 @@ public object FfiConverterSequenceTypePairingCandidate: FfiConverterRustBuffer<L
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypePairingCandidate.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeRoot: FfiConverterRustBuffer<List<Root>> {
+    override fun read(buf: ByteBuffer): List<Root> {
+        val len = buf.getInt()
+        return List<Root>(len) {
+            FfiConverterTypeRoot.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<Root>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeRoot.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<Root>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeRoot.write(it, buf)
         }
     }
 }

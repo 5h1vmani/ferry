@@ -330,9 +330,24 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_pull(uint64_t ptr, RustBuffer d
 void uniffi_ferry_runtime_fn_method_engine_retry(uint64_t ptr, RustBuffer transfer_id, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ROOTS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ROOTS
+RustBuffer uniffi_ferry_runtime_fn_method_engine_roots(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_DOWNLOAD_DIR
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_DOWNLOAD_DIR
+void uniffi_ferry_runtime_fn_method_engine_set_download_dir(uint64_t ptr, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_REACHABLE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_REACHABLE
 void uniffi_ferry_runtime_fn_method_engine_set_reachable(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_ROOTS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_ROOTS
+void uniffi_ferry_runtime_fn_method_engine_set_roots(uint64_t ptr, RustBuffer roots, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SHORT_CODE
@@ -702,9 +717,27 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_retry(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ROOTS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ROOTS
+uint16_t uniffi_ferry_runtime_checksum_method_engine_roots(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_DOWNLOAD_DIR
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_DOWNLOAD_DIR
+uint16_t uniffi_ferry_runtime_checksum_method_engine_set_download_dir(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_REACHABLE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_REACHABLE
 uint16_t uniffi_ferry_runtime_checksum_method_engine_set_reachable(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_ROOTS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_ROOTS
+uint16_t uniffi_ferry_runtime_checksum_method_engine_set_roots(void
     
 );
 #endif

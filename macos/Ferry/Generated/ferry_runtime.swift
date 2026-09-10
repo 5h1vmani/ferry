@@ -724,12 +724,45 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func retry(transferId: String) throws 
     
     /**
+     * The roots currently served, as last set by `new` or `set_roots`.
+     */
+    func roots()  -> [Root]
+    
+    /**
+     * Change where a pulled file lands.
+     *
+     * Creates the folder if it does not exist. The app is responsible for
+     * persisting `path` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::BadConfig` when the folder cannot be made or
+     * opened.
+     */
+    func setDownloadDir(path: String) throws 
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
      * New ones are refused as soon as they are accepted.
      */
     func setReachable(on: Bool) 
+    
+    /**
+     * Replace the served roots.
+     *
+     * Takes effect for every already-connected peer on its next operation;
+     * nobody needs to reconnect. The app is responsible for persisting
+     * `roots` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when `roots` is refused: no roots at all,
+     * an invalid or duplicate name, a path that is not an existing folder,
+     * or two roots that overlap.
+     */
+    func setRoots(roots: [Root]) throws 
     
     /**
      * The last four characters of this device's own mDNS name, while it is
@@ -844,10 +877,12 @@ open class Engine: EngineProtocol, @unchecked Sendable {
      * # Errors
      *
      * Returns `Runtime::BadConfig` when a directory cannot be made, the
-     * device list cannot be read, or another engine is already using the
-     * directory, `Runtime::NameTooLong` when the display name is over 64
-     * bytes, and a `NoiseError` code when the key is not two lots of 32
-     * bytes.
+     * device list cannot be read, `shared_roots` is empty, or another
+     * engine is already using the directory; a `RootsError` code when
+     * `shared_roots` is not empty but is otherwise refused, such as two
+     * roots that overlap; `Runtime::NameTooLong` when the display name is
+     * over 64 bytes; and a `NoiseError` code when the key is not two lots
+     * of 32 bytes.
      */
 public convenience init(config: Config, listener: EngineListener)throws  {
     let handle =
@@ -1029,6 +1064,38 @@ open func retry(transferId: String)throws   {try rustCallWithError(FfiConverterT
 }
     
     /**
+     * The roots currently served, as last set by `new` or `set_roots`.
+     */
+open func roots() -> [Root]  {
+    return try!  FfiConverterSequenceTypeRoot.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_roots(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Change where a pulled file lands.
+     *
+     * Creates the folder if it does not exist. The app is responsible for
+     * persisting `path` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::BadConfig` when the folder cannot be made or
+     * opened.
+     */
+open func setDownloadDir(path: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_download_dir(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
@@ -1039,6 +1106,28 @@ open func setReachable(on: Bool)  {try! rustCall() {
     uniffi_ferry_runtime_fn_method_engine_set_reachable(
             self.uniffiCloneHandle(),
         FfiConverterBool.lower(on),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Replace the served roots.
+     *
+     * Takes effect for every already-connected peer on its next operation;
+     * nobody needs to reconnect. The app is responsible for persisting
+     * `roots` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when `roots` is refused: no roots at all,
+     * an invalid or duplicate name, a path that is not an existing folder,
+     * or two roots that overlap.
+     */
+open func setRoots(roots: [Root])throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_roots(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeRoot.lower(roots),uniffiCallStatus
     )
 }
 }
@@ -1195,9 +1284,13 @@ public struct Config: Equatable, Hashable {
      */
     public var dataDir: String
     /**
-     * The folder served to paired devices, and where pulled files land.
+     * The named folders served to paired devices. At least one.
      */
-    public var sharedRoot: String
+    public var sharedRoots: [Root]
+    /**
+     * Where a pulled file lands. Never served to a peer by being here.
+     */
+    public var downloadDir: String
     /**
      * The name sent in `hello`. At most 64 bytes. Defaults to the model.
      */
@@ -1210,6 +1303,10 @@ public struct Config: Equatable, Hashable {
      * This device's long-lived key. The app loaded it from secure storage.
      */
     public var key: KeyPair
+    /**
+     * What kind of device this is. Sent in `hello`.
+     */
+    public var kind: DeviceKind
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1219,8 +1316,11 @@ public struct Config: Equatable, Hashable {
          * records. Must exist and be private to the app.
          */dataDir: String, 
         /**
-         * The folder served to paired devices, and where pulled files land.
-         */sharedRoot: String, 
+         * The named folders served to paired devices. At least one.
+         */sharedRoots: [Root], 
+        /**
+         * Where a pulled file lands. Never served to a peer by being here.
+         */downloadDir: String, 
         /**
          * The name sent in `hello`. At most 64 bytes. Defaults to the model.
          */displayName: String, 
@@ -1229,12 +1329,17 @@ public struct Config: Equatable, Hashable {
          */listenPort: UInt16, 
         /**
          * This device's long-lived key. The app loaded it from secure storage.
-         */key: KeyPair) {
+         */key: KeyPair, 
+        /**
+         * What kind of device this is. Sent in `hello`.
+         */kind: DeviceKind) {
         self.dataDir = dataDir
-        self.sharedRoot = sharedRoot
+        self.sharedRoots = sharedRoots
+        self.downloadDir = downloadDir
         self.displayName = displayName
         self.listenPort = listenPort
         self.key = key
+        self.kind = kind
     }
 
     
@@ -1254,19 +1359,23 @@ public struct FfiConverterTypeConfig: FfiConverterRustBuffer {
         return
             try Config(
                 dataDir: FfiConverterString.read(from: &buf), 
-                sharedRoot: FfiConverterString.read(from: &buf), 
+                sharedRoots: FfiConverterSequenceTypeRoot.read(from: &buf), 
+                downloadDir: FfiConverterString.read(from: &buf), 
                 displayName: FfiConverterString.read(from: &buf), 
                 listenPort: FfiConverterUInt16.read(from: &buf), 
-                key: FfiConverterTypeKeyPair.read(from: &buf)
+                key: FfiConverterTypeKeyPair.read(from: &buf), 
+                kind: FfiConverterTypeDeviceKind.read(from: &buf)
         )
     }
 
     public static func write(_ value: Config, into buf: inout [UInt8]) {
         FfiConverterString.write(value.dataDir, into: &buf)
-        FfiConverterString.write(value.sharedRoot, into: &buf)
+        FfiConverterSequenceTypeRoot.write(value.sharedRoots, into: &buf)
+        FfiConverterString.write(value.downloadDir, into: &buf)
         FfiConverterString.write(value.displayName, into: &buf)
         FfiConverterUInt16.write(value.listenPort, into: &buf)
         FfiConverterTypeKeyPair.write(value.key, into: &buf)
+        FfiConverterTypeDeviceKind.write(value.kind, into: &buf)
     }
 }
 
@@ -1320,6 +1429,10 @@ public struct DeviceInfo: Equatable, Hashable {
      * list.
      */
     public var availableTransports: [Transport]
+    /**
+     * What kind of device it said it was, in `hello` at pairing time.
+     */
+    public var kind: DeviceKind
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1346,7 +1459,10 @@ public struct DeviceInfo: Equatable, Hashable {
          * Every transport this device could currently be reached through,
          * `Usb` first. `reachable_via`, when it is `Some`, is always in this
          * list.
-         */availableTransports: [Transport]) {
+         */availableTransports: [Transport], 
+        /**
+         * What kind of device it said it was, in `hello` at pairing time.
+         */kind: DeviceKind) {
         self.keyHex = keyHex
         self.name = name
         self.pairedUnixSecs = pairedUnixSecs
@@ -1354,6 +1470,7 @@ public struct DeviceInfo: Equatable, Hashable {
         self.speedBytesPerSec = speedBytesPerSec
         self.lastSeenUnixSecs = lastSeenUnixSecs
         self.availableTransports = availableTransports
+        self.kind = kind
     }
 
     
@@ -1378,7 +1495,8 @@ public struct FfiConverterTypeDeviceInfo: FfiConverterRustBuffer {
                 reachableVia: FfiConverterOptionTypeTransport.read(from: &buf), 
                 speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
                 lastSeenUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
-                availableTransports: FfiConverterSequenceTypeTransport.read(from: &buf)
+                availableTransports: FfiConverterSequenceTypeTransport.read(from: &buf), 
+                kind: FfiConverterTypeDeviceKind.read(from: &buf)
         )
     }
 
@@ -1390,6 +1508,7 @@ public struct FfiConverterTypeDeviceInfo: FfiConverterRustBuffer {
         FfiConverterOptionUInt64.write(value.speedBytesPerSec, into: &buf)
         FfiConverterOptionInt64.write(value.lastSeenUnixSecs, into: &buf)
         FfiConverterSequenceTypeTransport.write(value.availableTransports, into: &buf)
+        FfiConverterTypeDeviceKind.write(value.kind, into: &buf)
     }
 }
 
@@ -1646,6 +1765,89 @@ public func FfiConverterTypePairingCandidate_lift(_ buf: RustBuffer) throws -> P
 #endif
 public func FfiConverterTypePairingCandidate_lower(_ value: PairingCandidate) -> RustBuffer {
     return FfiConverterTypePairingCandidate.lower(value)
+}
+
+
+/**
+ * One named, shared folder, as the peer sees it.
+ *
+ * `docs/engine-contract.md`, batch C, item 15.
+ */
+public struct Root: Equatable, Hashable {
+    /**
+     * What the peer sees as this root's first path segment, such as
+     * `"Desktop"`.
+     */
+    public var name: String
+    /**
+     * Where this root lives on disk. Must be an existing directory.
+     */
+    public var path: String
+    /**
+     * False for a root the peer may read but not write.
+     */
+    public var writable: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * What the peer sees as this root's first path segment, such as
+         * `"Desktop"`.
+         */name: String, 
+        /**
+         * Where this root lives on disk. Must be an existing directory.
+         */path: String, 
+        /**
+         * False for a root the peer may read but not write.
+         */writable: Bool) {
+        self.name = name
+        self.path = path
+        self.writable = writable
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Root: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRoot: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Root {
+        return
+            try Root(
+                name: FfiConverterString.read(from: &buf), 
+                path: FfiConverterString.read(from: &buf), 
+                writable: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Root, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterBool.write(value.writable, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRoot_lift(_ buf: RustBuffer) throws -> Root {
+    return try FfiConverterTypeRoot.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRoot_lower(_ value: Root) -> RustBuffer {
+    return FfiConverterTypeRoot.lower(value)
 }
 
 
@@ -1930,6 +2132,83 @@ public func FfiConverterTypeTransferInfo_lift(_ buf: RustBuffer) throws -> Trans
 public func FfiConverterTypeTransferInfo_lower(_ value: TransferInfo) -> RustBuffer {
     return FfiConverterTypeTransferInfo.lower(value)
 }
+
+
+/**
+ * What kind of device this is, or a peer said it is in `hello`.
+ *
+ * `docs/engine-contract.md`, batch C, item 11.
+ */
+
+public enum DeviceKind: Equatable, Hashable {
+    
+    /**
+     * An Android phone.
+     */
+    case phone
+    /**
+     * A Mac.
+     */
+    case mac
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension DeviceKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDeviceKind: FfiConverterRustBuffer {
+    typealias SwiftType = DeviceKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeviceKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .phone
+        
+        case 2: return .mac
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: DeviceKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .phone:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .mac:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceKind_lift(_ buf: RustBuffer) throws -> DeviceKind {
+    return try FfiConverterTypeDeviceKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeviceKind_lower(_ value: DeviceKind) -> RustBuffer {
+    return FfiConverterTypeDeviceKind.lower(value)
+}
+
 
 
 /**
@@ -2908,6 +3187,31 @@ fileprivate struct FfiConverterSequenceTypePairingCandidate: FfiConverterRustBuf
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeRoot: FfiConverterRustBuffer {
+    typealias SwiftType = [Root]
+
+    public static func write(_ value: [Root], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRoot.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Root] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Root]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRoot.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeTransferInfo: FfiConverterRustBuffer {
     typealias SwiftType = [TransferInfo]
 
@@ -3029,7 +3333,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_roots() != 9755) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_set_download_dir() != 37682) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_set_reachable() != 6511) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_set_roots() != 12930) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_short_code() != 63413) {
@@ -3050,7 +3363,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_transfers() != 21287) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 30291) {
+    if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 65534) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_enginelistener_devices_changed() != 48471) {
