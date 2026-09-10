@@ -426,7 +426,12 @@ impl Response {
     /// # Errors
     ///
     /// Returns [`WireError::TooLong`] when the page holds more than
-    /// [`limits::MAX_LIST_ENTRIES`] entries.
+    /// [`limits::MAX_LIST_ENTRIES`] entries, and [`WireError::InvalidPath`]
+    /// when an entry's name is empty or holds a `/`. Neither name is a real
+    /// child of the folder listed: the empty name is only ever valid on the
+    /// single entry [`Response::decode_stat`] returns for the shared root
+    /// itself, never inside a listing, and a `/` would let one entry name a
+    /// path several components deep.
     pub fn decode_list(bytes: &[u8]) -> Result<(Vec<Entry>, Option<u64>), WireError> {
         let mut d = Decoder::new(bytes);
         let count = d.u32()?;
@@ -436,7 +441,11 @@ impl Response {
         // The count is capped before anything is reserved.
         let mut entries = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            entries.push(Entry::decode(&mut d)?);
+            let entry = Entry::decode(&mut d)?;
+            if entry.name.is_empty() || entry.name.contains('/') {
+                return Err(WireError::InvalidPath);
+            }
+            entries.push(entry);
         }
         let next_cursor = match d.u8()? {
             0 => None,
@@ -829,6 +838,48 @@ mod tests {
         }
         .opcode();
         assert_eq!(Response::decode(opcode, &encoded), Err(WireError::TooLong));
+    }
+
+    #[test]
+    fn a_list_entry_with_an_empty_name_is_refused_on_decode() {
+        let response = Response::List {
+            entries: vec![Entry {
+                name: String::new(),
+                ..sample_entry()
+            }],
+            next_cursor: None,
+        };
+        let encoded = response.encode();
+        let opcode = Request::List {
+            path: path("DCIM/Camera"),
+            cursor: 0,
+        }
+        .opcode();
+        assert_eq!(
+            Response::decode(opcode, &encoded),
+            Err(WireError::InvalidPath)
+        );
+    }
+
+    #[test]
+    fn a_list_entry_with_a_slash_in_its_name_is_refused_on_decode() {
+        let response = Response::List {
+            entries: vec![Entry {
+                name: "DCIM/Camera".to_owned(),
+                ..sample_entry()
+            }],
+            next_cursor: None,
+        };
+        let encoded = response.encode();
+        let opcode = Request::List {
+            path: path("DCIM/Camera"),
+            cursor: 0,
+        }
+        .opcode();
+        assert_eq!(
+            Response::decode(opcode, &encoded),
+            Err(WireError::InvalidPath)
+        );
     }
 
     #[test]

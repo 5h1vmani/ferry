@@ -458,13 +458,17 @@ impl<S: Write> Write for Cutting<S> {
 }
 
 /// A peer that listens, pairs once, and then serves what the script says.
-struct Peer {
+///
+/// Generic over what it serves: most tests use [`ScriptedFs`], the one file
+/// and slow-reading script above; a few build a small `FileOps` of their
+/// own, to prove what happens when a peer's `list` misbehaves.
+struct Peer<F> {
     /// Where the engine dials it.
     addr: SocketAddr,
     /// Its long lived key, as the app would store it.
     key: KeyPair,
     /// What it serves.
-    fs: Arc<ScriptedFs>,
+    fs: Arc<F>,
     /// True while the next connection is a pairing handshake.
     expect_pair: Arc<AtomicBool>,
     /// How long the peer waits before it sends its name.
@@ -497,8 +501,16 @@ fn key_hex(key: &KeyPair) -> String {
     out
 }
 
-/// Start a peer that answers on its own port.
-fn start_peer(engine_key: &KeyPair, bytes: Vec<u8>) -> Peer {
+/// Start a peer that serves one file, as slowly as the script says.
+fn start_peer(engine_key: &KeyPair, bytes: Vec<u8>) -> Peer<ScriptedFs> {
+    start_peer_with(engine_key, ScriptedFs::new(bytes))
+}
+
+/// Start a peer that answers on its own port, serving whatever `fs` says.
+fn start_peer_with<F: FileOps + Send + Sync + 'static>(
+    engine_key: &KeyPair,
+    fs: Arc<F>,
+) -> Peer<F> {
     let listener = Listener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
         .expect("the fake peer should bind a port");
     let addr = SocketAddr::new(
@@ -506,7 +518,6 @@ fn start_peer(engine_key: &KeyPair, bytes: Vec<u8>) -> Peer {
         listener.local_addr().port(),
     );
     let key = generate_key().expect("a fresh key pair for the peer");
-    let fs = ScriptedFs::new(bytes);
     let peer = Peer {
         addr,
         key: key.clone(),
@@ -551,11 +562,11 @@ fn start_peer(engine_key: &KeyPair, bytes: Vec<u8>) -> Peer {
 }
 
 /// Run one connection the peer accepted, to its end.
-fn serve_one(
+fn serve_one<F: FileOps + Send + Sync>(
     pending: Pending,
     key: &StaticKey,
     engine: PublicKey,
-    fs: &Arc<ScriptedFs>,
+    fs: &Arc<F>,
     pairing: bool,
     hello_delay: Duration,
     cut: &Arc<AtomicBool>,
@@ -586,7 +597,7 @@ fn serve_one(
 trait ReadWrite: Read + Write {}
 impl<T: Read + Write> ReadWrite for T {}
 
-impl Peer {
+impl<F> Peer<F> {
     /// Break the link: drop what is connected, refuse what arrives.
     fn cut(&self) {
         self.cut.store(true, Ordering::SeqCst);
@@ -609,7 +620,7 @@ impl Peer {
 }
 
 /// Pair one engine with a hand-driven peer, and leave the peer able to serve.
-fn pair_with_peer(side: &Side, peer: &Peer) {
+fn pair_with_peer<F>(side: &Side, peer: &Peer<F>) {
     side.engine.start_pairing();
     side.engine.offer_candidate(peer.addr);
     side.inbox.wait_pairing("a candidate", is_found);
@@ -623,7 +634,7 @@ fn pair_with_peer(side: &Side, peer: &Peer) {
 }
 
 /// Ask for the one file the fake peer holds.
-fn pull_big(side: &Side, peer: &Peer, local_name: &str) -> String {
+fn pull_big<F>(side: &Side, peer: &Peer<F>, local_name: &str) -> String {
     side.engine
         .pull(
             key_hex(&peer.key),
@@ -648,6 +659,150 @@ fn wait_transfer(
             .iter()
             .any(|t| t.id == wanted && check(t))
     });
+}
+
+// ---------------------------------------------------------------------------
+// Batch D audit, B1: a folder listing that never advances.
+// ---------------------------------------------------------------------------
+
+/// A filesystem whose `list` never lets a folder listing finish: every call
+/// answers the same one entry and the same cursor, whatever cursor was
+/// asked for. Stands in for a peer that never advances its own paging.
+struct StuckListFs;
+
+impl FileOps for StuckListFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Ok((
+            vec![Entry {
+                name: "a.jpg".to_owned(),
+                kind: FileKind::File,
+                size: 1,
+                modified_unix_secs: 1_000_000,
+            }],
+            Some(0),
+        ))
+    }
+    fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+}
+
+#[test]
+fn a_peer_whose_cursor_never_advances_makes_list_and_pull_folder_refuse_it() {
+    let side = build("Vamana");
+    let peer = start_peer_with(&side.key, Arc::new(StuckListFs));
+    pair_with_peer(&side, &peer);
+
+    let list_error = side
+        .engine
+        .list(key_hex(&peer.key), "Camera".to_owned())
+        .expect_err("a peer that never advances its cursor should be refused");
+    assert_eq!(code_of_error(&list_error), "Runtime::FolderTooLarge");
+
+    let folder_error = side
+        .engine
+        .pull_folder(key_hex(&peer.key), "Camera".to_owned())
+        .expect_err("pull_folder pages the same way and should be refused too");
+    assert_eq!(code_of_error(&folder_error), "Runtime::FolderTooLarge");
+    assert!(
+        side.engine.batches().is_empty(),
+        "a refused folder listing creates no batch"
+    );
+    assert!(
+        side.engine.transfers().is_empty(),
+        "a refused folder listing creates no transfer"
+    );
+
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
+// Batch D audit, B2: an entry that names no real child.
+// ---------------------------------------------------------------------------
+
+/// A filesystem whose one `list` entry has an empty name.
+struct EmptyNameFs;
+
+impl FileOps for EmptyNameFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Ok((
+            vec![Entry {
+                name: String::new(),
+                kind: FileKind::File,
+                size: 1,
+                modified_unix_secs: 1_000_000,
+            }],
+            None,
+        ))
+    }
+    fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+}
+
+#[test]
+fn pull_folder_fails_cleanly_when_a_peer_names_an_entry_with_an_empty_name() {
+    let side = build("Vamana");
+    let peer = start_peer_with(&side.key, Arc::new(EmptyNameFs));
+    pair_with_peer(&side, &peer);
+
+    let error = side
+        .engine
+        .pull_folder(key_hex(&peer.key), "Camera".to_owned())
+        .expect_err("an empty entry name should be refused on decode, not queued");
+    assert_eq!(code_of_error(&error), "WireError::InvalidPath");
+    assert!(
+        side.engine.batches().is_empty(),
+        "a refused folder listing creates no batch"
+    );
+    assert!(
+        side.engine.transfers().is_empty(),
+        "a refused folder listing creates no transfer"
+    );
+
+    peer.close();
 }
 
 // ---------------------------------------------------------------------------

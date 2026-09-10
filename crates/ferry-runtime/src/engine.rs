@@ -1333,9 +1333,11 @@ impl Engine {
     /// Returns a `PathError` code when the path is refused,
     /// `Runtime::NotPaired` when that device is not stored,
     /// `Runtime::NotStarted` before [`Engine::start`] has run,
-    /// `Runtime::NotReachable` when no dial succeeds, and an `OpError` code
+    /// `Runtime::NotReachable` when no dial succeeds, an `OpError` code
     /// when the peer refuses, such as `OpError::NotFound` for a folder that
-    /// does not exist.
+    /// does not exist, and `Runtime::FolderTooLarge` when the peer pages the
+    /// folder past the bounds `folder::after_page` checks, such as a
+    /// `next_cursor` that never advances.
     pub fn list(
         &self,
         device_key_hex: String,
@@ -1364,15 +1366,20 @@ impl Engine {
         let mut client = Client::new(stream);
         let mut entries = Vec::new();
         let mut cursor = 0u64;
+        let mut pages = 0usize;
+        let mut entries_seen = 0usize;
         loop {
             let (page, next_cursor) = client
                 .list(&path, cursor)
                 .map_err(|error| from_rpc(&error))?;
+            pages += 1;
+            entries_seen += page.len();
             entries.extend(page.into_iter().map(entry_from_core));
-            let Some(next_cursor) = next_cursor else {
-                break;
-            };
-            cursor = next_cursor;
+            match folder::after_page(cursor, next_cursor, pages, entries_seen) {
+                Ok(Some(next)) => cursor = next,
+                Ok(None) => break,
+                Err(folder::ListTooLarge) => return Err(failed("Runtime::FolderTooLarge")),
+            }
         }
         record_this(
             &self.shared,
