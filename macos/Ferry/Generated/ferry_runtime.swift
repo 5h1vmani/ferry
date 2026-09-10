@@ -725,6 +725,9 @@ public protocol EngineProtocol: AnyObject, Sendable {
     
     /**
      * The roots currently served, as last set by `new` or `set_roots`.
+     *
+     * Before `start` has opened them, this is `Config.shared_roots` as
+     * given to `new`, unopened and unvalidated beyond being non-empty.
      */
     func roots()  -> [Root]
     
@@ -779,13 +782,18 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func shortCode()  -> String?
     
     /**
-     * Open the shared root, bind the listener, and start every loop.
+     * Open the served roots and the download folder, bind the listener,
+     * and start every loop.
      *
      * A machine with no `adb` is not an error. USB is simply unavailable.
      *
      * # Errors
      *
-     * Returns `Runtime::BadConfig` with a detail saying which part failed.
+     * Returns a `RootsError` code when the roots given to `new` cannot be
+     * opened, such as two that overlap or a path that is not an existing
+     * folder, unless `set_roots` already opened a fresher set; and
+     * `Runtime::BadConfig` with a detail when some other part fails to
+     * open.
      */
     func start() throws 
     
@@ -878,11 +886,16 @@ open class Engine: EngineProtocol, @unchecked Sendable {
      *
      * Returns `Runtime::BadConfig` when a directory cannot be made, the
      * device list cannot be read, `shared_roots` is empty, or another
-     * engine is already using the directory; a `RootsError` code when
-     * `shared_roots` is not empty but is otherwise refused, such as two
-     * roots that overlap; `Runtime::NameTooLong` when the display name is
-     * over 64 bytes; and a `NoiseError` code when the key is not two lots
-     * of 32 bytes.
+     * engine is already using the directory; `Runtime::NameTooLong` when
+     * the display name is over 64 bytes; and a `NoiseError` code when the
+     * key is not two lots of 32 bytes.
+     *
+     * Opening `shared_roots` on disk is [`Engine::start`]'s job, not this
+     * one's, the same as the old single shared root: a phone builds its
+     * engine before storage permission is granted, and only `start` has to
+     * wait for it. So a root that is wrong in some way `Config` validation
+     * cannot see, such as two roots that overlap, is not caught here; it
+     * surfaces as a `RootsError` code from `start`.
      */
 public convenience init(config: Config, listener: EngineListener)throws  {
     let handle =
@@ -1065,6 +1078,9 @@ open func retry(transferId: String)throws   {try rustCallWithError(FfiConverterT
     
     /**
      * The roots currently served, as last set by `new` or `set_roots`.
+     *
+     * Before `start` has opened them, this is `Config.shared_roots` as
+     * given to `new`, unopened and unvalidated beyond being non-empty.
      */
 open func roots() -> [Root]  {
     return try!  FfiConverterSequenceTypeRoot.lift(try! rustCall() {
@@ -1154,13 +1170,18 @@ open func shortCode() -> String?  {
 }
     
     /**
-     * Open the shared root, bind the listener, and start every loop.
+     * Open the served roots and the download folder, bind the listener,
+     * and start every loop.
      *
      * A machine with no `adb` is not an error. USB is simply unavailable.
      *
      * # Errors
      *
-     * Returns `Runtime::BadConfig` with a detail saying which part failed.
+     * Returns a `RootsError` code when the roots given to `new` cannot be
+     * opened, such as two that overlap or a path that is not an existing
+     * folder, unless `set_roots` already opened a fresher set; and
+     * `Runtime::BadConfig` with a detail when some other part fails to
+     * open.
      */
 open func start()throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
         uniffiCallStatus in
@@ -3333,7 +3354,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_roots() != 9755) {
+    if (uniffi_ferry_runtime_checksum_method_engine_roots() != 12455) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_set_download_dir() != 37682) {
@@ -3348,7 +3369,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_short_code() != 63413) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_start() != 33843) {
+    if (uniffi_ferry_runtime_checksum_method_engine_start() != 60159) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_start_pairing() != 608) {
@@ -3363,7 +3384,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_transfers() != 21287) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 65534) {
+    if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 19972) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_enginelistener_devices_changed() != 48471) {
