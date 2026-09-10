@@ -100,8 +100,64 @@
 //! that has a Ferry forward, then Wi-Fi from the last known address, then
 //! mDNS. Whichever connects becomes `reachable_via`. Speed is bytes moved in
 //! the last second, updated no more than once a second.
+//!
+//! # Choices this build made
+//!
+//! Discovery runs for the whole session, not only while pairing. A paired
+//! phone changes address every time it rejoins a network, and the Mac has to
+//! find it again with nobody doing anything. See job 1 and job 3 in
+//! `docs/jobs.md`. Candidates are filtered: an address is only offered to the
+//! pairing screen while pairing is open.
+//!
+//! After pairing, the side that accepted the connection keeps serving on it.
+//! The side that dialed lets the stream go and dials again when it needs to.
+//! Two servers on one stream would each wait for the other to speak.
+//!
+//! # Known limitation: picking the peer for an inbound connection
+//!
+//! Every connection after pairing runs Noise KK, and KK needs the caller's
+//! static public key before the handshake starts. The wire carries nothing
+//! that says who is calling, and a handshake cannot be tried twice on one
+//! stream: the version exchange and the first Noise message are already read
+//! by then, and `Pending::connect` consumes the connection.
+//!
+//! So this build guesses, and never weakens the handshake to avoid guessing.
+//! With one stored peer it uses that peer. With more it uses the peer whose
+//! last known address matches the caller's address, and otherwise the first
+//! peer in key order. A wrong guess fails the handshake and the connection is
+//! dropped, which is safe but costs the caller a retry.
+//!
+//! The real fix is a responder that reads the first KK message, then tries
+//! each stored key against it. That needs a change in `tcp.rs` and `noise.rs`,
+//! so it is phase 2 work.
+//!
+//! # Known limitation: a serving thread cannot be woken
+//!
+//! `stop` joins the accept loop, the discovery loop, the `adb` poll, the
+//! pairing watchdog, and every transfer thread. It does not join threads that
+//! are serving a connection. Such a thread is blocked reading from an
+//! encrypted stream, and the socket handle sits inside that stream where this
+//! crate cannot reach it. So it ends when the peer goes away or when the idle
+//! timeout in `tcp.rs` fires, whichever comes first.
+//!
+//! `forget` has the same shape of problem and solves it differently. It
+//! cannot close the socket, so it switches the served filesystem off instead.
+//! Every operation on that connection is refused from that moment.
+//!
+//! A transfer thread is joined, and it ends quickly, because the stream it
+//! reads through fails as soon as the stop flag is set. The one case that
+//! still waits is a transfer caught inside a handshake, which `tcp.rs` bounds
+//! at ten seconds.
 
 uniffi::setup_scaffolding!();
+
+mod engine;
+pub mod errors;
+mod guard;
+mod state;
+mod transfer;
+
+pub use engine::{Engine, FERRY_PHONE_PORT, generate_key};
 
 use std::fmt;
 
