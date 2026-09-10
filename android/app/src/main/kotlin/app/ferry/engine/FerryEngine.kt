@@ -19,6 +19,7 @@ import uniffi.ferry_runtime.KeyPair
 import uniffi.ferry_runtime.PairingState
 import uniffi.ferry_runtime.TransferInfo
 import uniffi.ferry_runtime.generateKey
+import uniffi.ferry_runtime.phonePort
 import java.io.File
 
 // The one engine this process owns, and the state the screens read.
@@ -37,12 +38,6 @@ import java.io.File
 // That ring means Drop never runs, so the app must call stop(). See
 // MainActivity.onDestroy and ReachableService.
 object FerryEngine {
-    // The port the phone listens on. The Rust constant is
-    // ferry_runtime::FERRY_PHONE_PORT in crates/ferry-runtime/src/engine.rs.
-    // It is a plain Rust constant, not a UniFFI export, so the value is
-    // written here as well. The Mac needs a fixed number because it writes
-    // `adb forward tcp:0 tcp:<port>` before any connection exists.
-    private const val PHONE_PORT: Int = 52931
 
     // The engine's own files: the paired device list and transfer records.
     private const val DATA_DIR_NAME = "ferry"
@@ -125,7 +120,9 @@ object FerryEngine {
                 dataDir = dataDir.absolutePath,
                 sharedRoot = Environment.getExternalStorageDirectory().absolutePath,
                 displayName = Build.MODEL,
-                listenPort = PHONE_PORT.toUShort(),
+                // The port the Mac reaches through an adb forward. It comes from
+                // the engine, so the number lives once.
+                listenPort = phonePort(),
                 key = loadOrCreateKey(context),
             )
             engine = Engine(config, listener)

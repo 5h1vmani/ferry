@@ -2649,6 +2649,21 @@ public func generateKey()throws  -> KeyPair  {
     )
 })
 }
+/**
+ * The port the phone listens on, so the Mac can reach it through an
+ * `adb` forward before any connection exists.
+ *
+ * The phone app passes this as `Config::listen_port`. It crosses the
+ * boundary as a call rather than a constant, because `UniFFI` exports no
+ * constants, and a number written twice drifts.
+ */
+public func phonePort() -> UInt16  {
+    return try!  FfiConverterUInt16.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_func_phone_port(uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -2666,6 +2681,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.contractVersionMismatch
     }
     if (uniffi_ferry_runtime_checksum_func_generate_key() != 44171) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_func_phone_port() != 57763) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 37992) {

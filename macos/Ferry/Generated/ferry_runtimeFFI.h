@@ -371,6 +371,12 @@ RustBuffer uniffi_ferry_runtime_fn_func_generate_key(RustCallStatus *_Nonnull ou
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_FUNC_PHONE_PORT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_FUNC_PHONE_PORT
+uint16_t uniffi_ferry_runtime_fn_func_phone_port(RustCallStatus *_Nonnull out_status
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_FFI_FERRY_RUNTIME_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_FERRY_RUNTIME_RUSTBUFFER_ALLOC
 RustBuffer ffi_ferry_runtime_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -634,6 +640,12 @@ void ffi_ferry_runtime_rust_future_complete_void(uint64_t handle, RustCallStatus
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_FUNC_GENERATE_KEY
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_FUNC_GENERATE_KEY
 uint16_t uniffi_ferry_runtime_checksum_func_generate_key(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_FUNC_PHONE_PORT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_FUNC_PHONE_PORT
+uint16_t uniffi_ferry_runtime_checksum_func_phone_port(void
     
 );
 #endif

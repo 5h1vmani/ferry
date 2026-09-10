@@ -709,6 +709,8 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_ferry_runtime_checksum_func_generate_key(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_func_phone_port(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_cancel_pairing(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_confirm_pairing(
@@ -802,6 +804,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_func_generate_key(uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_func_phone_port(uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
     external fun ffi_ferry_runtime_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_ferry_runtime_rustbuffer_from_bytes(`bytes`: ForeignBytes.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -922,6 +926,9 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_func_generate_key() and 0xFFFF) != 44171) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_func_phone_port() and 0xFFFF) != 57763) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() and 0xFFFF) != 37992) {
@@ -3296,6 +3303,24 @@ public object FfiConverterSequenceTypeTransferInfo: FfiConverterRustBuffer<List<
             return FfiConverterTypeKeyPair.lift(
     uniffiRustCallWithError(FerryException) { _status ->
     UniffiLib.uniffi_ferry_runtime_fn_func_generate_key(
+    
+        _status)
+}
+    )
+    }
+    
+
+        /**
+         * The port the phone listens on, so the Mac can reach it through an
+         * `adb` forward before any connection exists.
+         *
+         * The phone app passes this as `Config::listen_port`. It crosses the
+         * boundary as a call rather than a constant, because `UniFFI` exports no
+         * constants, and a number written twice drifts.
+         */ fun `phonePort`(): kotlin.UShort {
+            return FfiConverterUShort.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_func_phone_port(
     
         _status)
 }

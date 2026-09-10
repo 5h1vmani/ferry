@@ -994,6 +994,18 @@ impl Drop for Engine {
     }
 }
 
+/// The port the phone listens on, so the Mac can reach it through an
+/// `adb` forward before any connection exists.
+///
+/// The phone app passes this as `Config::listen_port`. It crosses the
+/// boundary as a call rather than a constant, because `UniFFI` exports no
+/// constants, and a number written twice drifts.
+#[uniffi::export]
+#[must_use]
+pub fn phone_port() -> u16 {
+    FERRY_PHONE_PORT
+}
+
 /// Make a fresh key pair for first run. The app stores it.
 ///
 /// # Errors
