@@ -422,7 +422,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     /// Serializes tests that change PATH or the current directory.
     ///
