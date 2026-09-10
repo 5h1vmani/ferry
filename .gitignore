@@ -32,3 +32,6 @@ android/.gradle
 android/build
 android/app/build
 android/local.properties
+
+# Built by cargo-ndk from the Rust runtime; see android/app/build.gradle.kts
+android/app/src/main/jniLibs
