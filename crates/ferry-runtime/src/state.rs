@@ -323,10 +323,10 @@ impl TransferRow {
 
 /// One batch, as the engine tracks it.
 ///
-/// Only what does not change once the batch is made lives here: see
-/// `batch.rs` for how this is stored. Aggregates — files done, bytes,
-/// state, speed, and ended — are computed fresh from the live transfer rows
-/// every time the app asks. See [`BatchRow::info`].
+/// Only what does not change once the batch is made, plus the done floor
+/// below, lives here: see `batch.rs` for how this is stored. Every other
+/// aggregate — bytes total, state, speed, and ended — is computed fresh from
+/// the live transfer rows every time the app asks. See [`BatchRow::info`].
 #[derive(Debug, Clone)]
 pub(crate) struct BatchRow {
     /// The identifier the app was given. It also names the record file, and
@@ -345,6 +345,15 @@ pub(crate) struct BatchRow {
     pub(crate) started_unix_secs: i64,
     /// The transfer ids this batch covers, in the order they were queued.
     pub(crate) transfer_ids: Vec<String>,
+    /// How many of `transfer_ids` have reached `Done`, as last written to
+    /// the batch record. A floor `info` reports at least: a `Done`
+    /// transfer's own row does not survive a restart, so the live count
+    /// alone would undercount, or lose, everything a batch finished before
+    /// one. Raised by `transfer::finish` each time a transfer in this batch
+    /// reaches `Done`; never lowered.
+    pub(crate) done_files: u32,
+    /// The sum of `bytes_total` over the transfers `done_files` counts.
+    pub(crate) done_bytes: u64,
 }
 
 impl BatchRow {
@@ -352,9 +361,11 @@ impl BatchRow {
     ///
     /// `files_total` is the length of `transfer_ids` itself: it is a stored
     /// fact, not an aggregate, so it never shrinks when a finished
-    /// transfer's row does not survive a restart. Every other aggregate
-    /// field is computed only from the transfer ids that currently name a
-    /// row in `transfers`.
+    /// transfer's row does not survive a restart. `files_done` and
+    /// `bytes_done` are the larger of `done_files`/`done_bytes` and what the
+    /// transfer ids that currently name a row in `transfers` add up to; see
+    /// the field documentation on `done_files`. Every other aggregate field
+    /// is computed only from those live rows.
     pub(crate) fn info(&self, transfers: &BTreeMap<String, TransferRow>) -> crate::BatchInfo {
         let rows: Vec<&TransferRow> = self
             .transfer_ids
@@ -362,14 +373,16 @@ impl BatchRow {
             .filter_map(|id| transfers.get(id))
             .collect();
         let files_total = u32::try_from(self.transfer_ids.len()).unwrap_or(u32::MAX);
-        let files_done = u32::try_from(
+        let live_files_done = u32::try_from(
             rows.iter()
                 .filter(|row| row.state == TransferState::Done)
                 .count(),
         )
         .unwrap_or(u32::MAX);
+        let files_done = self.done_files.max(live_files_done);
+        let live_bytes_done: u64 = rows.iter().map(|row| row.bytes_done).sum();
+        let bytes_done = self.done_bytes.max(live_bytes_done);
         let bytes_total = rows.iter().map(|row| row.bytes_total).sum();
-        let bytes_done = rows.iter().map(|row| row.bytes_done).sum();
         let state = worst_batch_state(&rows);
         let speed_bytes_per_sec = rows
             .iter()

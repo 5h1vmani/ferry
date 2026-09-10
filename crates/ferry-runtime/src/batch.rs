@@ -3,11 +3,20 @@
 //!
 //! `docs/engine-contract.md`, batch D, item 2: aggregates — files done,
 //! bytes, state, speed, and ended — are computed live from the transfer
-//! rows and never stored. This module stores the rest: the label, the
+//! rows, never trusted alone. This module stores the rest: the label, the
 //! origin, the direction, when the batch started, and which transfers
 //! belong to it, in the order they were queued. The device key is not
 //! stored either: like a transfer id, a batch id carries it as the text
 //! before the first `-`, and the loader in `engine.rs` reads it from there.
+//!
+//! It also stores a floor for `files_done` and `bytes_done`: a `Done`
+//! transfer's own record is deleted the moment it finishes, so a restart
+//! only ever reloads the transfers still in progress, and the live count
+//! alone would show fewer done than really are, or none at all, for every
+//! batch that outlives a restart. `transfer::finish` raises this floor by
+//! one transfer's `bytes_total` each time a transfer in the batch reaches
+//! `Done`, and writes the record down. `BatchRow::info` reports whichever of
+//! the floor and the live count is larger.
 //!
 //! Written the way `record.rs` writes a transfer record: a version byte,
 //! then the bytes go to a temporary name and are renamed over the real one,
@@ -28,7 +37,16 @@ use crate::state::BatchRow;
 use crate::{Direction, FerryError, Origin};
 
 /// The version byte every batch record starts with.
-const FORMAT_VERSION: u8 = 1;
+///
+/// Version 1 held no `done_files` or `done_bytes`. A version 1 file still
+/// loads: both come back zero, which understates a batch that already had
+/// some files done under that older build, but never overstates one, and
+/// the live count still fills in whatever the version 1 file could not
+/// have known to raise. See [`BatchRecord::decode`].
+const FORMAT_VERSION: u8 = 2;
+
+/// The format version before `done_files` and `done_bytes` were added.
+const FORMAT_VERSION_1: u8 = 1;
 
 /// What one batch record holds. The device key and the batch id are not
 /// part of this: both live in the record's file name.
@@ -44,6 +62,11 @@ pub(crate) struct BatchRecord {
     pub(crate) started_unix_secs: i64,
     /// The transfer ids this batch covers, in the order they were queued.
     pub(crate) transfer_ids: Vec<String>,
+    /// How many of `transfer_ids` had reached `Done` as of the last write.
+    /// A floor, not a live count: see the module documentation.
+    pub(crate) done_files: u32,
+    /// The sum of `bytes_total` over the transfers `done_files` counts.
+    pub(crate) done_bytes: u64,
 }
 
 impl BatchRecord {
@@ -56,6 +79,8 @@ impl BatchRecord {
             direction: row.direction,
             started_unix_secs: row.started_unix_secs,
             transfer_ids: row.transfer_ids.clone(),
+            done_files: row.done_files,
+            done_bytes: row.done_bytes,
         }
     }
 
@@ -77,13 +102,15 @@ impl BatchRecord {
         for id in &self.transfer_ids {
             e.text(id);
         }
+        e.u32(self.done_files);
+        e.u64(self.done_bytes);
         e.finish()
     }
 
     fn decode(bytes: &[u8]) -> Option<Self> {
         let mut d = Decoder::new(bytes);
         let version = d.u8().ok()?;
-        if version != FORMAT_VERSION {
+        if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
             return None;
         }
         let label = d.text(limits::MAX_PATH_LEN).ok()?.to_owned();
@@ -103,6 +130,11 @@ impl BatchRecord {
         for _ in 0..count {
             transfer_ids.push(d.text(limits::MAX_PATH_LEN).ok()?.to_owned());
         }
+        let (done_files, done_bytes) = if version == FORMAT_VERSION_1 {
+            (0, 0)
+        } else {
+            (d.u32().ok()?, d.u64().ok()?)
+        };
         d.finish().ok()?;
         Some(Self {
             label,
@@ -110,6 +142,8 @@ impl BatchRecord {
             direction,
             started_unix_secs,
             transfer_ids,
+            done_files,
+            done_bytes,
         })
     }
 }
@@ -193,6 +227,8 @@ mod tests {
             direction: Direction::Pull,
             started_unix_secs: 1_700_000_000,
             transfer_ids: vec!["a-1".to_owned(), "a-2".to_owned()],
+            done_files: 1,
+            done_bytes: 4_096,
         }
     }
 
@@ -232,5 +268,31 @@ mod tests {
         let bytes = sample().encode();
         fs::write(&file, &bytes[..bytes.len() / 2]).expect("the test may write a short file");
         assert!(read_batch(&file).is_none());
+    }
+
+    #[test]
+    fn a_version_1_file_loads_with_no_done_count() {
+        use ferry_core::wire::Encoder;
+
+        let dir = temp_dir("version-1");
+        let file = dir.join("batch-4");
+        let mut e = Encoder::new();
+        e.u8(1); // FORMAT_VERSION_1
+        e.text("Internal storage/DCIM/Camera");
+        e.u8(0); // Origin::Manual
+        e.u8(0); // Direction::Pull
+        e.fixed(&1_700_000_000i64.to_be_bytes());
+        e.u32(2);
+        e.text("a-1");
+        e.text("a-2");
+        fs::write(&file, e.finish()).expect("the hand-built version 1 file should write");
+
+        let read = read_batch(&file).expect("a version 1 batch file should still load");
+        assert_eq!(read.transfer_ids, vec!["a-1".to_owned(), "a-2".to_owned()]);
+        assert_eq!(
+            (read.done_files, read.done_bytes),
+            (0, 0),
+            "a version 1 file predates the done count; it loads as zero, not a decode failure"
+        );
     }
 }

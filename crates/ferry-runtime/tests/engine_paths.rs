@@ -1487,6 +1487,113 @@ fn a_restart_keeps_a_batchs_grouping() {
     engine.stop();
 }
 
+// ---------------------------------------------------------------------------
+// Batch D audit, D4: a batch's done count survives a restart.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_batch_with_some_files_done_before_a_restart_still_reports_them_done_after() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    std::fs::create_dir(phone.shared_root().join("Camera")).expect("a folder for the camera roll");
+    // Two files the same size, so it does not matter which one `set_cut`
+    // below happens to land on: `pull_folder` queues both at once and a
+    // pool of workers may dial either first, but whichever dial is not the
+    // one `set_cut` is armed for runs uncut and reaches Done in full, while
+    // the other pauses partway.
+    std::fs::write(
+        phone.shared_root().join("Camera/a.bin"),
+        sample_bytes(mib(4)),
+    )
+    .expect("the phone's shared folder should accept the first file");
+    std::fs::write(
+        phone.shared_root().join("Camera/b.bin"),
+        sample_bytes(mib(4)),
+    )
+    .expect("the phone's shared folder should accept the second file");
+
+    // `set_cut` is one shot (`Option::take` in `transfer::attempt`), so only
+    // the first dial to reach it is cut; the other transfer's dial finds
+    // nothing armed and runs to completion. 2 MiB is short of each file's
+    // 4 MiB, so the cut one pauses partway rather than finishing anyway.
+    mac.engine.set_cut(2 * MIB);
+
+    let batch_id = mac
+        .engine
+        .pull_folder(phone_key, "Root/Camera".to_owned())
+        .expect("the folder copy should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = batch_id.clone();
+    poll_until("one file to finish and the other to pause", move || {
+        let transfers = engine.transfers();
+        let done = transfers
+            .iter()
+            .filter(|t| t.batch_id.as_deref() == Some(wanted.as_str()))
+            .filter(|t| t.state == TransferState::Done)
+            .count();
+        let paused = transfers
+            .iter()
+            .filter(|t| t.batch_id.as_deref() == Some(wanted.as_str()))
+            .filter(|t| t.state == TransferState::Paused)
+            .count();
+        done == 1 && paused == 1
+    });
+    let before_stop = mac
+        .engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the batch is listed");
+    assert_eq!(before_stop.files_done, 1, "one of the two files is done");
+
+    mac.engine.stop();
+    phone.engine.stop();
+
+    // A new engine on the same folders, as if the app had been restarted.
+    // The done file's own record does not survive: `run_once` removed it
+    // the moment it finished. Only the paused file's record does.
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        mac.key.clone(),
+        mac.data.path(),
+        mac.shared.path(),
+        mac.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+
+    let surviving: Vec<_> = engine
+        .transfers()
+        .into_iter()
+        .filter(|t| t.batch_id.as_deref() == Some(batch_id.as_str()))
+        .collect();
+    assert_eq!(
+        surviving.len(),
+        1,
+        "only the paused transfer's own row survives the restart"
+    );
+
+    // This is the audit's "0 of 100, then 40 of 100, forever": without the
+    // stored floor, files_done would read 0 here, because the done file's
+    // row is gone and the live count alone has nothing left to count it
+    // from.
+    let after = engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the batch is still listed after a restart");
+    assert_eq!(
+        after.files_done, 1,
+        "the batch's stored floor still says one file is done, not zero"
+    );
+
+    engine.stop();
+}
+
 #[test]
 fn forget_removes_the_devices_batch_file() {
     let phone = build("Pixel 3 XL");

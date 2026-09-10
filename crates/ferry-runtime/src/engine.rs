@@ -1315,6 +1315,8 @@ impl Engine {
             origin: Origin::Manual,
             started_unix_secs,
             transfer_ids: ids.clone(),
+            done_files: 0,
+            done_bytes: 0,
         };
         batch::write_batch(
             &self.shared.batch_path(&batch_id),
@@ -1789,6 +1791,8 @@ fn load_saved_batches(shared: &Arc<Shared>) {
                         origin: record.origin,
                         started_unix_secs: record.started_unix_secs,
                         transfer_ids: record.transfer_ids,
+                        done_files: record.done_files,
+                        done_bytes: record.done_bytes,
                     },
                 );
             } else {

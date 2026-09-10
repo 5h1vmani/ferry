@@ -55,6 +55,7 @@ use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress}
 use ferry_core::tcp;
 
 use crate::access::{self, EntryFields};
+use crate::batch::{self, BatchRecord};
 use crate::engine::{Shared, dial_targets, mark_reachable, notify, remove_record};
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
 use crate::guard::{Cut, StopAware};
@@ -276,7 +277,7 @@ fn clear_running(shared: &Arc<Shared>, id: &str) {
 
 /// Write a transfer's new state down and tell the app.
 fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<FerryError>) {
-    {
+    let batch_update = {
         let mut locked = lock(&shared.state);
         let Some(row) = locked.transfers.get_mut(id) else {
             return;
@@ -292,6 +293,30 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
         if matches!(state, TransferState::Done | TransferState::Failed) {
             row.ended_unix_secs = Some(now_unix_secs());
         }
+        let bytes_total = row.bytes_total;
+        let batch_id = row.batch_id.clone();
+
+        // docs/engine-contract.md, batch D, item 2, and the D4 fix: this
+        // row's own record is removed right after this, by the caller, once
+        // it is `Done`, so a restart would not see it to count again. The
+        // batch keeps a floor of its own, raised here and written down,
+        // that `BatchRow::info` reports at least, once this row is gone.
+        if state == TransferState::Done {
+            batch_id.and_then(|batch_id| {
+                let batch = locked.batches.get_mut(&batch_id)?;
+                batch.done_files += 1;
+                batch.done_bytes += bytes_total;
+                Some((shared.batch_path(&batch_id), BatchRecord::of(batch)))
+            })
+        } else {
+            None
+        }
+    };
+    if let Some((path, record)) = batch_update {
+        // The record is best effort here, the same as every other batch
+        // write: a failed write leaves the floor exactly where it was, and
+        // the live count still fills in for this run.
+        drop(batch::write_batch(&path, &record));
     }
     notify(shared, Change::Transfers);
     notify(shared, Change::Devices);
