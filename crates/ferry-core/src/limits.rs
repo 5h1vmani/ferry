@@ -63,3 +63,21 @@ pub const MAX_MANIFEST_CHUNKS: u32 = 32 * 1024;
 /// A manifest holds a length, a chunk size, a count, one 32 byte value per
 /// chunk, and a 32 byte root hash.
 pub const MAX_MANIFEST_BYTES: usize = 8 + 4 + 4 + (MAX_MANIFEST_CHUNKS as usize * 32) + 32;
+
+/// How long a handshake may run before the connection is dropped, in seconds.
+///
+/// A handshake is the version exchange plus the Noise messages that follow.
+/// `tcp` sets this as the socket read and write timeout until the handshake
+/// finishes, then clears it. This stops a client that connects and then
+/// sends nothing from holding a slot forever.
+pub const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+
+/// The largest number of accepted connections that may be mid handshake at
+/// once.
+///
+/// A handshake takes work before either side has proved anything, so it is a
+/// place one peer could exhaust the other by opening many connections and
+/// finishing none of them. `tcp` counts a connection as pending from the
+/// moment it is accepted until its handshake ends, and refuses the next one
+/// once this many are already pending.
+pub const MAX_PENDING_HANDSHAKES: u32 = 8;
