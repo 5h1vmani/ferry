@@ -53,7 +53,8 @@
 //!
 //! One engine type serves both devices. The phone calls
 //! [`Engine::set_reachable`] to advertise and accept. The Mac calls
-//! [`Engine::start_pairing`] to browse and, once paired, [`Engine::pull`].
+//! [`Engine::start_pairing`] to browse and, once paired, [`Engine::list`] to
+//! browse the phone's shared folder and [`Engine::pull`] to fetch a file.
 //! Nothing in the type knows which device it is on.
 //!
 //! # Not yet
@@ -110,6 +111,10 @@
 //!     pub fn pull(&self, device_key_hex: String, remote_path: String, local_name: String) -> Result<String, FerryError>;
 //!     /// Retry a failed transfer from its resume point.
 //!     pub fn retry(&self, transfer_id: String) -> Result<(), FerryError>;
+//!     /// List one folder on a paired device. Pages through the server's
+//!     /// cursor on its own and returns every entry. Blocks for the round
+//!     /// trip, so the app calls it off the main thread.
+//!     pub fn list(&self, device_key_hex: String, remote_path: String) -> Result<Vec<Entry>, FerryError>;
 //! }
 //! ```
 //!
@@ -283,6 +288,30 @@ pub struct TransferInfo {
     pub transport: Option<Transport>,
     /// Why it failed or paused, when it did.
     pub error: Option<FerryError>,
+}
+
+/// What kind of thing an [`Entry`] names, mirroring
+/// `ferry_core::ops::FileKind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum EntryKind {
+    /// A regular file.
+    File,
+    /// A directory.
+    Directory,
+}
+
+/// One file or directory inside another device's shared root, as
+/// [`Engine::list`] returns it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Entry {
+    /// The entry's name within its parent directory. Never a full path.
+    pub name: String,
+    /// Whether the entry is a file or a directory.
+    pub kind: EntryKind,
+    /// The size in bytes.
+    pub size: u64,
+    /// The last modification time, in seconds since the Unix epoch.
+    pub modified_unix_secs: i64,
 }
 
 /// A device that could be paired, as the Mac's pairing screen lists it.

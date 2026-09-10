@@ -325,6 +325,82 @@ fn two_engines_pair_and_move_a_file() {
     phone.engine.stop();
 }
 
+#[test]
+fn the_mac_lists_a_folder_on_the_phone() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+
+    phone.engine.set_reachable(true);
+    phone.engine.start_pairing();
+    mac.engine.start_pairing();
+
+    let phone_addr = loopback_addr(&phone);
+    mac.engine.offer_candidate(phone_addr);
+
+    let found = mac
+        .inbox
+        .wait_pairing("the Mac to list a candidate", is_found);
+    let PairingState::Found { candidates } = &found else {
+        panic!("expected candidates, got {found:?}");
+    };
+    let wanted = format!("wifi:{phone_addr}");
+    let chosen = candidates
+        .iter()
+        .find(|candidate| candidate.id == wanted)
+        .unwrap_or_else(|| panic!("the injected candidate {wanted} should be listed"));
+    mac.engine
+        .pick_candidate(chosen.id.clone())
+        .expect("the candidate should be pickable");
+
+    mac.inbox.wait_pairing("the Mac to show a code", is_code);
+    phone
+        .inbox
+        .wait_pairing("the phone to show a code", is_code);
+
+    mac.engine.confirm_pairing(true);
+    phone.engine.confirm_pairing(true);
+    mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
+    phone
+        .inbox
+        .wait_pairing("the phone to confirm", is_confirmed);
+
+    let on_mac = mac.engine.devices();
+    assert_eq!(on_mac.len(), 1, "the Mac lists the phone");
+    let phone_key = on_mac[0].key_hex.clone();
+
+    // A remote path always names at least one component, so the shared
+    // root itself has no path of its own. `Photos` stands in for the first
+    // folder a person opens.
+    std::fs::create_dir(phone.shared_root.join("Photos"))
+        .expect("the phone's shared folder should accept a new folder");
+    let bytes = sample_bytes();
+    std::fs::write(phone.shared_root.join("Photos/holiday.bin"), &bytes)
+        .expect("the phone's shared folder should accept a file");
+
+    let entries = mac
+        .engine
+        .list(phone_key.clone(), "Photos".to_owned())
+        .expect("the folder should list");
+    let found_entry = entries
+        .iter()
+        .find(|entry| entry.name == "holiday.bin")
+        .expect("the sample file should be in the listing");
+    assert_eq!(
+        found_entry.size,
+        bytes.len() as u64,
+        "the listed size must match the file on disk"
+    );
+
+    let missing = mac
+        .engine
+        .list(phone_key, "no-such-folder".to_owned())
+        .expect_err("a folder that does not exist cannot be listed");
+    assert_eq!(code_of_error(&missing), "OpError::NotFound");
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
 /// The code an error carries, or a panic saying it had none.
 fn code_of_error(error: &ferry_runtime::FerryError) -> String {
     let ferry_runtime::FerryError::Failed { code, .. } = error;

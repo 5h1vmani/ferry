@@ -333,7 +333,7 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
         return Outcome::Fatal(failed("Runtime::NotStarted"));
     };
 
-    let (stream, addr, via) = match dial(shared, &plan) {
+    let (stream, addr, via) = match dial(shared, &plan.device_key_hex, &plan.peer) {
         Ok(found) => found,
         Err(error) => return Outcome::Retry(error),
     };
@@ -368,15 +368,19 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
 }
 
 /// Find a way to reach the device, best path first.
-fn dial(
+///
+/// Shared by a transfer attempt and by `Engine::list`, so a dial only has
+/// one implementation.
+pub(crate) fn dial(
     shared: &Arc<Shared>,
-    plan: &Plan,
+    device_key_hex: &str,
+    peer: &PublicKey,
 ) -> Result<(ferry_core::noise::SecureStream, SocketAddr, Transport), FerryError> {
-    for (addr, via) in dial_targets(shared, &plan.device_key_hex) {
+    for (addr, via) in dial_targets(shared, device_key_hex) {
         if shared.stopping() {
             break;
         }
-        if let Ok(connection) = tcp::connect(addr, &shared.key, &plan.peer) {
+        if let Ok(connection) = tcp::connect(addr, &shared.key, peer) {
             return Ok((connection.stream, connection.remote, via));
         }
     }

@@ -11,9 +11,10 @@ use ferry_core::adb::{Adb, find_adb};
 use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
+use ferry_core::ops::FileKind;
 use ferry_core::path::RemotePath;
 use ferry_core::peers::{Peer, PeerStore};
-use ferry_core::rpc::{MAX_NAME_LEN, exchange_hello, serve};
+use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
 use zeroize::Zeroize;
@@ -28,8 +29,8 @@ use crate::state::{
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
-    Config, DeviceInfo, EngineListener, FerryError, KeyPair, PairingCandidate, PairingState,
-    TransferInfo, TransferState, Transport,
+    Config, DeviceInfo, EngineListener, Entry, EntryKind, FerryError, KeyPair, PairingCandidate,
+    PairingState, TransferInfo, TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -742,6 +743,61 @@ impl Engine {
         Ok(id)
     }
 
+    /// List every entry in one folder on a paired device.
+    ///
+    /// Dials the device, then pages through the server's cursor until it
+    /// reports no more entries, and returns them in the order the server
+    /// sent them. This blocks for one round trip per page, so the app must
+    /// call it off the main thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `PathError` code when the path is refused,
+    /// `Runtime::NotPaired` when that device is not stored,
+    /// `Runtime::NotStarted` before [`Engine::start`] has run,
+    /// `Runtime::NotReachable` when no dial succeeds, and an `OpError` code
+    /// when the peer refuses, such as `OpError::NotFound` for a folder that
+    /// does not exist.
+    pub fn list(
+        &self,
+        device_key_hex: String,
+        remote_path: String,
+    ) -> Result<Vec<Entry>, FerryError> {
+        let path = RemotePath::parse(&remote_path).map_err(from_path)?;
+        let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+
+        {
+            let state = lock(&self.shared.state);
+            if !state.started {
+                return Err(failed("Runtime::NotStarted"));
+            }
+            if state.peers.get(&key).is_none() {
+                return Err(failed("Runtime::NotPaired"));
+            }
+        }
+
+        let (stream, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
+        mark_reachable(&self.shared, &device_key_hex, addr, via);
+
+        let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
+        exchange_hello(&mut stream, &self.shared.display_name).map_err(|error| from_rpc(&error))?;
+
+        let mut client = Client::new(stream);
+        let mut entries = Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let (page, next_cursor) = client
+                .list(&path, cursor)
+                .map_err(|error| from_rpc(&error))?;
+            entries.extend(page.into_iter().map(entry_from_core));
+            let Some(next_cursor) = next_cursor else {
+                break;
+            };
+            cursor = next_cursor;
+        }
+        Ok(entries)
+    }
+
     /// Restart a failed transfer from its resume point.
     ///
     /// # Errors
@@ -862,6 +918,19 @@ pub fn generate_key() -> Result<KeyPair, FerryError> {
 /// The last component of a path, for display.
 fn leaf_of(path: &RemotePath) -> String {
     path.components().last().unwrap_or(path.as_str()).to_owned()
+}
+
+/// Turn one core entry into the shape the app receives.
+fn entry_from_core(entry: ferry_core::ops::Entry) -> Entry {
+    Entry {
+        name: entry.name,
+        kind: match entry.kind {
+            FileKind::File => EntryKind::File,
+            FileKind::Directory => EntryKind::Directory,
+        },
+        size: entry.size,
+        modified_unix_secs: entry.modified_unix_secs,
+    }
 }
 
 /// Connect to our own listener so a blocked `accept` returns.
