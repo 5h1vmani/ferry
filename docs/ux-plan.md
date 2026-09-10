@@ -8,8 +8,8 @@ survives any one conversation.
 |---|---|---|---|
 | 1 | An outcome metric on every job in `docs/jobs.md`. These are the acceptance criteria for phase 1. | Judgment | Done, 10 September 2026 |
 | 2 | Information architecture in `docs/ia.md`: the objects, the navigation on each platform, the states of every screen, and the first run. | Judgment | Done, 10 September 2026 |
-| 3 | The token layer. `design/tokens.json` holds spacing, radius, semantic type styles, and semantic colour roles on top of `design/colors.json`. A script generates `Tokens.swift` and `Tokens.kt`. | Mechanical, delegated | Not started |
-| 4 | The component inventory: the custom views that appear on more than one screen, each with its states. About six. | Judgment | Not started |
+| 3 | The token layer. `design/tokens.json` holds spacing, radius, semantic type styles, and semantic colour roles on top of `design/colors.json`. A script generates `Tokens.swift` and `Tokens.kt`. | Mechanical, delegated | In progress, 10 September 2026 |
+| 4 | The component inventory: the custom views that appear on more than one screen, each with its states. About six. | Judgment | Done, 10 September 2026, in `docs/components.md` |
 | 5 | The error table: every error the core can emit, mapped to what stopped, why, and what to do. One file, both apps read it. A test checks no cell is empty. | Content | Not started |
 | 6 | Low-fi wireframes of the four screens in their key states. Boxes and real copy. No colour, no polish. Reviewed by Shiva, changed while cheap. | Judgment, then review | Not started |
 | 7 | Build the screens natively. No tests on screens until they have settled. | Mechanical, delegated, reviewed | Not started |
