@@ -1651,9 +1651,9 @@ fn a_garbage_batch_file_is_removed_when_the_engine_starts() {
     // A name shaped like a real batch id, `<device key>-<session>`, so it is
     // not skipped for that reason first; its contents are what do not
     // decode.
-    let garbage_path = batches_dir.join("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-garbage");
-    std::fs::write(&garbage_path, b"not a batch record")
-        .expect("the garbage file should write");
+    let garbage_path = batches_dir
+        .join("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-garbage");
+    std::fs::write(&garbage_path, b"not a batch record").expect("the garbage file should write");
     assert!(
         garbage_path.exists(),
         "the garbage file exists before the restart"
@@ -1804,9 +1804,12 @@ fn retry_keeps_a_transfers_batch_id_and_clears_the_batchs_end_time() {
         .retry(transfer_id.clone())
         .expect("a failed transfer can be retried");
 
-    wait_transfer(&side, &transfer_id, "retry to requeue it under the same batch", |t| {
-        t.state == TransferState::Queued && t.batch_id.as_deref() == Some(batch_id.as_str())
-    });
+    wait_transfer(
+        &side,
+        &transfer_id,
+        "retry to requeue it under the same batch",
+        |t| t.state == TransferState::Queued && t.batch_id.as_deref() == Some(batch_id.as_str()),
+    );
     let retried_batch = side
         .engine
         .batches()

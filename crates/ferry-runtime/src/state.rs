@@ -576,7 +576,10 @@ impl State {
 /// for a device whose cable is gone.
 pub(crate) fn clear_gone_usb_forwards(live: &mut BTreeMap<String, DeviceLive>, gone_ports: &[u16]) {
     for device in live.values_mut() {
-        if device.usb_port.is_some_and(|port| gone_ports.contains(&port)) {
+        if device
+            .usb_port
+            .is_some_and(|port| gone_ports.contains(&port))
+        {
             device.usb_port = None;
         }
     }
@@ -602,7 +605,7 @@ fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchRow, DeviceLive, Transport, TransferRow, WIFI_SUCCESS_LIFETIME_SECS,
+        BatchRow, DeviceLive, TransferRow, Transport, WIFI_SUCCESS_LIFETIME_SECS,
         available_transports, clear_gone_usb_forwards, worst_batch_state,
     };
     use crate::{Direction, Origin, TransferState};

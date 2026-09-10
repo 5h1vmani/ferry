@@ -359,8 +359,14 @@ mod tests {
 
     #[test]
     fn after_page_refuses_a_cursor_that_does_not_strictly_advance() {
-        assert!(after_page(5, Some(5), 1, 1).is_err(), "the same cursor again");
-        assert!(after_page(5, Some(4), 1, 1).is_err(), "a cursor that goes backwards");
+        assert!(
+            after_page(5, Some(5), 1, 1).is_err(),
+            "the same cursor again"
+        );
+        assert!(
+            after_page(5, Some(4), 1, 1).is_err(),
+            "a cursor that goes backwards"
+        );
     }
 
     #[test]
