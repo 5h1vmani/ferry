@@ -268,6 +268,10 @@ pub struct DeviceInfo {
     pub speed_bytes_per_sec: Option<u64>,
     /// When it was last reachable, if it is not reachable now.
     pub last_seen_unix_secs: Option<i64>,
+    /// Every transport this device could currently be reached through,
+    /// `Usb` first. `reachable_via`, when it is `Some`, is always in this
+    /// list.
+    pub available_transports: Vec<Transport>,
 }
 
 /// Where a transfer is.
