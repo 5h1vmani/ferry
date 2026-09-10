@@ -1,10 +1,18 @@
 // One transfer's progress, in one line (docs/components.md, ProgressLine).
 // Never a custom drawn bar: this wraps the platform ProgressView.
+//
+// The engine moves one file per transfer, so the line states the bytes left
+// and the speed. The file count docs/ia.md shows belongs to a folder copy,
+// which the engine does not do yet.
 
 import SwiftUI
 
 struct ProgressLine: View {
     let transfer: TransferInfo
+    /// The speed the engine reports for this transfer's device, if bytes
+    /// are moving. The engine reports speed per device, not per transfer.
+    var speedBytesPerSec: UInt64?
+    var onRetry: () -> Void = {}
 
     private var fraction: Double {
         guard transfer.bytesTotal > 0 else { return 0 }
@@ -17,16 +25,21 @@ struct ProgressLine: View {
 
     var body: some View {
         switch transfer.state {
-        case .queued, .active:
+        case .queued:
+            Text(S.progressLine.queued)
+                .font(FerryFont.body)
+                .foregroundStyle(FerryColor.textSecondary)
+
+        case .active:
             VStack(alignment: .leading, spacing: FerrySpace.s1) {
                 ProgressView(value: fraction)
                     .tint(FerryColor.accent)
-                Text(lineText)
+                Text(activeText)
                     .font(FerryFont.mono)
                     .foregroundStyle(FerryColor.text)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(lineText)
+            .accessibilityLabel(activeText)
             .accessibilityValue(S.progressLine.accessibilityTransferring(percent: percent))
 
         case .paused:
@@ -53,41 +66,44 @@ struct ProgressLine: View {
 
         case .failed:
             if let error = transfer.error {
-                ErrorBlock(error: error)
+                ErrorBlock(error: ThreePartError(error, canRetry: true), onRetry: onRetry)
             }
         }
     }
 
-    private var lineText: String {
-        let files = S.progressLine.filesProgress(done: transfer.filesDone, total: transfer.filesTotal)
-        let remaining = S.progressLine.bytesRemaining(FerryFormat.bytes(transfer.bytesTotal - transfer.bytesDone))
-        let speed = transfer.speedBytesPerSec.map { FerryFormat.speed(bytesPerSec: $0) }
-        var parts = [files, remaining]
-        if let speed {
-            parts.append(speed)
+    /// "2.1 GB remaining · 38 MB/s". The speed is left out when the engine
+    /// reports none, because an unknown part is left out, not guessed.
+    private var activeText: String {
+        let remaining = transfer.bytesTotal > transfer.bytesDone
+            ? transfer.bytesTotal - transfer.bytesDone
+            : 0
+        var parts = [S.progressLine.bytesRemaining(FerryFormat.bytes(remaining))]
+        if let speed = speedBytesPerSec, speed > 0 {
+            parts.append(FerryFormat.speed(bytesPerSec: speed))
         }
         return parts.joined(separator: S.common.dotSeparator)
     }
 
+    /// "Paused." and then why and what to do, from the error table. The
+    /// engine puts the reason for the pause in the transfer's error.
     private var pausedText: String {
-        let reason = transfer.pausedReason ?? S.progressLine.cableDisconnectedReason
-        return "\(S.progressLine.paused). \(reason)"
+        guard let error = transfer.error else { return S.progressLine.paused }
+        let words = ThreePartError(error, canRetry: false)
+        return [S.progressLine.paused, words.why, words.whatToDo].joined(separator: " ")
     }
 
     private var doneText: String {
-        S.progressLine.doneSummary(
-            files: transfer.filesTotal,
-            size: FerryFormat.bytes(transfer.bytesTotal),
-            duration: FerryFormat.minutes(transfer.doneDurationSeconds ?? 0)
-        )
+        FerryFormat.bytes(transfer.bytesTotal)
     }
 }
 
+#if DEBUG
 #Preview {
     VStack(alignment: .leading, spacing: FerrySpace.s5) {
-        ForEach(SampleState.transfers) { transfer in
-            ProgressLine(transfer: transfer)
+        ForEach(PreviewData.transfers) { transfer in
+            ProgressLine(transfer: transfer, speedBytesPerSec: 38_000_000)
         }
     }
     .padding()
 }
+#endif

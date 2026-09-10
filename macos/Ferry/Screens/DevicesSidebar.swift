@@ -5,7 +5,8 @@ import SwiftUI
 
 struct DevicesSidebar: View {
     let devices: [DeviceInfo]
-    @Binding var selection: DeviceInfo.ID?
+    /// The selected device's public key.
+    @Binding var selection: String?
     var onPair: () -> Void = {}
 
     var body: some View {
@@ -16,7 +17,7 @@ struct DevicesSidebar: View {
                 VStack(spacing: 0) {
                     List(devices, selection: $selection) { device in
                         DeviceRow(device: device)
-                            .tag(device.id)
+                            .tag(device.keyHex)
                     }
                     Divider()
                     Button(action: onPair) {
@@ -32,9 +33,10 @@ struct DevicesSidebar: View {
     }
 }
 
+#if DEBUG
 #Preview {
     NavigationSplitView {
-        DevicesSidebar(devices: SampleState.devices, selection: .constant(nil))
+        DevicesSidebar(devices: PreviewData.devices, selection: .constant(nil))
     } detail: {
         EmptyState(line: S.devices.noPhoneSelected)
     }
@@ -47,3 +49,4 @@ struct DevicesSidebar: View {
         EmptyState(line: S.devices.noPhoneSelected)
     }
 }
+#endif

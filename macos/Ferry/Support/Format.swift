@@ -1,52 +1,59 @@
-// Plain number formatting shared by components and sample data. Ferry states
-// numbers instead of adjectives (docs/voice.md, rule 5), so these helpers
-// turn raw bytes, seconds, and dates into the exact shapes the components
-// print, such as "38 MB/s" or "2.1 GB".
+// Plain number formatting shared by the components. Ferry states numbers
+// instead of adjectives (docs/voice.md, rule 5), so these helpers turn the
+// raw bytes and Unix seconds the engine reports into the exact shapes the
+// components print, such as "38 MB/s" or "2.1 GB".
 
 import Foundation
 
 enum FerryFormat {
     /// "38 MB/s", for the visible label. Decimal megabytes, rounded.
-    static func speed(bytesPerSec: Int) -> String {
+    static func speed(bytesPerSec: UInt64) -> String {
         let mb = Double(bytesPerSec) / 1_000_000
         return "\(Int(mb.rounded())) MB/s"
     }
 
     /// "38 megabytes per second", for VoiceOver. Same value, spoken out.
-    static func speedSpoken(bytesPerSec: Int) -> String {
+    static func speedSpoken(bytesPerSec: UInt64) -> String {
         let mb = Double(bytesPerSec) / 1_000_000
         return "\(Int(mb.rounded())) megabytes per second"
     }
 
-    /// "2.1 GB" for a byte count of a gigabyte or more, else "120 MB".
-    static func bytes(_ count: Int64) -> String {
+    /// "2.1 GB" for a byte count of a gigabyte or more, "120 MB" for a
+    /// megabyte or more, and "4096 bytes" below that.
+    static func bytes(_ count: UInt64) -> String {
         let value = Double(count)
         if value >= 1_000_000_000 {
             return String(format: "%.1f GB", value / 1_000_000_000)
         }
-        return "\(Int((value / 1_000_000).rounded())) MB"
+        if value >= 1_000_000 {
+            return "\(Int((value / 1_000_000).rounded())) MB"
+        }
+        return "\(count) bytes"
     }
 
-    /// "3 min" for a duration in seconds. Ferry transfers run in minutes,
-    /// never hours, so no larger unit is needed in phase 1.
-    static func minutes(_ seconds: Int) -> String {
-        let minutes = max(1, Int((Double(seconds) / 60).rounded()))
-        return "\(minutes) min"
-    }
-
-    /// "2 hours ago" for a past date, using the system's own phrasing.
-    static func relative(_ date: Date) -> String {
+    /// "2 hours ago" for a time the engine reports in Unix seconds.
+    static func relative(unixSecs: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(unixSecs))
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .full
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 
-    /// "September 10, 2026" for a paired date.
-    static func longDate(_ date: Date) -> String {
+    /// "September 10, 2026" for a time the engine reports in Unix seconds.
+    static func longDate(unixSecs: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(unixSecs))
         let formatter = DateFormatter()
         formatter.dateStyle = .long
         formatter.timeStyle = .none
         return formatter.string(from: date)
+    }
+
+    /// "481 920" from the six digits the engine reports, grouped three and
+    /// three. A code of another length is returned unchanged.
+    static func pairingCode(_ code: String) -> String {
+        guard code.count == 6 else { return code }
+        let middle = code.index(code.startIndex, offsetBy: 3)
+        return "\(code[code.startIndex..<middle]) \(code[middle...])"
     }
 
     /// Spells out each digit of a pairing code for VoiceOver, so "481 920"

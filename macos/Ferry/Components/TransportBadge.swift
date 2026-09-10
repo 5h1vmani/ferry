@@ -6,9 +6,9 @@ import SwiftUI
 
 enum TransportBadgeState: Equatable {
     case usbIdle
-    case usbMoving(speedBytesPerSec: Int)
+    case usbMoving(speedBytesPerSec: UInt64)
     case wifiIdle
-    case wifiMoving(speedBytesPerSec: Int)
+    case wifiMoving(speedBytesPerSec: UInt64)
     case connecting
     case notReachable
 }
@@ -82,17 +82,18 @@ struct TransportBadge: View {
 }
 
 extension TransportBadgeState {
-    /// Builds the badge state a DeviceInfo shows in the Devices list.
-    init(device: DeviceInfo) {
-        switch device.reachableVia {
+    /// Builds the badge state for one transport and the speed the engine
+    /// reports on it. A nil transport means the device is not reachable.
+    init(transport: Transport?, speedBytesPerSec: UInt64?) {
+        switch transport {
         case .usb:
-            if let speed = device.speedBytesPerSec {
+            if let speed = speedBytesPerSec, speed > 0 {
                 self = .usbMoving(speedBytesPerSec: speed)
             } else {
                 self = .usbIdle
             }
         case .wifi:
-            if let speed = device.speedBytesPerSec {
+            if let speed = speedBytesPerSec, speed > 0 {
                 self = .wifiMoving(speedBytesPerSec: speed)
             } else {
                 self = .wifiIdle
@@ -102,23 +103,9 @@ extension TransportBadgeState {
         }
     }
 
-    /// Builds the badge state an active transfer shows next to its
-    /// ProgressLine.
-    init(transfer: TransferInfo) {
-        switch transfer.transport {
-        case .usb:
-            if let speed = transfer.speedBytesPerSec {
-                self = .usbMoving(speedBytesPerSec: speed)
-            } else {
-                self = .usbIdle
-            }
-        case .wifi:
-            if let speed = transfer.speedBytesPerSec {
-                self = .wifiMoving(speedBytesPerSec: speed)
-            } else {
-                self = .wifiIdle
-            }
-        }
+    /// Builds the badge state a DeviceInfo shows in the Devices list.
+    init(device: DeviceInfo) {
+        self.init(transport: device.reachableVia, speedBytesPerSec: device.speedBytesPerSec)
     }
 }
 

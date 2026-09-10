@@ -5,15 +5,20 @@
 // numbers instead of adjectives, a button is a verb.
 //
 // Some strings carry a number or a name that is only known at render time
-// (a speed, a file count, a device name). Those stay a `static let` format
+// (a speed, a file size, a device name). Those stay a `static let` format
 // template here, with a small `static func` next to it that fills the
 // template in. The English itself never leaves this file.
+//
+// The words for an engine error are not here. They are generated into
+// Generated/Errors.swift from design/errors.json.
 
 import Foundation
 
 enum S {
     enum app {
         static let name = "Ferry"
+        /// Sent to the phone when this Mac has no name of its own.
+        static let defaultDeviceName = "Mac"
     }
 
     /// Words shared by more than one screen or component.
@@ -24,6 +29,16 @@ enum S {
         static let connecting = "Connecting"
         static let notReachable = "Not reachable"
         static let dotSeparator = " · "
+
+        /// For an error code that is not in the generated table. That
+        /// should not happen, so the code itself is shown. A guess would
+        /// be worse than the code.
+        static let unknownErrorStopped = "The action stopped."
+        static let unknownErrorWhyFormat = "Ferry has no words for the code %@."
+        static func unknownErrorWhy(code: String) -> String {
+            String(format: unknownErrorWhyFormat, code)
+        }
+        static let unknownErrorToDo = "Report this code."
     }
 
     enum devices {
@@ -75,25 +90,16 @@ enum S {
     }
 
     enum progressLine {
-        static let filesProgressFormat = "%d of %d files"
-        static func filesProgress(done: Int, total: Int) -> String {
-            String(format: filesProgressFormat, done, total)
-        }
-
         static let bytesRemainingFormat = "%@ remaining"
         static func bytesRemaining(_ bytes: String) -> String {
             String(format: bytesRemainingFormat, bytes)
         }
 
-        static let paused = "Paused"
-        /// The exact words for a transfer paused by a dropped USB cable
-        /// (docs/ia.md, Transfers, Paused). Ferry uses the same words for
-        /// every cable-disconnect pause, on either platform.
-        static let cableDisconnectedReason = "The cable was disconnected. Reconnect to continue."
+        /// The engine queues a transfer past the fourth one, and while the
+        /// device is not reachable.
+        static let queued = "Queued."
 
-        static func doneSummary(files: Int, size: String, duration: String) -> String {
-            "\(files) files\(common.dotSeparator)\(size)\(common.dotSeparator)\(duration)"
-        }
+        static let paused = "Paused."
 
         static let accessibilityTransferringFormat = "Transferring, %d percent"
         static func accessibilityTransferring(percent: Int) -> String {
@@ -121,9 +127,20 @@ enum S {
         static func codeAccessibility(_ spokenDigits: String) -> String {
             String(format: codeAccessibilityFormat, spokenDigits)
         }
+
+        /// One candidate in the Found state (docs/ia.md, Pairing, Found).
+        /// A phone on the cable is the only one on that cable, so it needs
+        /// no short code. A phone on Wi-Fi shows the four characters it
+        /// shows on its own screen.
+        static let candidateUSB = "Phone over USB"
+        static let candidateWifiFormat = "Phone on Wi-Fi%@%@"
+        static func candidateWifi(shortCode: String) -> String {
+            String(format: candidateWifiFormat, common.dotSeparator, shortCode)
+        }
     }
 
     enum deviceDetail {
+        static let filesSection = "Files"
         static let transfersSection = "Transfers"
         static let infoSection = "Info"
         static let noTransfers = "No transfers."
@@ -132,24 +149,40 @@ enum S {
         static let forgetThisPhone = "Forget this phone"
     }
 
+    /// Browsing the phone's shared folder. docs/ia.md leaves this screen to
+    /// phase 2, so these words are new and follow docs/voice.md.
+    enum files {
+        static let root = "/"
+        static let goUp = "Go up"
+        static let copyToMac = "Copy to Mac"
+        static let emptyFolder = "This folder is empty."
+        static let reading = "Reading the folder."
+
+        static let folderAccessibilityFormat = "%@, folder"
+        static func folderAccessibility(name: String) -> String {
+            String(format: folderAccessibilityFormat, name)
+        }
+
+        static let fileAccessibilityFormat = "%@, %@"
+        static func fileAccessibility(name: String, size: String) -> String {
+            String(format: fileAccessibilityFormat, name, size)
+        }
+    }
+
     enum settings {
-        static let windowTitle = "Settings"
         static let sharedFolderLabel = "Shared folder"
         static let choose = "Choose"
     }
 
-    /// Scaffold-only chrome for viewing every state without a running
-    /// engine. None of this is shown to a person using the shipped app; it
-    /// exists so every screen state in docs/ia.md can be checked by eye.
-    enum debug {
-        static let sampleStateMenu = "Sample data"
-        static let sampleStateEmpty = "Empty"
-        static let sampleStatePopulated = "Populated"
-        static let pairingStatePicker = "Pairing state"
-        static let pairingStateWaiting = "Waiting"
-        static let pairingStateFound = "Found"
-        static let pairingStateCode = "Code"
-        static let pairingStateConfirmed = "Confirmed"
-        static let pairingStateFailed = "Failed"
+    /// The Keychain holds this Mac's key. A Keychain failure is not an
+    /// engine error, so its words are here and not in the generated table.
+    enum keyStore {
+        static let keychainStopped = "Ferry could not start."
+        static let keychainWhy = "The Keychain refused the device key."
+        static let keychainToDo = "Restart Ferry. If it repeats, unlock the login keychain."
+
+        static let wrongSizeStopped = "The stored key is unusable."
+        static let wrongSizeWhy = "It is not the size Ferry expects."
+        static let wrongSizeToDo = "Delete the Ferry device key in Keychain Access. Ferry makes a new one."
     }
 }

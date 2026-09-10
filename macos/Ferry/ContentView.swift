@@ -1,82 +1,58 @@
 // One window: a sidebar listing Devices, and the selected device's detail
 // on the right (docs/ia.md, On the Mac). No tabs, no toolbar clutter.
+//
+// Everything shown here comes from the engine. When the engine could not
+// start, the window shows that error instead, with a Retry control.
 
 import SwiftUI
 
 struct ContentView: View {
-    @State private var selection: DeviceInfo.ID?
+    @EnvironmentObject private var model: EngineModel
+    /// The selected device's public key, which is its identity.
+    @State private var selection: String?
     @State private var isPairingPresented = false
 
-    #if DEBUG
-    /// Scaffold only: lets both the empty and the populated screen state
-    /// be viewed without a running engine. Not part of the shipped app.
-    @State private var sampleDataPopulated = true
-    #endif
-
-    private var devices: [DeviceInfo] {
-        #if DEBUG
-        sampleDataPopulated ? SampleState.devices : []
-        #else
-        SampleState.devices
-        #endif
-    }
-
-    private func transfers(for deviceID: DeviceInfo.ID) -> [TransferInfo] {
-        // Only the sample's reachable phone has sample transfers.
-        deviceID == SampleState.reachablePhone.id ? SampleState.transfers : []
-    }
-
     var body: some View {
+        Group {
+            if let startError = model.startError {
+                ErrorBlock(error: startError, onRetry: { model.start() })
+                    .padding(FerrySpace.s6)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            } else {
+                window
+            }
+        }
+        .sheet(isPresented: $isPairingPresented) {
+            PairingSheet(selection: $selection)
+                .environmentObject(model)
+        }
+    }
+
+    private var window: some View {
         NavigationSplitView {
-            DevicesSidebar(devices: devices, selection: $selection) {
+            DevicesSidebar(devices: model.devices, selection: $selection) {
                 isPairingPresented = true
             }
         } detail: {
-            if let selection, let device = devices.first(where: { $0.id == selection }) {
-                DeviceDetail(device: device, transfers: transfers(for: device.id))
-            } else if devices.isEmpty {
+            if let device = selectedDevice {
+                DeviceDetail(device: device)
+            } else if model.devices.isEmpty {
                 EmptyState(line: S.devices.noPhonePaired)
             } else {
                 EmptyState(line: S.devices.noPhoneSelected)
             }
         }
-        .toolbar {
-            ToolbarItem {
-                Button {
-                    isPairingPresented = true
-                } label: {
-                    Label(S.devices.pairAPhone, systemImage: FerryIcon.pair)
-                }
-                .accessibilityLabel(S.devices.pairAPhone)
-            }
-
-            #if DEBUG
-            ToolbarItem {
-                Menu(S.debug.sampleStateMenu) {
-                    Button(S.debug.sampleStateEmpty) { sampleDataPopulated = false }
-                    Button(S.debug.sampleStatePopulated) { sampleDataPopulated = true }
-                }
-            }
-            #endif
-        }
-        .sheet(isPresented: $isPairingPresented) {
-            PairingSheet()
-        }
-        .onChange(of: devices.map(\.id)) {
-            if let selection, !devices.contains(where: { $0.id == selection }) {
-                self.selection = devices.first?.id
+        .onChange(of: model.devices.map(\.id)) { _, ids in
+            if let selection, !ids.contains(selection) {
+                self.selection = ids.first
             } else if selection == nil {
-                selection = devices.first?.id
-            }
-        }
-        .onAppear {
-            if selection == nil {
-                selection = devices.first?.id
+                selection = ids.first
             }
         }
     }
-}
 
-#Preview {
-    ContentView()
+    private var selectedDevice: DeviceInfo? {
+        guard let selection else { return nil }
+        return model.devices.first(where: { $0.keyHex == selection })
+    }
 }

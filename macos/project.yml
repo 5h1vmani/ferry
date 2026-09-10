@@ -18,6 +18,37 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: Ferry
+        excludes:
+          # The C header and the module map describe the Rust library to
+          # Swift. They are read through OTHER_SWIFT_FLAGS below, so they
+          # must not be compiled or copied into the app.
+          - "Generated/ferry_runtimeFFI.h"
+          - "Generated/ferry_runtimeFFI.modulemap"
+    preBuildScripts:
+      # Build the engine as a static library for this Mac before any Swift
+      # is compiled. The script runs on every build, so a Rust change always
+      # reaches the app. Cargo itself does nothing when nothing changed.
+      #
+      # The copy at the end matters. Cargo writes libferry_runtime.a and
+      # libferry_runtime.dylib into one directory, and the linker takes the
+      # dylib when both are on its search path. The copy stands alone in a
+      # directory of its own, so -lferry_runtime can only find the static
+      # library.
+      - name: Build the Rust engine
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          # Xcode runs this script with a short PATH that has no cargo in it.
+          # rustup writes this file for exactly that case.
+          if [ -f "$HOME/.cargo/env" ]; then
+            . "$HOME/.cargo/env"
+          fi
+          cd "$SRCROOT/.."
+          export CARGO_TARGET_DIR="$SRCROOT/../target/xcode"
+          cargo build --release -p ferry-runtime --target aarch64-apple-darwin
+          mkdir -p "$CARGO_TARGET_DIR/lib"
+          cp -f "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/libferry_runtime.a" \
+                "$CARGO_TARGET_DIR/lib/libferry_runtime.a"
     settings:
       base:
         PRODUCT_NAME: Ferry
@@ -28,6 +59,26 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Ferry/Ferry.entitlements
         SWIFT_VERSION: "5.9"
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
+        # This Mac has an Apple silicon processor, and the engine is built
+        # for that one target only.
+        ARCHS: arm64
+        ONLY_ACTIVE_ARCH: YES
+        # Link the engine built by the script above. This directory holds
+        # the static library and nothing else.
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../target/xcode/lib
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -lferry_runtime
+        # Let Swift see the generated C header through its module map.
+        SWIFT_INCLUDE_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/Ferry/Generated
+        OTHER_SWIFT_FLAGS:
+          - $(inherited)
+          - -Xcc
+          - -fmodule-map-file=$(SRCROOT)/Ferry/Generated/ferry_runtimeFFI.modulemap
     info:
       path: Ferry/Info.plist
       properties:
@@ -38,3 +89,8 @@ targets:
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.utilities
         NSPrincipalClass: NSApplication
+        # macOS 15 and later ask every app for local network access, whether
+        # it is sandboxed or not. See docs/decisions/0010-no-mac-sandbox.md.
+        NSLocalNetworkUsageDescription: Ferry finds your phone on this network and copies files from it.
+        NSBonjourServices:
+          - _ferry._tcp
