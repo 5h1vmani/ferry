@@ -7,9 +7,13 @@ the wire after every single byte of a transfer, 4718 cut points, and proves
 it. See `crates/ferry-runtime/tests/resume_sweep.rs`.
 
 Status: phase 1 is done and has run on a Mac and a Pixel 3 XL. Pairing over
-Wi-Fi, a file copied, and the cable all work. Phase 2 is next: photo import,
-then the Finder mount. Nothing is packaged for install yet. To build and run
-it, follow `docs/manual-checks.md` task 3.
+Wi-Fi, a file copied, and the cable all work. On 11 September 2026 the Mac
+app took its designed screens, and the engine gained named shared folders,
+folder copies as one batch, and an access log on both sides. The fifteen
+engine changes behind the screens are in `docs/engine-contract.md`, with
+their status. Phase 2 is next: photo import, then the Finder mount. Nothing
+is packaged for install yet. To build and run it, follow
+`docs/manual-checks.md` task 3.
 
 ## The problem
 

@@ -114,14 +114,20 @@ needs to connect, and no browser needs to connect.
 BLAKE3. It is fast, it parallelises, and its tree structure gives per-chunk
 verification and a whole-file root hash from a single pass.
 
-### Each side shares one root, and only one
+### Each side shares named roots
 
-The Mac shares a folder the user chooses.
+Each side serves a list of named folders, its roots. A peer sees a root's
+name as the first path segment, and `list("")` returns the roots. The Mac
+shares Desktop and Downloads by default, and the user adds or removes
+folders in Settings. Pulled files land in a separate download folder. See
+`docs/engine-contract.md` item 15 and `docs/protocol.md` section 8.
 
-The phone shares a fixed list of top-level folders: `DCIM`, `Pictures`,
-`Movies`, `Music`, `Download`, and `Documents`. The Android app holds broader
-access than that. Limiting the shared root limits the damage if the app or its
-transport is ever compromised.
+The phone shares one root today, "Internal storage", which is its whole
+external storage. Sharing only `DCIM`, `Pictures`, `Movies`, `Music`,
+`Download`, and `Documents` as separate roots is the per-peer root subset
+in phase 3, and the root list makes it a configuration change. Limiting
+what is shared limits the damage if the app or its transport is ever
+compromised.
 
 Path checks in the core are lexical. They cannot see what the filesystem
 resolves. A symlink inside the root that points outside it passes all of them,
@@ -230,7 +236,7 @@ yet decided, so these are working weeks, not calendar weeks.
 | Order | Scope | Estimate | Risk |
 |---|---|---|---|
 | 0 | Spike. Done. See `docs/spike-0-findings.md`. | Done | Done |
-| 1 | Rust core, the engine, both apps, mDNS, TCP, the adb USB transport, key storage, pairing. Pull only. Done and run on real devices on 10 September 2026. What remains is a UX pass and one test. See section 12. | Done | Done |
+| 1 | Rust core, the engine, both apps, mDNS, TCP, the adb USB transport, key storage, pairing. Pull only. Done and run on real devices on 10 September 2026. The designed screens and the engine fields behind them landed on 11 September 2026. See section 12. | Done | Done |
 | 2 | The runtime limits, then one-way photo import with content skip, then the Finder mount over a WebDAV bridge with thumbnail prefetch, push, delta on save, trusted networks, an access log, and the Mac in the Android file picker. | 8 to 12 weeks | Medium |
 | 3 | Optional. Per-peer root subset. QR code pairing. File Provider extension, which costs 99 dollars a year. Android Open Accessory, portfolio only. Hotspot fallback. | Undecided | High |
 
@@ -413,16 +419,23 @@ Done, 10 September 2026:
   Mac app looks for `adb`, and signing the Mac app with the owner's team so
   the Keychain and the network prompts remember it. See
   `docs/manual-checks.md` task 3.
+- The UX pass, 11 September 2026: the Mac app took the designed screens
+  from `docs/ia.md` and `docs/components.md`, and the engine gained what
+  those screens read. `docs/engine-contract.md` lists the fifteen items:
+  status, named roots, batches with a folder copy, the access log on both
+  sides, the device kind, and the per-transfer fields are built. Automatic
+  copying, QR pairing, push, and the mount stay open. Each batch was
+  audited and the findings fixed. The phone app keeps building but has no
+  new screens; a Kotlin design pass follows.
 
 Not done, in order. Each item names its cost as the owner estimated it and
 the reason for its place.
 
 Before phase 2:
 
-1. A UX pass on the moments the first run found. The engine is audited and
-   run; the screens were built from the IA before anyone had used them. Daily
-   use is the only source of the next engine facts, and the UX is what stops
-   daily use. Narrow: the moments named, not a redesign.
+1. A UX pass on the moments the first run found. Done on 11 September
+   2026 as the designed screens; see the last item under "Done" above. What
+   remains is a run on real devices to confirm it.
 2. Deterministic fault injection for resume. Done on 10 September 2026.
    `crates/ferry-runtime/tests/resume_sweep.rs` cuts the wire after exactly
    N bytes and proves every cut resumes and refetches at most one chunk:
@@ -463,9 +476,10 @@ Phase 2, in order:
    the location permission on Android and on macOS 14 and later, so the
    real cost is a day and two more prompts on first run, which is why it
    sits after the UX pass has settled the first run.
-8. An access log on the phone. The server side already sees every
-   operation. Show which Mac read or wrote what, and when. It makes a
-   compromised paired Mac visible, which section 9 lists as a risk. Days.
+8. An access log on the phone. The engine records every operation on both
+   sides since 11 September 2026, and the Mac shows its log. What remains
+   is the phone's screen, which comes with the Kotlin design pass. It makes
+   a compromised paired Mac visible, which section 9 lists as a risk.
 9. The Mac in the Android file picker. Android's DocumentsProvider with
    proxy file descriptors maps almost one to one onto list, stat, read at
    offset, and write at offset. The Mac's shared folder then appears in the
