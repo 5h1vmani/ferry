@@ -530,6 +530,22 @@ impl State {
 /// `last_seen_unix_secs` is deliberately not used here: it updates on every
 /// connection regardless of transport, so it cannot tell a Wi-Fi sighting
 /// from a USB one.
+/// Clear `usb_port` for every live device whose forward is one of
+/// `gone_ports`.
+///
+/// Called from `engine::poll_adb_once` once it knows which forwards no
+/// longer name a plugged-in device. `usb_port` names the forward a device
+/// was last reached through, and `available_transports` reads only
+/// `is_some()` off it, so a stale port left behind would keep `Usb` listed
+/// for a device whose cable is gone.
+pub(crate) fn clear_gone_usb_forwards(live: &mut BTreeMap<String, DeviceLive>, gone_ports: &[u16]) {
+    for device in live.values_mut() {
+        if device.usb_port.is_some_and(|port| gone_ports.contains(&port)) {
+            device.usb_port = None;
+        }
+    }
+}
+
 fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
     let Some(live) = live else {
         return Vec::new();
@@ -549,11 +565,56 @@ fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceLive, Transport, WIFI_SUCCESS_LIFETIME_SECS, available_transports};
+    use super::{
+        DeviceLive, Transport, WIFI_SUCCESS_LIFETIME_SECS, available_transports,
+        clear_gone_usb_forwards,
+    };
+    use std::collections::BTreeMap;
 
     #[test]
     fn no_live_record_means_no_transport() {
         assert_eq!(available_transports(None, 1_000), Vec::new());
+    }
+
+    #[test]
+    fn a_gone_forward_drops_usb_from_available_transports() {
+        let mut live = BTreeMap::new();
+        live.insert(
+            "device".to_owned(),
+            DeviceLive {
+                usb_port: Some(12345),
+                ..DeviceLive::default()
+            },
+        );
+
+        clear_gone_usb_forwards(&mut live, &[12345]);
+
+        assert_eq!(live["device"].usb_port, None, "the stale port is cleared");
+        assert_eq!(
+            available_transports(live.get("device"), 1_000),
+            Vec::new(),
+            "available_transports no longer holds Usb once the forward is gone"
+        );
+    }
+
+    #[test]
+    fn a_different_forward_going_away_leaves_this_ports_usb_alone() {
+        let mut live = BTreeMap::new();
+        live.insert(
+            "device".to_owned(),
+            DeviceLive {
+                usb_port: Some(12345),
+                ..DeviceLive::default()
+            },
+        );
+
+        clear_gone_usb_forwards(&mut live, &[99]);
+
+        assert_eq!(
+            available_transports(live.get("device"), 1_000),
+            vec![Transport::Usb],
+            "a forward for a different port going away does not touch this one"
+        );
     }
 
     #[test]

@@ -34,8 +34,8 @@ use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAwar
 use crate::notify::{Change, Notify};
 use crate::record::{Record, read_record};
 use crate::state::{
-    BatchRow, Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward, hex_of,
-    key_from_hex, lock, now_unix_secs,
+    BatchRow, Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward,
+    clear_gone_usb_forwards, hex_of, key_from_hex, lock, now_unix_secs,
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
@@ -2398,10 +2398,23 @@ fn poll_adb_once(shared: &Arc<Shared>) {
             });
         }
     }
-    for gone in known.iter().filter(|f| !serials.contains(&f.serial)) {
-        drop(adb.remove_forward(&gone.serial, gone.local_port));
+    let gone: Vec<&UsbForward> = known
+        .iter()
+        .filter(|f| !serials.contains(&f.serial))
+        .collect();
+    for forward in &gone {
+        drop(adb.remove_forward(&forward.serial, forward.local_port));
     }
-    lock(&shared.state).forwards.clone_from(&current);
+    {
+        let mut state = lock(&shared.state);
+        state.forwards.clone_from(&current);
+        // A device's `usb_port` names the forward it was last reached
+        // through. Once that forward is gone, the cable is gone too, and
+        // `available_transports` must drop `Usb` for it rather than keep
+        // showing a port nothing answers on any more.
+        let gone_ports: Vec<u16> = gone.iter().map(|f| f.local_port).collect();
+        clear_gone_usb_forwards(&mut state.live, &gone_ports);
+    }
 
     for forward in &current {
         let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, forward.local_port));
