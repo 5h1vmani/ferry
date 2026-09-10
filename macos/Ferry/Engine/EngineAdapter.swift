@@ -82,10 +82,7 @@ enum EngineAdapter {
         return TransferGroupSnapshot(
             id: transfer.id,
             label: transfer.fileName,
-            // TODO(engine 4): direction is not carried. Every transfer the
-            // core can run is a pull, so this is true until push lands
-            // (item 5).
-            direction: .phoneToMac,
+            direction: direction(transfer.direction),
             // TODO(engine 14): origin is not carried, and auto copy does
             // not exist, so nothing is automatic yet. Every row says who
             // asked for it by saying nothing.
@@ -107,6 +104,14 @@ enum EngineAdapter {
                 FerryFormat.duration(seconds: $0 - transfer.startedUnixSecs)
             }
         )
+    }
+
+    /// "Phone to Mac" for a pull, "Mac to phone" for a push.
+    private static func direction(_ direction: Direction) -> TransferDirection {
+        switch direction {
+        case .pull: return .phoneToMac
+        case .push: return .macToPhone
+        }
     }
 
     /// The chunk facts for one transfer, or nil when there are none.

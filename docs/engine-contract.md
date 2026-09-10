@@ -94,7 +94,7 @@ One deadline, stated on every state that has one. The deadline is
 `now + PAIRING_TIMEOUT` at `start_pairing`. The engine already holds it as
 a monotonic instant (`state.rs`); the wire needs the Unix form as well.
 
-### 4. Direction — open
+### 4. Direction — built
 
 ```rust
 #[derive(uniffi::Enum)]
