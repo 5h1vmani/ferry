@@ -629,6 +629,11 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol EngineProtocol: AnyObject, Sendable {
     
     /**
+     * Every batch this engine has grouped, across every device.
+     */
+    func batches()  -> [BatchInfo]
+    
+    /**
      * Stop pairing and drop whatever it was holding.
      */
     func cancelPairing() 
@@ -710,6 +715,27 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * has no single file to pull.
      */
     func pull(deviceKeyHex: String, remotePath: String, localName: String) throws  -> String
+    
+    /**
+     * Copy a whole folder into one batch.
+     *
+     * Lists `remote_path` recursively over the connection, using the same
+     * paging `list` uses, then creates the batch and queues one transfer
+     * per file found, in listing order. Blocks until the listing is done,
+     * so the app calls it off the main thread, the same way it calls
+     * `list`.
+     *
+     * # Errors
+     *
+     * Returns a `PathError` code when the path is refused,
+     * `Runtime::NotPaired` when the device is not stored,
+     * `Runtime::NotStarted` before [`Engine::start`] has run,
+     * `Runtime::NotReachable` when no dial succeeds, an `OpError` code when
+     * the peer refuses the folder itself, and `Runtime::FolderTooLarge` at
+     * more than 10,000 files or more than 32 levels of nesting. Nothing is
+     * queued when this returns an error.
+     */
+    func pullFolder(deviceKeyHex: String, remotePath: String) throws  -> String
     
     /**
      * Restart a failed transfer from its resume point.
@@ -922,6 +948,18 @@ public convenience init(config: Config, listener: EngineListener)throws  {
 
     
     /**
+     * Every batch this engine has grouped, across every device.
+     */
+open func batches() -> [BatchInfo]  {
+    return try!  FfiConverterSequenceTypeBatchInfo.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_batches(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Stop pairing and drop whatever it was holding.
      */
 open func cancelPairing()  {try! rustCall() {
@@ -1053,6 +1091,36 @@ open func pull(deviceKeyHex: String, remotePath: String, localName: String)throw
         FfiConverterString.lower(deviceKeyHex),
         FfiConverterString.lower(remotePath),
         FfiConverterString.lower(localName),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Copy a whole folder into one batch.
+     *
+     * Lists `remote_path` recursively over the connection, using the same
+     * paging `list` uses, then creates the batch and queues one transfer
+     * per file found, in listing order. Blocks until the listing is done,
+     * so the app calls it off the main thread, the same way it calls
+     * `list`.
+     *
+     * # Errors
+     *
+     * Returns a `PathError` code when the path is refused,
+     * `Runtime::NotPaired` when the device is not stored,
+     * `Runtime::NotStarted` before [`Engine::start`] has run,
+     * `Runtime::NotReachable` when no dial succeeds, an `OpError` code when
+     * the peer refuses the folder itself, and `Runtime::FolderTooLarge` at
+     * more than 10,000 files or more than 32 levels of nesting. Nothing is
+     * queued when this returns an error.
+     */
+open func pullFolder(deviceKeyHex: String, remotePath: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_pull_folder(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),uniffiCallStatus
     )
 })
 }
@@ -1293,6 +1361,200 @@ public func FfiConverterTypeEngine_lower(_ value: Engine) -> UInt64 {
 }
 
 
+
+
+/**
+ * One group of transfers made by one [`Engine::pull_folder`] call, as the
+ * Files section shows it.
+ *
+ * `docs/engine-contract.md`, batch D, item 2. Only what does not change
+ * once the batch is made is stored on disk. Every other field here —
+ * `files_done`, the byte counts, `state`, `speed_bytes_per_sec`, and
+ * `ended_unix_secs` — is computed fresh from the transfers named on the
+ * batch, every time the app asks.
+ */
+public struct BatchInfo: Equatable, Hashable {
+    /**
+     * Stable for the life of the batch, across restarts.
+     */
+    public var id: String
+    /**
+     * Which device the files come from.
+     */
+    public var deviceKeyHex: String
+    /**
+     * The remote path as given: `"Internal storage/DCIM/Camera"`.
+     */
+    public var label: String
+    /**
+     * How many files this batch covers.
+     */
+    public var filesTotal: UInt32
+    /**
+     * How many of those files are `Done`.
+     */
+    public var filesDone: UInt32
+    /**
+     * The sum of `bytes_total` over its transfers.
+     */
+    public var bytesTotal: UInt64
+    /**
+     * The sum of `bytes_done` over its transfers.
+     */
+    public var bytesDone: UInt64
+    /**
+     * The worst state among its transfers: `Failed`, then `Paused`, then
+     * `Active`, then `Queued`, then `Done`. A batch with no files is `Done`.
+     */
+    public var state: TransferState
+    /**
+     * Which way every transfer in this batch moves its file.
+     */
+    public var direction: Direction
+    /**
+     * Why this batch exists.
+     */
+    public var origin: Origin
+    /**
+     * The sum over its active transfers. `None` while none are active.
+     */
+    public var speedBytesPerSec: UInt64?
+    /**
+     * When `pull_folder` created this batch.
+     */
+    public var startedUnixSecs: Int64
+    /**
+     * The latest end time among its transfers, once none is `Queued`,
+     * `Active`, or `Paused`. `None` while one still is. A `retry` clears
+     * this the same way it clears that one transfer's own end time. A
+     * batch with no files carries `started_unix_secs` here.
+     */
+    public var endedUnixSecs: Int64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Stable for the life of the batch, across restarts.
+         */id: String, 
+        /**
+         * Which device the files come from.
+         */deviceKeyHex: String, 
+        /**
+         * The remote path as given: `"Internal storage/DCIM/Camera"`.
+         */label: String, 
+        /**
+         * How many files this batch covers.
+         */filesTotal: UInt32, 
+        /**
+         * How many of those files are `Done`.
+         */filesDone: UInt32, 
+        /**
+         * The sum of `bytes_total` over its transfers.
+         */bytesTotal: UInt64, 
+        /**
+         * The sum of `bytes_done` over its transfers.
+         */bytesDone: UInt64, 
+        /**
+         * The worst state among its transfers: `Failed`, then `Paused`, then
+         * `Active`, then `Queued`, then `Done`. A batch with no files is `Done`.
+         */state: TransferState, 
+        /**
+         * Which way every transfer in this batch moves its file.
+         */direction: Direction, 
+        /**
+         * Why this batch exists.
+         */origin: Origin, 
+        /**
+         * The sum over its active transfers. `None` while none are active.
+         */speedBytesPerSec: UInt64?, 
+        /**
+         * When `pull_folder` created this batch.
+         */startedUnixSecs: Int64, 
+        /**
+         * The latest end time among its transfers, once none is `Queued`,
+         * `Active`, or `Paused`. `None` while one still is. A `retry` clears
+         * this the same way it clears that one transfer's own end time. A
+         * batch with no files carries `started_unix_secs` here.
+         */endedUnixSecs: Int64?) {
+        self.id = id
+        self.deviceKeyHex = deviceKeyHex
+        self.label = label
+        self.filesTotal = filesTotal
+        self.filesDone = filesDone
+        self.bytesTotal = bytesTotal
+        self.bytesDone = bytesDone
+        self.state = state
+        self.direction = direction
+        self.origin = origin
+        self.speedBytesPerSec = speedBytesPerSec
+        self.startedUnixSecs = startedUnixSecs
+        self.endedUnixSecs = endedUnixSecs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BatchInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBatchInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BatchInfo {
+        return
+            try BatchInfo(
+                id: FfiConverterString.read(from: &buf), 
+                deviceKeyHex: FfiConverterString.read(from: &buf), 
+                label: FfiConverterString.read(from: &buf), 
+                filesTotal: FfiConverterUInt32.read(from: &buf), 
+                filesDone: FfiConverterUInt32.read(from: &buf), 
+                bytesTotal: FfiConverterUInt64.read(from: &buf), 
+                bytesDone: FfiConverterUInt64.read(from: &buf), 
+                state: FfiConverterTypeTransferState.read(from: &buf), 
+                direction: FfiConverterTypeDirection.read(from: &buf), 
+                origin: FfiConverterTypeOrigin.read(from: &buf), 
+                speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
+                startedUnixSecs: FfiConverterInt64.read(from: &buf), 
+                endedUnixSecs: FfiConverterOptionInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BatchInfo, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.deviceKeyHex, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterUInt32.write(value.filesTotal, into: &buf)
+        FfiConverterUInt32.write(value.filesDone, into: &buf)
+        FfiConverterUInt64.write(value.bytesTotal, into: &buf)
+        FfiConverterUInt64.write(value.bytesDone, into: &buf)
+        FfiConverterTypeTransferState.write(value.state, into: &buf)
+        FfiConverterTypeDirection.write(value.direction, into: &buf)
+        FfiConverterTypeOrigin.write(value.origin, into: &buf)
+        FfiConverterOptionUInt64.write(value.speedBytesPerSec, into: &buf)
+        FfiConverterInt64.write(value.startedUnixSecs, into: &buf)
+        FfiConverterOptionInt64.write(value.endedUnixSecs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBatchInfo_lift(_ buf: RustBuffer) throws -> BatchInfo {
+    return try FfiConverterTypeBatchInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBatchInfo_lower(_ value: BatchInfo) -> RustBuffer {
+    return FfiConverterTypeBatchInfo.lower(value)
+}
 
 
 /**
@@ -2025,6 +2287,11 @@ public struct TransferInfo: Equatable, Hashable {
      * How many chunks have a verified hash so far.
      */
     public var chunksVerified: UInt32
+    /**
+     * Which batch this transfer belongs to, if `pull_folder` created it.
+     * `None` for a transfer a single `pull` created.
+     */
+    public var batchId: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2071,7 +2338,11 @@ public struct TransferInfo: Equatable, Hashable {
          */chunksTotal: UInt32, 
         /**
          * How many chunks have a verified hash so far.
-         */chunksVerified: UInt32) {
+         */chunksVerified: UInt32, 
+        /**
+         * Which batch this transfer belongs to, if `pull_folder` created it.
+         * `None` for a transfer a single `pull` created.
+         */batchId: String?) {
         self.id = id
         self.deviceKeyHex = deviceKeyHex
         self.fileName = fileName
@@ -2086,6 +2357,7 @@ public struct TransferInfo: Equatable, Hashable {
         self.speedBytesPerSec = speedBytesPerSec
         self.chunksTotal = chunksTotal
         self.chunksVerified = chunksVerified
+        self.batchId = batchId
     }
 
     
@@ -2117,7 +2389,8 @@ public struct FfiConverterTypeTransferInfo: FfiConverterRustBuffer {
                 direction: FfiConverterTypeDirection.read(from: &buf), 
                 speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
                 chunksTotal: FfiConverterUInt32.read(from: &buf), 
-                chunksVerified: FfiConverterUInt32.read(from: &buf)
+                chunksVerified: FfiConverterUInt32.read(from: &buf), 
+                batchId: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -2136,6 +2409,7 @@ public struct FfiConverterTypeTransferInfo: FfiConverterRustBuffer {
         FfiConverterOptionUInt64.write(value.speedBytesPerSec, into: &buf)
         FfiConverterUInt32.write(value.chunksTotal, into: &buf)
         FfiConverterUInt32.write(value.chunksVerified, into: &buf)
+        FfiConverterOptionString.write(value.batchId, into: &buf)
     }
 }
 
@@ -2477,6 +2751,83 @@ public func FfiConverterTypeFerryError_lift(_ buf: RustBuffer) throws -> FerryEr
 public func FfiConverterTypeFerryError_lower(_ value: FerryError) -> RustBuffer {
     return FfiConverterTypeFerryError.lower(value)
 }
+
+
+/**
+ * Why a batch exists.
+ *
+ * `docs/engine-contract.md`, batch D, item 2.
+ */
+
+public enum Origin: Equatable, Hashable {
+    
+    /**
+     * A person asked for it.
+     */
+    case manual
+    /**
+     * Ferry decided, under item 14's rule. Never emitted until item 14.
+     */
+    case automatic
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Origin: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeOrigin: FfiConverterRustBuffer {
+    typealias SwiftType = Origin
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Origin {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .manual
+        
+        case 2: return .automatic
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Origin, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .manual:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .automatic:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOrigin_lift(_ buf: RustBuffer) throws -> Origin {
+    return try FfiConverterTypeOrigin.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeOrigin_lower(_ value: Origin) -> RustBuffer {
+    return FfiConverterTypeOrigin.lower(value)
+}
+
 
 
 /**
@@ -3133,6 +3484,31 @@ fileprivate struct FfiConverterOptionTypeTransport: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeBatchInfo: FfiConverterRustBuffer {
+    typealias SwiftType = [BatchInfo]
+
+    public static func write(_ value: [BatchInfo], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeBatchInfo.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [BatchInfo] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [BatchInfo]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeBatchInfo.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeDeviceInfo: FfiConverterRustBuffer {
     typealias SwiftType = [DeviceInfo]
 
@@ -3330,6 +3706,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_func_phone_port() != 57763) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_batches() != 62922) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 37992) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3349,6 +3728,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pull() != 54016) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_pull_folder() != 63626) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {

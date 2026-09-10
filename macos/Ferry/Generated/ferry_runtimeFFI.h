@@ -290,6 +290,11 @@ void uniffi_ferry_runtime_fn_free_engine(uint64_t handle, RustCallStatus *_Nonnu
 uint64_t uniffi_ferry_runtime_fn_constructor_engine_new(RustBuffer config, uint64_t listener, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_BATCHES
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_BATCHES
+RustBuffer uniffi_ferry_runtime_fn_method_engine_batches(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_CANCEL_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_CANCEL_PAIRING
 void uniffi_ferry_runtime_fn_method_engine_cancel_pairing(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -323,6 +328,11 @@ void uniffi_ferry_runtime_fn_method_engine_pick_candidate(uint64_t ptr, RustBuff
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PULL
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PULL
 RustBuffer uniffi_ferry_runtime_fn_method_engine_pull(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustBuffer local_name, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PULL_FOLDER
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PULL_FOLDER
+RustBuffer uniffi_ferry_runtime_fn_method_engine_pull_folder(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RETRY
@@ -669,6 +679,12 @@ uint16_t uniffi_ferry_runtime_checksum_func_phone_port(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_BATCHES
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_BATCHES
+uint16_t uniffi_ferry_runtime_checksum_method_engine_batches(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_CANCEL_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_CANCEL_PAIRING
 uint16_t uniffi_ferry_runtime_checksum_method_engine_cancel_pairing(void
@@ -708,6 +724,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_pick_candidate(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PULL
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PULL
 uint16_t uniffi_ferry_runtime_checksum_method_engine_pull(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PULL_FOLDER
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PULL_FOLDER
+uint16_t uniffi_ferry_runtime_checksum_method_engine_pull_folder(void
     
 );
 #endif

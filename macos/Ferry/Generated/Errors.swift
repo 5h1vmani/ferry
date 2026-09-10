@@ -71,6 +71,7 @@ enum FerryErrors {
         "RpcError::Wire": (stopped: "The connection failed.", why: "A message could not be decoded.", todo: "Update Ferry on both devices."),
         "Runtime::AllFilesAccess": (stopped: "Ferry cannot read the shared folders.", why: "All files access is not granted.", todo: "Grant all files access in Settings."),
         "Runtime::BadConfig": (stopped: "Ferry could not start.", why: "{detail}", todo: "Check the settings."),
+        "Runtime::FolderTooLarge": (stopped: "The folder was not copied.", why: "It holds more than 10,000 files, or is nested more than 32 folders deep.", todo: "Copy a smaller folder, or open it and copy fewer files at a time."),
         "Runtime::NameTooLong": (stopped: "The name was refused.", why: "It is longer than 64 bytes.", todo: "Choose a shorter name."),
         "Runtime::NoCandidate": (stopped: "Nothing was picked.", why: "That candidate is no longer present.", todo: "Pick another."),
         "Runtime::NotPaired": (stopped: "The device is not paired.", why: "Its key is not in this device's list.", todo: "Pair it first."),
