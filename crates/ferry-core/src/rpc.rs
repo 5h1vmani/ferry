@@ -6,7 +6,8 @@
 //! Both sides call [`exchange_hello`] once, right after the Noise handshake
 //! finishes and before `serve` or [`Client`] touch the stream. It carries
 //! each side's display name across the encrypted channel, since the mDNS
-//! name is random and an adb serial is a number, and neither is a name.
+//! name is random and an adb serial is a number, and neither is a name. It
+//! also carries each side's [`DeviceKind`], one byte after the name.
 //!
 //! The protocol is symmetric, so either device can hold either role. One
 //! connection currently carries one client and one server. Running both
@@ -22,6 +23,7 @@ use std::io::{self, Read, Write};
 use crate::frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
 use crate::ops::{Entry, OpError, Request, Response};
 use crate::path::RemotePath;
+use crate::peers::DeviceKind;
 use crate::wire::{Decoder, Encoder, WireError};
 
 /// The file operations one device offers to the other.
@@ -150,7 +152,7 @@ pub enum RpcError {
 /// rather than after.
 pub const MAX_NAME_LEN: usize = 64;
 
-/// Exchange display names with the peer.
+/// Exchange display names and device kinds with the peer.
 ///
 /// Both sides call this once, immediately after the Noise handshake
 /// finishes, and before `serve` or [`Client`] touch the stream. Each side
@@ -159,18 +161,25 @@ pub const MAX_NAME_LEN: usize = 64;
 ///
 /// The name is shown to the person on the other device and is never trusted
 /// for anything. Identity is proven by the handshake's static keys, not by
-/// this exchange. See `docs/protocol.md` section 5.
+/// this exchange. See `docs/protocol.md` section 5. The kind is shown
+/// alongside the name; it is likewise never trusted as a security boundary.
 ///
 /// # Errors
 ///
 /// Returns [`RpcError::BadName`] when `my_name`, or the name the peer sends
 /// back, is empty, over [`MAX_NAME_LEN`] bytes, or holds a control
 /// character. Returns [`RpcError::UnexpectedFrameKind`] when the first frame
-/// from the peer is not a hello with a request identifier of 0.
-pub fn exchange_hello(stream: &mut (impl Read + Write), my_name: &str) -> Result<String, RpcError> {
+/// from the peer is not a hello with a request identifier of 0. Returns
+/// [`RpcError::Wire`] when the peer's kind byte names no [`DeviceKind`].
+pub fn exchange_hello(
+    stream: &mut (impl Read + Write),
+    my_name: &str,
+    my_kind: DeviceKind,
+) -> Result<(String, DeviceKind), RpcError> {
     validate_name(my_name)?;
     let mut encoder = Encoder::new();
     encoder.text(my_name);
+    encoder.u8(my_kind.to_byte());
     write_frame(
         stream,
         &Frame {
@@ -187,9 +196,10 @@ pub fn exchange_hello(stream: &mut (impl Read + Write), my_name: &str) -> Result
 
     let mut decoder = Decoder::new(&frame.payload);
     let name = decoder.text(MAX_NAME_LEN)?.to_string();
+    let kind = DeviceKind::from_byte(decoder.u8()?)?;
     decoder.finish()?;
     validate_name(&name)?;
-    Ok(name)
+    Ok((name, kind))
 }
 
 /// A name is 1 to 64 bytes of UTF-8 and holds no control character, meaning
@@ -509,6 +519,7 @@ mod tests {
     use crate::memfs::MemoryFs;
     use crate::ops::{FileKind, OpError, Request, Response};
     use crate::path::RemotePath;
+    use crate::peers::DeviceKind;
     use crate::transport::{Endpoint, loopback};
     use crate::wire::{Encoder, WireError};
 
@@ -757,15 +768,19 @@ mod tests {
     }
 
     #[test]
-    fn hello_carries_each_name_to_the_other_side() {
+    fn hello_carries_each_name_and_kind_to_the_other_side() {
         let (mut pixel_side, mut vamana_side) = loopback();
-        let pixel_thread = thread::spawn(move || exchange_hello(&mut pixel_side, "Pixel 3 XL"));
+        let pixel_thread =
+            thread::spawn(move || exchange_hello(&mut pixel_side, "Pixel 3 XL", DeviceKind::Phone));
 
-        let vamana_hears = exchange_hello(&mut vamana_side, "Vamana").unwrap();
-        let pixel_hears = pixel_thread.join().unwrap().unwrap();
+        let (vamana_name, vamana_kind) =
+            exchange_hello(&mut vamana_side, "Vamana", DeviceKind::Mac).unwrap();
+        let (pixel_name, pixel_kind) = pixel_thread.join().unwrap().unwrap();
 
-        assert_eq!(pixel_hears, "Vamana");
-        assert_eq!(vamana_hears, "Pixel 3 XL");
+        assert_eq!(pixel_name, "Vamana");
+        assert_eq!(pixel_kind, DeviceKind::Mac);
+        assert_eq!(vamana_name, "Pixel 3 XL");
+        assert_eq!(vamana_kind, DeviceKind::Phone);
     }
 
     #[test]
@@ -774,7 +789,7 @@ mod tests {
         let too_long = "a".repeat(65);
 
         assert!(matches!(
-            exchange_hello(&mut sender, &too_long),
+            exchange_hello(&mut sender, &too_long, DeviceKind::Phone),
             Err(RpcError::BadName)
         ));
 
@@ -807,8 +822,31 @@ mod tests {
         // decoder's length cap catches it first, so this is the error that
         // comes back, not `RpcError::BadName`.
         assert!(matches!(
-            exchange_hello(&mut receiver, "Pixel 3 XL"),
+            exchange_hello(&mut receiver, "Pixel 3 XL", DeviceKind::Phone),
             Err(RpcError::Wire(WireError::TooLong))
+        ));
+    }
+
+    #[test]
+    fn an_unknown_kind_byte_is_refused() {
+        let (mut sender, mut receiver) = loopback();
+        let mut encoder = Encoder::new();
+        encoder.text("Pixel 3 XL");
+        // No `DeviceKind` variant names this byte.
+        encoder.u8(99);
+        write_frame(
+            &mut sender,
+            &Frame {
+                kind: FrameKind::Hello,
+                request_id: 0,
+                payload: encoder.finish(),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            exchange_hello(&mut receiver, "Vamana", DeviceKind::Mac),
+            Err(RpcError::Wire(WireError::UnknownTag(99)))
         ));
     }
 
@@ -816,7 +854,7 @@ mod tests {
     fn a_name_with_a_control_character_is_refused() {
         let (mut sender, _receiver) = loopback();
         assert!(matches!(
-            exchange_hello(&mut sender, "Pixel\u{0007}"),
+            exchange_hello(&mut sender, "Pixel\u{0007}", DeviceKind::Phone),
             Err(RpcError::BadName)
         ));
     }
@@ -838,7 +876,7 @@ mod tests {
         .unwrap();
 
         assert!(matches!(
-            exchange_hello(&mut receiver, "Pixel 3 XL"),
+            exchange_hello(&mut receiver, "Pixel 3 XL", DeviceKind::Phone),
             Err(RpcError::UnexpectedFrameKind(FrameKind::Request))
         ));
     }
@@ -847,7 +885,7 @@ mod tests {
     fn an_empty_name_is_refused() {
         let (mut sender, _receiver) = loopback();
         assert!(matches!(
-            exchange_hello(&mut sender, ""),
+            exchange_hello(&mut sender, "", DeviceKind::Phone),
             Err(RpcError::BadName)
         ));
     }

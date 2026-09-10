@@ -54,7 +54,9 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello};
 use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress};
 use ferry_core::tcp;
 
-use crate::engine::{Shared, dial_targets, mark_reachable, notify, remove_record};
+use crate::engine::{
+    Shared, dial_targets, mark_reachable, notify, remove_record, this_devices_kind,
+};
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
 use crate::guard::{Cut, StopAware};
 use crate::notify::Change;
@@ -346,7 +348,7 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     // The wrapper fails the next read once `stop` runs, so a transfer does
     // not hold `stop` for a whole file.
     let mut stream = StopAware::new(stream, Arc::clone(&shared.stopping));
-    if let Err(error) = exchange_hello(&mut stream, &shared.display_name) {
+    if let Err(error) = exchange_hello(&mut stream, &shared.display_name, this_devices_kind()) {
         return Outcome::Retry(from_rpc(&error));
     }
     {

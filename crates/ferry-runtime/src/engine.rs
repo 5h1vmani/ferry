@@ -14,7 +14,7 @@ use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::ops::FileKind;
 use ferry_core::path::{PathError, RemotePath};
-use ferry_core::peers::{Peer, PeerStore};
+use ferry_core::peers::{DeviceKind, Peer, PeerStore};
 use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
@@ -383,7 +383,14 @@ impl Engine {
         std::fs::create_dir_all(&transfers_dir)
             .map_err(|_| bad_config("The transfers folder could not be made."))?;
 
-        let peers = PeerStore::load(&data_dir.join("peers.bin"))
+        // A version 1 peer file predates the kind byte, so every peer in it
+        // is assumed to be the opposite of this device: with one Mac and
+        // one phone, that is always right. See `this_devices_kind`.
+        let assumed_peer_kind = match this_devices_kind() {
+            DeviceKind::Mac => DeviceKind::Phone,
+            DeviceKind::Phone => DeviceKind::Mac,
+        };
+        let peers = PeerStore::load(&data_dir.join("peers.bin"), assumed_peer_kind)
             .map_err(|_| bad_config("The paired device list could not be read."))?;
 
         // Last, because nothing below it can fail and leave the claim behind.
@@ -831,7 +838,8 @@ impl Engine {
         mark_reachable(&self.shared, &device_key_hex, addr, via);
 
         let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
-        exchange_hello(&mut stream, &self.shared.display_name).map_err(|error| from_rpc(&error))?;
+        exchange_hello(&mut stream, &self.shared.display_name, this_devices_kind())
+            .map_err(|error| from_rpc(&error))?;
 
         let mut client = Client::new(stream);
         let mut entries = Vec::new();
@@ -1018,6 +1026,21 @@ pub fn generate_key() -> Result<KeyPair, FerryError> {
         private: key.private_bytes().to_vec(),
         public: key.public().as_bytes().to_vec(),
     })
+}
+
+/// This device's own kind, for the hello payload and for the assumed kind
+/// of a version 1 peer file.
+///
+/// `Config` has no `kind` field yet, so this guesses from the target OS:
+/// every build of this engine today is either the Mac app or the Android
+/// app, and never both.
+// TODO(engine 11): replaced by Config.kind on main.
+pub(crate) fn this_devices_kind() -> DeviceKind {
+    if cfg!(target_os = "macos") {
+        DeviceKind::Mac
+    } else {
+        DeviceKind::Phone
+    }
 }
 
 /// The last component of a path, for display.
@@ -1285,8 +1308,8 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
     } = held;
     let peer_key = connection.paired.peer;
 
-    let (name, stream) = match hello_with_deadline(shared, connection.paired.stream) {
-        Ok(pair) => pair,
+    let (name, kind, stream) = match hello_with_deadline(shared, connection.paired.stream) {
+        Ok(triple) => triple,
         Err(error) => {
             fail_pairing(shared, error);
             return;
@@ -1306,6 +1329,7 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
             key: peer_key,
             name: name.clone(),
             paired_unix_secs: now_unix_secs(),
+            kind,
         });
     }) {
         fail_pairing(shared, error);
@@ -1369,7 +1393,7 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
 fn hello_with_deadline(
     shared: &Arc<Shared>,
     stream: SecureStream,
-) -> Result<(String, StopAware<SecureStream>), FerryError> {
+) -> Result<(String, DeviceKind, StopAware<SecureStream>), FerryError> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let my_name = shared.display_name.clone();
     let stopping = Arc::clone(&shared.stopping);
@@ -1377,14 +1401,15 @@ fn hello_with_deadline(
     // fails the next read because the engine is stopping.
     drop(std::thread::spawn(move || {
         let mut stream = StopAware::new(stream, stopping);
-        let outcome = exchange_hello(&mut stream, &my_name).map(|name| (name, stream));
+        let outcome = exchange_hello(&mut stream, &my_name, this_devices_kind())
+            .map(|(name, kind)| (name, kind, stream));
         drop(sender.send(outcome));
     }));
 
     let deadline = Instant::now() + FINISH_PAIRING_DEADLINE;
     loop {
         match receiver.recv_timeout(FINISH_PAIRING_TICK) {
-            Ok(Ok(both)) => return Ok(both),
+            Ok(Ok(triple)) => return Ok(triple),
             Ok(Err(error)) => return Err(from_rpc(&error)),
             // The thread went away without an answer, which only a panic
             // does. There is no name and no stream to carry on with.
@@ -1505,7 +1530,8 @@ fn serve_stream(
     transport: Transport,
     allowed: &Arc<AtomicBool>,
 ) {
-    let Ok(name) = exchange_hello(&mut stream, &shared.display_name) else {
+    let Ok((name, _kind)) = exchange_hello(&mut stream, &shared.display_name, this_devices_kind())
+    else {
         release_serving(shared, &hex_of(&peer), allowed);
         return;
     };
@@ -1536,14 +1562,17 @@ fn serve_named_stream(
         };
         let name_changed = stored.name != name;
         let paired_unix_secs = stored.paired_unix_secs;
+        let kind = stored.kind;
         let live = state.live_mut(&key_hex);
         live.reachable_via = Some(transport);
         // A name the peer changed since pairing is stored, so the list stays
-        // current without another pairing.
+        // current without another pairing. Its kind does not change here: it
+        // was set once, from the hello sent at pairing time.
         name_changed.then_some(Peer {
             key: peer,
             name,
             paired_unix_secs,
+            kind,
         })
     };
     if let Some(peer) = renamed {

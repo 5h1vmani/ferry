@@ -20,11 +20,13 @@
 //! Public shape:
 //!
 //! ```text
-//! pub struct Peer { pub key: PublicKey, pub name: String, pub paired_unix_secs: i64 }
+//! pub struct Peer { pub key: PublicKey, pub name: String, pub paired_unix_secs: i64, pub kind: DeviceKind }
 //!
 //! pub struct PeerStore { .. }
 //! impl PeerStore {
-//!     pub fn load(path: &Path) -> Result<Self, PeerError>;   // missing file is an empty store
+//!     // missing file is an empty store; a version 1 file gets `assumed_kind`
+//!     // on every peer, since it predates the kind byte
+//!     pub fn load(path: &Path, assumed_kind: DeviceKind) -> Result<Self, PeerError>;
 //!     pub fn save(&self) -> Result<(), PeerError>;            // writes to a temp name, then renames
 //!     pub fn add(&mut self, peer: Peer);                       // replaces an existing entry for the same key
 //!     pub fn remove(&mut self, key: &PublicKey) -> Option<Peer>;
@@ -58,8 +60,49 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::noise::{NoiseError, PublicKey, StaticKey};
 use crate::wire::{Decoder, Encoder, WireError};
 
-/// The only format version this build writes or reads.
-const FORMAT_VERSION: u8 = 1;
+/// The newest peer store format this build writes, and one of the two it
+/// reads. See [`PeerStore::load`] for how a version 1 file is handled.
+const FORMAT_VERSION: u8 = 2;
+
+/// The format version before the kind byte was added to each peer.
+const FORMAT_VERSION_1: u8 = 1;
+
+/// What kind of device a peer is.
+///
+/// Sent as the kind byte in `hello` (`crate::rpc::exchange_hello`), and
+/// stored with each [`Peer`]. `docs/engine-contract.md`, batch C, item 11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind {
+    /// An Android phone.
+    Phone,
+    /// A Mac.
+    Mac,
+}
+
+impl DeviceKind {
+    // The wire byte for this kind. Shared by the hello payload and the peer
+    // store, so both use the same encoding.
+    pub(crate) fn to_byte(self) -> u8 {
+        match self {
+            Self::Phone => 1,
+            Self::Mac => 2,
+        }
+    }
+
+    // Decode a wire byte. An unrecognised byte is a malformed payload, the
+    // same class of error as any other unknown tag on the wire.
+    //
+    // # Errors
+    //
+    // Returns `WireError::UnknownTag` for a byte that names no kind.
+    pub(crate) fn from_byte(value: u8) -> Result<Self, WireError> {
+        match value {
+            1 => Ok(Self::Phone),
+            2 => Ok(Self::Mac),
+            other => Err(WireError::UnknownTag(other)),
+        }
+    }
+}
 
 /// The most peers a store may hold. See the module documentation.
 const MAX_PEERS: usize = 64;
@@ -102,6 +145,8 @@ pub struct Peer {
     pub name: String,
     /// When the two devices paired, in Unix seconds.
     pub paired_unix_secs: i64,
+    /// What kind of device it is.
+    pub kind: DeviceKind,
 }
 
 /// The paired devices, persisted to one file.
@@ -123,6 +168,10 @@ impl PeerStore {
     /// A missing file is not an error. It is treated as an empty store,
     /// bound to `path` so a later `save` creates the file.
     ///
+    /// A version 1 file, written before a peer carried its kind, still
+    /// loads: every peer in it is given `assumed_kind`. A version 2 file
+    /// carries the real kind of each peer and ignores `assumed_kind`.
+    ///
     /// # Errors
     ///
     /// Returns [`PeerError::Io`] for a filesystem error other than the file
@@ -130,7 +179,7 @@ impl PeerStore {
     /// names a format this build does not know, [`PeerError::TooMany`] when
     /// the stored count is over the limit, and [`PeerError::Wire`] when the
     /// bytes are otherwise malformed.
-    pub fn load(path: &Path) -> Result<Self, PeerError> {
+    pub fn load(path: &Path, assumed_kind: DeviceKind) -> Result<Self, PeerError> {
         let bytes = match fs::read(path) {
             Ok(bytes) => bytes,
             Err(err) if err.kind() == io::ErrorKind::NotFound => {
@@ -141,7 +190,7 @@ impl PeerStore {
             }
             Err(err) => return Err(PeerError::Io(err)),
         };
-        let peers = decode_peers(&bytes)?;
+        let peers = decode_peers(&bytes, assumed_kind)?;
         Ok(Self {
             path: path.to_path_buf(),
             peers,
@@ -203,10 +252,17 @@ impl PeerStore {
 // Read the stored peer list. A wrong version byte or an over-large count is
 // caught before anything else is read, so a corrupted or hostile file cannot
 // make this allocate more than the limit allows.
-fn decode_peers(bytes: &[u8]) -> Result<BTreeMap<PublicKey, Peer>, PeerError> {
+//
+// A version 1 file has no kind byte per peer, since it predates item 11. Its
+// peers are given `assumed_kind` instead of a stored value. A version 2
+// file carries the real kind and `assumed_kind` is unused.
+fn decode_peers(
+    bytes: &[u8],
+    assumed_kind: DeviceKind,
+) -> Result<BTreeMap<PublicKey, Peer>, PeerError> {
     let mut d = Decoder::new(bytes);
     let version = d.u8()?;
-    if version != FORMAT_VERSION {
+    if version != FORMAT_VERSION && version != FORMAT_VERSION_1 {
         return Err(PeerError::UnknownFormat(version));
     }
     let count = d.u32()?;
@@ -218,12 +274,18 @@ fn decode_peers(bytes: &[u8]) -> Result<BTreeMap<PublicKey, Peer>, PeerError> {
         let key = PublicKey(d.fixed::<32>()?);
         let name = d.text(MAX_NAME_LEN)?.to_string();
         let paired_unix_secs = decode_i64(d.u64()?);
+        let kind = if version == FORMAT_VERSION_1 {
+            assumed_kind
+        } else {
+            DeviceKind::from_byte(d.u8()?)?
+        };
         peers.insert(
             key,
             Peer {
                 key,
                 name,
                 paired_unix_secs,
+                kind,
             },
         );
     }
@@ -242,6 +304,7 @@ fn encode_peers(peers: &BTreeMap<PublicKey, Peer>) -> Vec<u8> {
         e.fixed(peer.key.as_bytes());
         e.text(&peer.name);
         e.u64(encode_i64(peer.paired_unix_secs));
+        e.u8(peer.kind.to_byte());
     }
     e.finish()
 }
@@ -440,7 +503,10 @@ fn to_hex(bytes: [u8; 8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileSecretStore, Peer, PeerError, PeerStore, SecretStore, encoded_key_capacity};
+    use super::{
+        DeviceKind, FORMAT_VERSION_1, FileSecretStore, Peer, PeerError, PeerStore, SecretStore,
+        encoded_key_capacity,
+    };
     use crate::noise::{PublicKey, StaticKey};
     use crate::wire::{Encoder, WireError};
     use std::fs;
@@ -473,6 +539,7 @@ mod tests {
             key: key(byte),
             name: name.to_string(),
             paired_unix_secs,
+            kind: DeviceKind::Phone,
         }
     }
 
@@ -481,7 +548,7 @@ mod tests {
         let dir = unique_temp_dir("empty_store");
         let path = dir.join("peers.bin");
 
-        let store = PeerStore::load(&path).unwrap();
+        let store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         assert!(store.all().is_empty());
         assert!(!path.exists());
 
@@ -496,13 +563,66 @@ mod tests {
         let dir = unique_temp_dir("round_trip");
         let path = dir.join("peers.bin");
 
-        let mut store = PeerStore::load(&path).unwrap();
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         store.add(sample_peer(1, "Shiva's MacBook", 1_700_000_000));
         store.add(sample_peer(2, "Shiva's Pixel", 1_700_000_500));
         store.save().unwrap();
 
-        let loaded = PeerStore::load(&path).unwrap();
+        let loaded = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         assert_eq!(loaded.all(), store.all());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn version_2_round_trips_each_peers_kind() {
+        let dir = unique_temp_dir("v2_kind_round_trip");
+        let path = dir.join("peers.bin");
+
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
+        store.add(Peer {
+            key: key(1),
+            name: "A Mac".to_string(),
+            paired_unix_secs: 1,
+            kind: DeviceKind::Mac,
+        });
+        store.add(Peer {
+            key: key(2),
+            name: "A Phone".to_string(),
+            paired_unix_secs: 2,
+            kind: DeviceKind::Phone,
+        });
+        store.save().unwrap();
+
+        // Loaded with the opposite assumed kind from what was stored. A
+        // version 2 file carries the real kind and ignores this argument,
+        // so a bug that fell back to it here would show up as a mismatch.
+        let loaded = PeerStore::load(&path, DeviceKind::Mac).unwrap();
+        assert_eq!(loaded.get(&key(1)).unwrap().kind, DeviceKind::Mac);
+        assert_eq!(loaded.get(&key(2)).unwrap().kind, DeviceKind::Phone);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_version_1_file_loads_with_the_assumed_kind() {
+        let dir = unique_temp_dir("v1_load");
+        let path = dir.join("peers.bin");
+
+        // Built by hand in the version 1 shape: no kind byte per peer.
+        let mut e = Encoder::new();
+        e.u8(FORMAT_VERSION_1);
+        e.u32(1);
+        e.fixed(key(7).as_bytes());
+        e.text("Old Peer");
+        e.u64(super::encode_i64(500));
+        fs::write(&path, e.finish()).unwrap();
+
+        let loaded = PeerStore::load(&path, DeviceKind::Mac).unwrap();
+        let peer = loaded.get(&key(7)).unwrap();
+        assert_eq!(peer.kind, DeviceKind::Mac);
+        assert_eq!(peer.name, "Old Peer");
+        assert_eq!(peer.paired_unix_secs, 500);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -511,7 +631,7 @@ mod tests {
     fn add_with_an_existing_key_replaces_the_entry() {
         let dir = unique_temp_dir("replace");
         let path = dir.join("peers.bin");
-        let mut store = PeerStore::load(&path).unwrap();
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
 
         store.add(sample_peer(1, "old-name", 100));
         store.add(sample_peer(1, "new-name", 200));
@@ -526,7 +646,7 @@ mod tests {
     fn remove_returns_the_peer_and_a_second_remove_returns_none() {
         let dir = unique_temp_dir("remove");
         let path = dir.join("peers.bin");
-        let mut store = PeerStore::load(&path).unwrap();
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         store.add(sample_peer(1, "device", 100));
 
         let removed = store.remove(&key(1));
@@ -540,7 +660,7 @@ mod tests {
     fn a_name_over_256_bytes_is_refused() {
         let dir = unique_temp_dir("long_name");
         let path = dir.join("peers.bin");
-        let mut store = PeerStore::load(&path).unwrap();
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         let long_name = "a".repeat(257);
         store.add(sample_peer(1, &long_name, 100));
 
@@ -553,7 +673,7 @@ mod tests {
     fn a_tampered_format_version_byte_is_refused() {
         let dir = unique_temp_dir("bad_version");
         let path = dir.join("peers.bin");
-        let mut store = PeerStore::load(&path).unwrap();
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         store.add(sample_peer(1, "device", 100));
         store.save().unwrap();
 
@@ -561,7 +681,7 @@ mod tests {
         bytes[0] = 99;
         fs::write(&path, &bytes).unwrap();
 
-        match PeerStore::load(&path) {
+        match PeerStore::load(&path, DeviceKind::Phone) {
             Err(PeerError::UnknownFormat(99)) => {}
             other => panic!("expected UnknownFormat(99), got {other:?}"),
         }
@@ -573,7 +693,7 @@ mod tests {
     fn trailing_bytes_are_refused() {
         let dir = unique_temp_dir("trailing");
         let path = dir.join("peers.bin");
-        let mut store = PeerStore::load(&path).unwrap();
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         store.add(sample_peer(1, "device", 100));
         store.save().unwrap();
 
@@ -582,7 +702,7 @@ mod tests {
         fs::write(&path, &bytes).unwrap();
 
         assert!(matches!(
-            PeerStore::load(&path),
+            PeerStore::load(&path, DeviceKind::Phone),
             Err(PeerError::Wire(WireError::TrailingBytes))
         ));
 
@@ -625,7 +745,7 @@ mod tests {
         let peers_path = dir.join("peers.bin");
         let secret_path = dir.join("key.bin");
 
-        let mut store = PeerStore::load(&peers_path).unwrap();
+        let mut store = PeerStore::load(&peers_path, DeviceKind::Phone).unwrap();
         store.add(sample_peer(1, "device", 100));
         store.save().unwrap();
 

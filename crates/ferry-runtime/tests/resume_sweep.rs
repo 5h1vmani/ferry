@@ -89,6 +89,7 @@ use std::time::{Duration, Instant};
 use ferry_core::noise::{PublicKey, StaticKey};
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
+use ferry_core::peers::DeviceKind;
 use ferry_core::rpc::{FileOps, exchange_hello, serve};
 use ferry_core::tcp::{Listener, Pending};
 use ferry_runtime::{
@@ -500,7 +501,7 @@ fn serve_one(
         };
         Box::new(connection.stream)
     };
-    if exchange_hello(&mut stream, PEER_NAME).is_err() {
+    if exchange_hello(&mut stream, PEER_NAME, DeviceKind::Phone).is_err() {
         return;
     }
     drop(serve(&mut stream, fs.as_ref()));

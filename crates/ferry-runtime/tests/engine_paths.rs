@@ -34,6 +34,7 @@ use std::time::{Duration, Instant};
 use ferry_core::noise::{PublicKey, StaticKey};
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
+use ferry_core::peers::DeviceKind;
 use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
@@ -547,7 +548,7 @@ fn serve_one(
         cut: Arc::clone(cut),
     };
     std::thread::sleep(hello_delay);
-    if exchange_hello(&mut stream, "Fake").is_err() {
+    if exchange_hello(&mut stream, "Fake", DeviceKind::Phone).is_err() {
         return;
     }
     drop(serve(&mut stream, fs.as_ref()));
@@ -711,7 +712,7 @@ fn forget_refuses_a_peer_that_has_not_said_hello() {
     // exchange was already waiting, and then finds the device is no longer
     // listed and closes the connection. The first operation fails on the
     // closed connection, however late the hello is.
-    exchange_hello(&mut stream, "Fake").expect("the name exchange still runs");
+    exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange still runs");
     let mut client = Client::new(stream);
     let asked = client.read(
         &RemotePath::parse("anything.bin").expect("a valid path"),
@@ -746,7 +747,7 @@ fn stop_stops_serving_a_connected_peer() {
     )
     .expect("a paired peer should be able to connect");
     let mut stream = connection.stream;
-    exchange_hello(&mut stream, "Fake").expect("the name exchange runs");
+    exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange runs");
     let mut client = Client::new(stream);
     let path = RemotePath::parse("note.txt").expect("a valid path");
     let first = client.read(&path, 0, 5).expect("a paired peer may read");
@@ -918,7 +919,7 @@ fn no_callback_arrives_after_stop_returned() {
     )
     .expect("a paired peer should be able to connect");
     let mut stream = connection.stream;
-    exchange_hello(&mut stream, "Fake").expect("the name exchange runs");
+    exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange runs");
 
     let Side {
         engine,
