@@ -143,7 +143,7 @@ first. `reachable_via`, when it is `Some`, is always in the list.
 
 ## Batch C: the wire
 
-### 15. Several named shared roots — open
+### 15. Several named shared roots — built
 
 The largest change in this file, and a change to `ferry-core`'s file
 operations layer. The design's copy said the file layer was untouched.

@@ -7,7 +7,7 @@
 //
 // Views never read an engine type. This model publishes snapshots from
 // Model/Snapshot.swift, built by Engine/EngineAdapter.swift. That keeps the
-// fifteen engine gaps in docs/engine-contract.md inside one file.
+// engine gaps in docs/engine-contract.md inside one file.
 //
 // Which thread runs what:
 //
@@ -50,12 +50,21 @@ final class EngineModel: ObservableObject {
     private var engine: Engine?
     private var events: EngineEvents?
 
-    private static let downloadPathKey = "sharedFolderPath"
+    /// One stored root: its own keys under `rootsKey`, encoded as JSON so
+    /// UserDefaults holds one value rather than three parallel arrays.
+    private struct StoredRoot: Codable {
+        let name: String
+        let path: String
+        let writable: Bool
+    }
+
+    private static let rootsKey = "sharedRoots"
+    private static let downloadPathKey = "downloadPath"
     private static let displayNameLimit = 64
 
     init() {
+        roots = EngineModel.storedRoots()
         downloadPath = EngineModel.storedDownloadPath()
-        roots = EngineAdapter.roots(sharedFolderPath: downloadPath)
     }
 
     // MARK: - Starting and stopping
@@ -72,16 +81,14 @@ final class EngineModel: ObservableObject {
         do {
             EngineModel.addAdbToPath()
             let dataDir = try EngineModel.makeDataDirectory()
-            try EngineModel.makeDirectory(at: downloadPath)
-            // TODO(engine 15): Config takes one root. Desktop and Downloads
-            // need `shared_roots: Vec<Root>` and a separate download_dir;
-            // until then the download folder is also the only root.
             let config = Config(
                 dataDir: dataDir,
-                sharedRoot: downloadPath,
+                sharedRoots: roots.map(EngineModel.engineRoot),
+                downloadDir: downloadPath,
                 displayName: EngineModel.displayName(),
                 listenPort: 0,
-                key: try KeyStore.loadOrCreate()
+                key: try KeyStore.loadOrCreate(),
+                kind: .mac
             )
             let events = EngineEvents(model: self)
             let engine = try Engine(config: config, listener: events)
@@ -89,6 +96,9 @@ final class EngineModel: ObservableObject {
             try engine.start()
             self.events = events
             self.engine = engine
+            // `start` is what opens the roots on disk, so this is the
+            // engine's own answer, not the one this model guessed at init.
+            roots = EngineAdapter.roots(engine.roots())
             reloadDevices()
             reloadTransfers()
         } catch {
@@ -234,24 +244,51 @@ final class EngineModel: ObservableObject {
 
     // MARK: - Shared folders
 
-    /// Serves a different set of folders. The engine is stopped first,
-    /// because one engine at a time may use the data directory.
+    /// Serves exactly this set of folders, under the names already known
+    /// for a path that was already served, and a name guessed from the
+    /// folder itself for a path that is new. No engine restart: `set_roots`
+    /// reaches an already-connected peer on its next operation.
     ///
-    /// TODO(engine 15): with one root in Config, adding a folder replaces
-    /// the root rather than adding to it. The view is written against the
-    /// list, so when `set_roots` lands only this function changes.
+    /// While the engine has not started, such as before storage permission
+    /// is granted, this only persists the choice: `start` reads it back.
     func setRoots(_ paths: [String]) {
-        guard let first = paths.first else { return }
-        stop()
-        downloadPath = first
-        UserDefaults.standard.set(first, forKey: EngineModel.downloadPathKey)
-        roots = EngineAdapter.roots(sharedFolderPath: first)
-        start()
+        guard !paths.isEmpty else { return }
+        let known = Dictionary(uniqueKeysWithValues: roots.map { ($0.path, $0) })
+        let wanted = paths.map { path in
+            known[path] ?? SharedRootSnapshot(
+                name: (path as NSString).lastPathComponent,
+                path: path,
+                isWritable: true
+            )
+        }
+        if let engine {
+            do {
+                try engine.setRoots(roots: wanted.map(EngineModel.engineRoot))
+            } catch {
+                report(error)
+                return
+            }
+            roots = EngineAdapter.roots(engine.roots())
+        } else {
+            roots = wanted
+        }
+        EngineModel.storeRoots(roots)
     }
 
-    /// Where pulled files land.
+    /// Where pulled files land. No engine restart: `set_download_dir` takes
+    /// effect for the next pull. While the engine has not started, this
+    /// only persists the choice, the same as `setRoots`.
     func setDownloadPath(_ path: String) {
-        setRoots([path])
+        if let engine {
+            do {
+                try engine.setDownloadDir(path: path)
+            } catch {
+                report(error)
+                return
+            }
+        }
+        downloadPath = path
+        UserDefaults.standard.set(path, forKey: EngineModel.downloadPathKey)
     }
 
     // MARK: - Work that talks to the other device
@@ -312,6 +349,44 @@ final class EngineModel: ObservableObject {
     }
 
     // MARK: - Where things live
+
+    /// Desktop and Downloads, both writable: names a person recognises,
+    /// where the first version's single "Ferry" folder was a name Ferry
+    /// made up.
+    private static func defaultRoots() -> [SharedRootSnapshot] {
+        [NSHomeDirectory() + "/Desktop", NSHomeDirectory() + "/Downloads"].map { path in
+            SharedRootSnapshot(
+                name: (path as NSString).lastPathComponent,
+                path: path,
+                isWritable: true
+            )
+        }
+    }
+
+    private static func storedRoots() -> [SharedRootSnapshot] {
+        guard
+            let data = UserDefaults.standard.data(forKey: rootsKey),
+            let stored = try? JSONDecoder().decode([StoredRoot].self, from: data),
+            !stored.isEmpty
+        else {
+            return defaultRoots()
+        }
+        return stored.map {
+            SharedRootSnapshot(name: $0.name, path: $0.path, isWritable: $0.writable)
+        }
+    }
+
+    private static func storeRoots(_ roots: [SharedRootSnapshot]) {
+        let stored = roots.map { StoredRoot(name: $0.name, path: $0.path, writable: $0.isWritable) }
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        UserDefaults.standard.set(data, forKey: rootsKey)
+    }
+
+    /// A `SharedRootSnapshot`, as the engine's `Config` and `set_roots`
+    /// take it.
+    private static func engineRoot(_ root: SharedRootSnapshot) -> Root {
+        Root(name: root.name, path: root.path, writable: root.isWritable)
+    }
 
     private static func storedDownloadPath() -> String {
         if let stored = UserDefaults.standard.string(forKey: downloadPathKey), !stored.isEmpty {

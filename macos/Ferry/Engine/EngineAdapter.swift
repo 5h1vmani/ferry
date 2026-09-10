@@ -6,12 +6,12 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// Fifteen facts the screens state have no field in the engine yet. Each one
-// is marked `TODO(engine N)`, where N is its item number in
-// docs/engine-contract.md, and each has a default here that is honest: a
-// missing count is absent, not zero, and a missing sentence is left out,
-// not guessed. That is the three-part rule from docs/voice.md applied to
-// the boundary rather than to prose.
+// Six items in docs/engine-contract.md have no field in the engine yet: 2,
+// 6, 11, 12, 13, and 14. Each one is marked `TODO(engine N)`, where N is its
+// item number, and each has a default here that is honest: a missing count
+// is absent, not zero, and a missing sentence is left out, not guessed.
+// That is the three-part rule from docs/voice.md applied to the boundary
+// rather than to prose.
 //
 //   grep -rn "TODO(engine" macos/
 //
@@ -28,8 +28,9 @@ enum EngineAdapter {
         DeviceSnapshot(
             keyHex: info.keyHex,
             name: info.name,
-            // TODO(engine 11): DeviceInfo carries no kind. Every peer of
-            // this Mac is a phone, so this is correct until two Macs pair.
+            // TODO(engine 11): DeviceInfo carries a kind, but nothing reads
+            // it yet. Every peer of this Mac is a phone, so this is correct
+            // until two Macs pair.
             kind: .phone,
             isReachable: info.reachableVia != nil,
             badge: TransportBadgeState(device: info),
@@ -171,19 +172,11 @@ enum EngineAdapter {
         .notMounted
     }
 
-    /// The folders this Mac serves.
-    ///
-    /// TODO(engine 15): `Config.shared_root` is one path, so this reports
-    /// one root named after its last path component. When `roots()` lands,
-    /// Desktop and Downloads are two rows and this function reads them.
-    static func roots(sharedFolderPath: String) -> [SharedRootSnapshot] {
-        [
-            SharedRootSnapshot(
-                name: (sharedFolderPath as NSString).lastPathComponent,
-                path: sharedFolderPath,
-                isWritable: true
-            )
-        ]
+    /// The folders this Mac serves, from the engine's own `roots()`.
+    static func roots(_ infos: [Root]) -> [SharedRootSnapshot] {
+        infos.map { info in
+            SharedRootSnapshot(name: info.name, path: info.path, isWritable: info.writable)
+        }
     }
 
     // MARK: - Record, L5

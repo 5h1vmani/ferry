@@ -20,7 +20,8 @@ enum PreviewData {
         reachableVia: .usb,
         speedBytesPerSec: 38_000_000,
         lastSeenUnixSecs: nil,
-        availableTransports: [.usb, .wifi]
+        availableTransports: [.usb, .wifi],
+        kind: .phone
     )
 
     static let idlePhone = DeviceInfo(
@@ -30,7 +31,8 @@ enum PreviewData {
         reachableVia: .wifi,
         speedBytesPerSec: nil,
         lastSeenUnixSecs: nil,
-        availableTransports: [.wifi]
+        availableTransports: [.wifi],
+        kind: .phone
     )
 
     static let unreachablePhone = DeviceInfo(
@@ -40,7 +42,8 @@ enum PreviewData {
         reachableVia: nil,
         speedBytesPerSec: nil,
         lastSeenUnixSecs: 1_757_100_000,
-        availableTransports: []
+        availableTransports: [],
+        kind: .phone
     )
 
     static let devices = [reachablePhone, idlePhone, unreachablePhone]

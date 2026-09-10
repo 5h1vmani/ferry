@@ -29,11 +29,10 @@ struct PresenceSnapshot: Equatable {
     let activeTransport: Transport?
     let speedBytesPerSec: UInt64?
 
-    /// False while the engine has no getter for reachability and this value
-    /// is the app's own copy of what it last set (docs/engine-contract.md,
-    /// item 1). A view does not read this to change what it shows: the
-    /// words are the same either way. It exists so the gap is visible in
-    /// the type rather than remembered.
+    /// True once `EngineAdapter.presence` has built this snapshot from a
+    /// real `status()`. False only in `.unknown`, before `start()` has
+    /// produced a first one. A view does not read this to change what it
+    /// shows: the words are the same either way.
     let isReportedByEngine: Bool
 
     static let unknown = PresenceSnapshot(
@@ -50,6 +49,9 @@ struct PresenceSnapshot: Equatable {
 struct DeviceSnapshot: Equatable, Identifiable {
     let keyHex: String
     let name: String
+    /// What it said in `hello` at pairing time. The engine's own
+    /// `DeviceKind`, used directly rather than copied into an app type: it
+    /// already has exactly the two cases a peer can be.
     let kind: DeviceKind
     let isReachable: Bool
     let badge: TransportBadgeState
@@ -62,13 +64,6 @@ struct DeviceSnapshot: Equatable, Identifiable {
     let speedBytesPerSec: UInt64?
 
     var id: String { keyHex }
-}
-
-/// Whether a peer is a phone or a Mac. The engine does not send this yet
-/// (docs/engine-contract.md, item 11); every peer of this Mac is a phone.
-enum DeviceKind: Equatable {
-    case phone
-    case mac
 }
 
 // MARK: - Access, L2
@@ -98,8 +93,9 @@ struct SharedRootSnapshot: Equatable, Identifiable {
 
 // MARK: - Movement, L3
 
-/// Which way bytes are moving. The engine does not carry this yet
-/// (docs/engine-contract.md, item 4); everything the core can do is a pull.
+/// Which way bytes are moving, from the engine's own `Direction`
+/// (docs/engine-contract.md, item 4). Always `.phoneToMac` until push, item
+/// 5, lands: the core can only pull.
 enum TransferDirection: Equatable {
     case phoneToMac
     case macToPhone
@@ -136,8 +132,9 @@ struct TransferGroupSnapshot: Equatable, Identifiable {
     let error: ThreePartError?
     /// Present only where the engine holds a chunk-level fact.
     let chunks: ChunkFacts?
-    /// How long a finished group took, already formatted. Nil until the
-    /// engine carries timestamps (docs/engine-contract.md, item 9).
+    /// How long a finished group took, already formatted from the engine's
+    /// own timestamps (docs/engine-contract.md, item 9). Nil until the
+    /// group ends.
     let duration: String?
 
     var fraction: Double {
@@ -157,9 +154,9 @@ struct TransferGroupSnapshot: Equatable, Identifiable {
 }
 
 /// The bottom of the depth axis in docs/ia.md. Shown by the chunk
-/// disclosure, and only where a chunk fact exists — which today means only
-/// after a verify failure, because the counts are not published yet
-/// (docs/engine-contract.md, item 7).
+/// disclosure, from the engine's own chunk counts (docs/engine-contract.md,
+/// item 7). Present once the transfer's size is known, which is every
+/// transfer past its first `stat`.
 struct ChunkFacts: Equatable {
     let verified: UInt32
     let total: UInt32
@@ -258,8 +255,9 @@ enum PairingMethod: Equatable {
 /// draws the bytes and does not parse them.
 struct PairingOfferSnapshot: Equatable {
     let payload: Data
-    /// "1:48", counted down. Nil while the engine does not publish the
-    /// deadline (docs/engine-contract.md, item 10).
+    /// "1:48", counted down from the engine's own deadline
+    /// (docs/engine-contract.md, item 10). Nil only for the moment before
+    /// any pairing state has arrived.
     let expiresIn: String?
     /// False while the engine has no Offering state and this payload is a
     /// placeholder (docs/engine-contract.md, item 12).

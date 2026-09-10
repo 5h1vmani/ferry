@@ -6,9 +6,9 @@
 // recognises, where the first version's single "Ferry" folder was a name
 // Ferry made up.
 //
-// Changing the folders stops the engine and starts a new one, because one
-// engine at a time may use the data directory. See the crate documentation
-// for ferry-runtime.
+// Changing either setting calls straight into the running engine
+// (EngineModel.setRoots, EngineModel.setDownloadPath). Neither restarts it:
+// a root change reaches an already-connected phone on its next operation.
 
 import SwiftUI
 import AppKit
@@ -63,9 +63,6 @@ struct SettingsView: View {
         .frame(width: 480)
     }
 
-    /// TODO(engine 15): with one root in Config, adding replaces rather
-    /// than appends. The view is written against the list, so only
-    /// EngineModel.setRoots changes when `set_roots` lands.
     private func add() {
         guard let url = chooseFolder() else { return }
         model.setRoots(model.roots.map(\.path) + [url.path])
