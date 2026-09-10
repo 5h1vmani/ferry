@@ -1020,7 +1020,7 @@ fn the_candidate_list_is_capped_and_its_reports_are_rationed() {
         .states()
         .into_iter()
         .filter_map(|state| match state {
-            PairingState::Found { candidates } => Some(candidates.len()),
+            PairingState::Found { candidates, .. } => Some(candidates.len()),
             _ => None,
         })
         .max()

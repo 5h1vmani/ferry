@@ -27,7 +27,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferry_runtime::{
     Config, Engine, EngineListener, KeyPair, PairingState, TransferState, generate_key,
@@ -179,9 +179,28 @@ fn loopback_addr(side: &Side) -> SocketAddr {
 /// The six digits, or a panic saying what arrived instead.
 fn code_of(state: &PairingState) -> String {
     match state {
-        PairingState::Code { code } => code.clone(),
+        PairingState::Code { code, .. } => code.clone(),
         other => panic!("expected a code, got {other:?}"),
     }
+}
+
+/// Now, in Unix seconds, for checking a reported deadline is plausible.
+fn now_unix_secs() -> i64 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock should be after the epoch")
+        .as_secs();
+    i64::try_from(secs).expect("the current time fits in an i64")
+}
+
+/// The pairing timeout is two minutes. A little slack either side covers the
+/// time a test itself takes to reach the point it checks a deadline.
+fn assert_expires_about_two_minutes_out(expires_unix_secs: i64) {
+    let now = now_unix_secs();
+    assert!(
+        (0..=130).contains(&(expires_unix_secs - now)),
+        "the deadline should be about two minutes out, got {expires_unix_secs}, now is {now}"
+    );
 }
 
 fn is_code(state: &PairingState) -> bool {
@@ -204,6 +223,10 @@ fn sample_bytes() -> Vec<u8> {
 }
 
 #[test]
+// One long, linear narrative is the point of this test: every step of the
+// happy path, in the order a person walks through it. Splitting it into
+// smaller functions would hide that it is one path, not several.
+#[allow(clippy::too_many_lines)]
 fn two_engines_pair_and_move_a_file() {
     let phone = build("Pixel 3 XL");
     let mac = build("Vamana");
@@ -219,9 +242,14 @@ fn two_engines_pair_and_move_a_file() {
     let found = mac
         .inbox
         .wait_pairing("the Mac to list a candidate", is_found);
-    let PairingState::Found { candidates } = &found else {
+    let PairingState::Found {
+        candidates,
+        expires_unix_secs: found_expires,
+    } = &found
+    else {
         panic!("expected candidates, got {found:?}");
     };
+    assert_expires_about_two_minutes_out(*found_expires);
     let wanted = format!("wifi:{phone_addr}");
     let chosen = candidates
         .iter()
@@ -231,12 +259,21 @@ fn two_engines_pair_and_move_a_file() {
         .pick_candidate(chosen.id.clone())
         .expect("the candidate should be pickable");
 
-    let mac_code = code_of(&mac.inbox.wait_pairing("the Mac to show a code", is_code));
-    let phone_code = code_of(
-        &phone
-            .inbox
-            .wait_pairing("the phone to show a code", is_code),
-    );
+    let mac_code_state = mac.inbox.wait_pairing("the Mac to show a code", is_code);
+    let phone_code_state = phone
+        .inbox
+        .wait_pairing("the phone to show a code", is_code);
+    for state in [&mac_code_state, &phone_code_state] {
+        let PairingState::Code {
+            expires_unix_secs, ..
+        } = state
+        else {
+            panic!("expected a code, got {state:?}");
+        };
+        assert_expires_about_two_minutes_out(*expires_unix_secs);
+    }
+    let mac_code = code_of(&mac_code_state);
+    let phone_code = code_of(&phone_code_state);
     assert_eq!(
         mac_code, phone_code,
         "both screens must show the same six digits"
@@ -340,7 +377,7 @@ fn the_mac_lists_a_folder_on_the_phone() {
     let found = mac
         .inbox
         .wait_pairing("the Mac to list a candidate", is_found);
-    let PairingState::Found { candidates } = &found else {
+    let PairingState::Found { candidates, .. } = &found else {
         panic!("expected candidates, got {found:?}");
     };
     let wanted = format!("wifi:{phone_addr}");

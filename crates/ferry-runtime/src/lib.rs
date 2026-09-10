@@ -365,16 +365,23 @@ pub enum PairingState {
     /// Not pairing.
     Idle,
     /// Looking for a device, or on the phone, waiting for a Mac.
-    Waiting,
+    Waiting {
+        /// When this pairing attempt gives up.
+        expires_unix_secs: i64,
+    },
     /// The Mac has candidates to pick from.
     Found {
         /// What can be picked.
         candidates: Vec<PairingCandidate>,
+        /// When this pairing attempt gives up.
+        expires_unix_secs: i64,
     },
     /// Both screens show the code.
     Code {
         /// Six digits, zero padded.
         code: String,
+        /// When this pairing attempt gives up.
+        expires_unix_secs: i64,
     },
     /// Both sides confirmed. The device is now in `devices()`.
     Confirmed {

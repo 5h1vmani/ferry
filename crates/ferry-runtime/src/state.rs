@@ -135,6 +135,9 @@ pub(crate) struct Pairing {
     pub(crate) shown: PairingState,
     /// When pairing gives up, if it is running.
     pub(crate) deadline: Option<Instant>,
+    /// The same deadline, in Unix seconds, for the wire. Set and cleared
+    /// together with `deadline`.
+    pub(crate) deadline_unix_secs: Option<i64>,
     /// The connection waiting for a confirm.
     pub(crate) held: Option<HeldPairing>,
     /// True while a chosen candidate is being dialed.
@@ -153,6 +156,7 @@ impl Pairing {
         Self {
             shown: PairingState::Idle,
             deadline: None,
+            deadline_unix_secs: None,
             held: None,
             dialing: false,
             candidates: BTreeMap::new(),
@@ -169,7 +173,7 @@ impl Pairing {
             && !self.dialing
             && matches!(
                 self.shown,
-                PairingState::Waiting | PairingState::Found { .. }
+                PairingState::Waiting { .. } | PairingState::Found { .. }
             )
     }
 
@@ -177,7 +181,7 @@ impl Pairing {
     pub(crate) fn is_running(&self) -> bool {
         matches!(
             self.shown,
-            PairingState::Waiting | PairingState::Found { .. } | PairingState::Code { .. }
+            PairingState::Waiting { .. } | PairingState::Found { .. } | PairingState::Code { .. }
         )
     }
 }

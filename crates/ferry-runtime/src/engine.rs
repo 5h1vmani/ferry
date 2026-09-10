@@ -181,6 +181,7 @@ impl Shared {
             state.pairing.shown = next.clone();
             if !state.pairing.is_running() {
                 state.pairing.deadline = None;
+                state.pairing.deadline_unix_secs = None;
                 state.pairing.held = None;
                 state.pairing.dialing = false;
                 state.pairing.candidates.clear();
@@ -268,16 +269,19 @@ fn report_due(shared: &Arc<Shared>, force: bool) {
         return;
     }
     if due.found {
-        let candidates = {
+        let found = {
             let state = lock(&shared.state);
             // A list that nobody is picking from is not worth reporting.
             state
                 .pairing
                 .is_open_to_pairing()
-                .then(|| state.candidate_list())
+                .then(|| (state.candidate_list(), state.pairing.deadline_unix_secs))
         };
-        if let Some(candidates) = candidates {
-            shared.set_pairing(&PairingState::Found { candidates });
+        if let Some((candidates, expires_unix_secs)) = found {
+            shared.set_pairing(&PairingState::Found {
+                candidates,
+                expires_unix_secs: expires_unix_secs.unwrap_or_else(now_unix_secs),
+            });
         }
     }
     shared.notify.send(due);
@@ -644,6 +648,8 @@ impl Engine {
     /// again.
     pub fn start_pairing(&self) {
         let timeout = *lock(&self.shared.pairing_timeout);
+        let expires_unix_secs =
+            now_unix_secs() + i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX);
         {
             let mut state = lock(&self.shared.state);
             if state.pairing.is_running() {
@@ -654,8 +660,10 @@ impl Engine {
             }
             state.pairing = Pairing::idle();
             state.pairing.deadline = Some(Instant::now() + timeout);
+            state.pairing.deadline_unix_secs = Some(expires_unix_secs);
         }
-        self.shared.set_pairing(&PairingState::Waiting);
+        self.shared
+            .set_pairing(&PairingState::Waiting { expires_unix_secs });
 
         let shared = Arc::clone(&self.shared);
         self.shared
@@ -1299,6 +1307,7 @@ fn hold_pairing(
     accepted: bool,
 ) -> Result<(), FerryError> {
     let code = connection.paired.code.to_string();
+    let expires_unix_secs;
     {
         let mut state = lock(&shared.state);
         if !accepted {
@@ -1308,13 +1317,20 @@ fn hold_pairing(
         if !state.pairing.is_open_to_pairing() {
             return Err(failed("Runtime::PairingBusy"));
         }
+        expires_unix_secs = state
+            .pairing
+            .deadline_unix_secs
+            .unwrap_or_else(now_unix_secs);
         state.pairing.held = Some(HeldPairing {
             connection,
             addr,
             accepted,
         });
     }
-    shared.set_pairing(&PairingState::Code { code });
+    shared.set_pairing(&PairingState::Code {
+        code,
+        expires_unix_secs,
+    });
     Ok(())
 }
 
