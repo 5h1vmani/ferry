@@ -18,7 +18,12 @@
 //!    symlink. `cap_std` guarantees this. A test proves it with a real symlink.
 //! 2. Only regular files and directories are served. A FIFO, a socket, a
 //!    device, or a symlink that reaches one is refused with
-//!    [`crate::ops::OpError::Unsupported`].
+//!    [`crate::ops::OpError::Unsupported`]. For `read`, `write`, `truncate`,
+//!    and `set_mtime`, this is checked on the opened handle, not on the path
+//!    beforehand; see `open_checked`. Checking the path first and opening it
+//!    a moment later left a gap for another local process to change what the
+//!    path pointed to in between, which is how a FIFO could reach `read` and
+//!    block its thread forever.
 //! 3. `delete` is not recursive. A directory holding anything returns
 //!    [`crate::ops::OpError::NotEmpty`].
 //! 4. `rename` replaces the destination in one step.
@@ -40,12 +45,15 @@
 //! impl FileOps for LocalFs { .. }
 //! ```
 
+use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cap_std::ambient_authority;
-use cap_std::fs::{Dir, Metadata, OpenOptions};
+use cap_std::fs::{Dir, File, Metadata, OpenOptions, OpenOptionsExt};
+use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 
 use crate::limits;
 use crate::ops::{Entry, FileKind, OpError};
@@ -60,6 +68,8 @@ use crate::rpc::FileOps;
 #[derive(Debug)]
 pub struct LocalFs {
     root: Dir,
+    // See `ListCache`'s own documentation for what this holds and why.
+    list_cache: Mutex<ListCache>,
 }
 
 impl LocalFs {
@@ -72,47 +82,131 @@ impl LocalFs {
     /// does not exist.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, OpError> {
         let root = Dir::open_ambient_dir(root, ambient_authority()).map_err(|e| map_io(&e))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            list_cache: Mutex::new(ListCache::default()),
+        })
+    }
+}
+
+/// Cached, already-sorted directory listings, one per path with a paging run
+/// in progress.
+///
+/// `list` sorts a directory once, on the call that starts a paging run at
+/// cursor `0`, and keeps the sorted result here so the later calls in the
+/// same run can read the next page instead of reading and sorting the whole
+/// directory again. That repeated read-and-sort was FINDING 4 of the audit
+/// this module fixes: 118 ms a page at 60,000 entries, from 20 bytes of
+/// request.
+///
+/// A listing is a snapshot for the life of one paging run. That is what a
+/// paging cursor already means: a caller that keeps asking for the next page
+/// is asking to keep walking the listing it was first handed, not a fresh
+/// one that might have gained or lost entries in between calls.
+#[derive(Debug, Default)]
+struct ListCache {
+    by_path: HashMap<String, Arc<Vec<Entry>>>,
+    // Insertion order, oldest first. A `HashMap` keeps no order of its own,
+    // and eviction needs to find the oldest entry once the cache is full.
+    order: Vec<String>,
+}
+
+impl ListCache {
+    // How many directories' listings are kept at once. Ferry pages one
+    // directory, or occasionally two during a transfer, at a time in normal
+    // use, so this is headroom, not a tight budget.
+    const CAPACITY: usize = 8;
+
+    fn get(&self, path: &str) -> Option<Arc<Vec<Entry>>> {
+        self.by_path.get(path).cloned()
+    }
+
+    fn insert(&mut self, path: String, entries: Arc<Vec<Entry>>) {
+        if !self.by_path.contains_key(&path) {
+            if self.order.len() >= Self::CAPACITY {
+                // `order[0]` is always the oldest entry, because a path is
+                // only ever pushed onto the back, never reordered.
+                let oldest = self.order.remove(0);
+                self.by_path.remove(&oldest);
+            }
+            self.order.push(path.clone());
+        }
+        self.by_path.insert(path, entries);
+    }
+
+    fn remove(&mut self, path: &str) {
+        self.by_path.remove(path);
+        self.order.retain(|cached| cached != path);
     }
 }
 
 impl FileOps for LocalFs {
     fn list(&self, path: &RemotePath, cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
-        // `symlink_metadata` never follows the last component, so a symlink
-        // left at `path` is classified as `Unsupported`, not as whatever it
-        // points to.
-        let dir_metadata = self
-            .root
-            .symlink_metadata(path.as_str())
-            .map_err(|e| map_io(&e))?;
-        match classify(&dir_metadata)? {
-            FileKind::Directory => {}
-            FileKind::File => return Err(OpError::NotADirectory),
-        }
+        // Cursor 0 always starts a fresh paging run, even when a listing for
+        // this path is already cached. A stale run must never be handed
+        // back as if it were the start of a new one.
+        let cached = if cursor == 0 {
+            None
+        } else {
+            self.list_cache
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .get(path.as_str())
+        };
 
-        let mut children = Vec::new();
-        for entry in self.root.read_dir(path.as_str()).map_err(|e| map_io(&e))? {
-            let entry = entry.map_err(|e| map_io(&e))?;
-            // One odd child must not fail the whole listing. A FIFO, a
-            // socket, a device, or a symlink is left out instead.
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            let Ok(kind) = classify(&metadata) else {
-                continue;
-            };
-            children.push(Entry {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                kind,
-                size: if kind == FileKind::File {
-                    metadata.len()
-                } else {
-                    0
-                },
-                modified_unix_secs: modified_secs(&metadata),
-            });
-        }
-        children.sort_by(|a, b| a.name.cmp(&b.name));
+        // When there is no cached listing, cursor > 0 is treated the same
+        // way cursor 0 is: the directory is read and sorted here, and the
+        // page this call actually asked for is served out of the fresh
+        // result below, not out of page 0.
+        let children = if let Some(children) = cached {
+            children
+        } else {
+            // `symlink_metadata` never follows the last component, so a
+            // symlink left at `path` is classified as `Unsupported`, not as
+            // whatever it points to.
+            let dir_metadata = self
+                .root
+                .symlink_metadata(path.as_str())
+                .map_err(|e| map_io(&e))?;
+            match classify(&dir_metadata)? {
+                FileKind::Directory => {}
+                FileKind::File => return Err(OpError::NotADirectory),
+            }
+
+            let mut entries = Vec::new();
+            for entry in self.root.read_dir(path.as_str()).map_err(|e| map_io(&e))? {
+                let entry = entry.map_err(|e| map_io(&e))?;
+                // One odd child must not fail the whole listing. A FIFO, a
+                // socket, a device, or a symlink is left out instead.
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                let Ok(kind) = classify(&metadata) else {
+                    continue;
+                };
+                // A name that is not valid UTF-8 cannot round trip through
+                // the wire format, which carries every name as UTF-8 text.
+                // `to_string_lossy` would show it anyway, under a name that
+                // maps to no real path, and two different real names could
+                // then collide on the same lossy name. Skipping it is the
+                // honest answer: Ferry cannot show a name it cannot carry.
+                let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                    continue;
+                };
+                entries.push(Entry {
+                    name,
+                    kind,
+                    size: if kind == FileKind::File {
+                        metadata.len()
+                    } else {
+                        0
+                    },
+                    modified_unix_secs: modified_secs(&metadata),
+                });
+            }
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            Arc::new(entries)
+        };
 
         let page = usize::try_from(limits::MAX_LIST_ENTRIES).unwrap_or(usize::MAX);
         let start = usize::try_from(cursor)
@@ -124,7 +218,22 @@ impl FileOps for LocalFs {
         } else {
             None
         };
-        Ok((children[start..end].to_vec(), next_cursor))
+        let page_entries = children[start..end].to_vec();
+
+        let mut cache = self
+            .list_cache
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if next_cursor.is_some() {
+            cache.insert(path.as_str().to_owned(), children);
+        } else {
+            // The last page was just served. Nothing will ask for this path
+            // with a non-zero cursor again until a fresh run starts at 0, so
+            // the snapshot is dropped now instead of waiting to be evicted.
+            cache.remove(path.as_str());
+        }
+
+        Ok((page_entries, next_cursor))
     }
 
     fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
@@ -150,19 +259,16 @@ impl FileOps for LocalFs {
             return Err(OpError::RangeTooLarge);
         }
 
-        // The type is checked with a `stat`-only call before anything is
-        // opened. A FIFO would block the calling thread forever if it were
-        // opened here, and a symlink would be silently followed.
-        let metadata = self
-            .root
-            .symlink_metadata(path.as_str())
-            .map_err(|e| map_io(&e))?;
-        match classify(&metadata)? {
-            FileKind::File => {}
-            FileKind::Directory => return Err(OpError::IsADirectory),
+        // No `symlink_metadata` call runs first. See `open_checked` for why:
+        // checking what is at `path` and opening it are one step now, not
+        // two, so there is no gap in between for another process to swap
+        // what `path` points at.
+        let (mut file, kind) =
+            open_checked(&self.root, path.as_str(), OpenOptions::new().read(true))?;
+        if kind == FileKind::Directory {
+            return Err(OpError::IsADirectory);
         }
 
-        let mut file = self.root.open(path.as_str()).map_err(|e| map_io(&e))?;
         file.seek(SeekFrom::Start(offset)).map_err(|e| map_io(&e))?;
         let mut bytes = Vec::new();
         file.take(u64::from(length))
@@ -177,40 +283,31 @@ impl FileOps for LocalFs {
             return Err(OpError::RangeTooLarge);
         }
 
-        // A missing path is fine: `write` creates the file. Anything already
-        // there must be checked before it is opened, for the same reason as
-        // in `read`. A failure other than "missing" here is not turned into
-        // an `OpError`; the open call below hits the same failure and maps
-        // it through `map_io`.
-        if let Ok(metadata) = self.root.symlink_metadata(path.as_str()) {
-            match classify(&metadata)? {
-                FileKind::File => {}
-                FileKind::Directory => return Err(OpError::IsADirectory),
-            }
+        // `create(true)` covers the case a separate check used to handle by
+        // hand: a path with nothing at it yet, which `write` is allowed to
+        // fill in. `open_checked` still classifies whatever handle comes
+        // back, so a directory, a FIFO, a socket, or a device already there
+        // is refused the same way as in every other operation here, from
+        // what was actually opened.
+        let (mut file, kind) = open_checked(
+            &self.root,
+            path.as_str(),
+            OpenOptions::new().write(true).create(true),
+        )?;
+        if kind == FileKind::Directory {
+            return Err(OpError::IsADirectory);
         }
 
-        let mut file = self
-            .root
-            .open_with(path.as_str(), OpenOptions::new().write(true).create(true))
-            .map_err(|e| map_io(&e))?;
         file.seek(SeekFrom::Start(offset)).map_err(|e| map_io(&e))?;
         file.write_all(bytes).map_err(|e| map_io(&e))?;
         Ok(written)
     }
 
     fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), OpError> {
-        let metadata = self
-            .root
-            .symlink_metadata(path.as_str())
-            .map_err(|e| map_io(&e))?;
-        match classify(&metadata)? {
-            FileKind::File => {}
-            FileKind::Directory => return Err(OpError::IsADirectory),
+        let (file, kind) = open_checked(&self.root, path.as_str(), OpenOptions::new().write(true))?;
+        if kind == FileKind::Directory {
+            return Err(OpError::IsADirectory);
         }
-        let file = self
-            .root
-            .open_with(path.as_str(), OpenOptions::new().write(true))
-            .map_err(|e| map_io(&e))?;
         file.set_len(length).map_err(|e| map_io(&e))
     }
 
@@ -226,14 +323,14 @@ impl FileOps for LocalFs {
     }
 
     fn set_mtime(&self, path: &RemotePath, modified_unix_secs: i64) -> Result<(), OpError> {
-        let metadata = self
-            .root
-            .symlink_metadata(path.as_str())
-            .map_err(|e| map_io(&e))?;
-        classify(&metadata)?;
-        // A plain read-only open is enough. Setting a file's times depends on
-        // ownership and permission, not on how the handle was opened.
-        let file = self.root.open(path.as_str()).map_err(|e| map_io(&e))?;
+        // Unlike `read`, `write`, and `truncate`, this is allowed to land on
+        // a directory; `Request::SetMtime`'s contract covers both. A plain
+        // read-only open is enough either way: setting a file's or a
+        // directory's time depends on ownership and permission, not on how
+        // the handle was opened. `open_checked`'s `classify` call still
+        // refuses a FIFO, a socket, or a device, which is the only thing
+        // that mattered for the race this function used to have.
+        let (file, _kind) = open_checked(&self.root, path.as_str(), OpenOptions::new().read(true))?;
         file.into_std()
             .set_modified(unix_secs_to_system_time(modified_unix_secs))
             .map_err(|e| map_io(&e))
@@ -256,6 +353,53 @@ impl FileOps for LocalFs {
             FileKind::Directory => self.root.remove_dir(path.as_str()).map_err(|e| map_io(&e)),
         }
     }
+}
+
+// `custom_flags` takes an `i32`, and `OFlags::bits` is a `u32`. The value is
+// a single flag bit, so reinterpreting the bytes is exact. This mirrors how
+// ops.rs carries an `i64` inside a `u64`.
+const O_NONBLOCK: i32 = i32::from_ne_bytes(OFlags::NONBLOCK.bits().to_ne_bytes());
+
+// Opens `path` and classifies what got opened, instead of classifying the
+// path and then opening it as two separate calls. Two calls leave a gap: a
+// local process can change what sits at `path` between them, so the
+// classification and the open can end up looking at different objects. A
+// FIFO swapped in during that gap is FINDING 1 of the audit this fixes: the
+// old `read` checked the path, then opened it a moment later, and an opened
+// FIFO with no writer blocks the thread forever.
+//
+// Opening first and classifying the handle closes the gap, because there is
+// nothing left to swap once the handle exists: whatever `classify` reports
+// here is the exact object every caller of this function goes on to read,
+// write, or set the time of.
+//
+// `O_NONBLOCK` is what keeps the open itself from being the hang. A FIFO
+// opened for reading blocks until a writer connects, and one opened for
+// writing blocks until a reader connects, unless this flag is set, in which
+// case the call returns at once instead, successfully or with an error, but
+// never by waiting. The flag is left set on the handle afterward rather than
+// cleared with `fcntl`: by the time any caller uses the handle, `classify`
+// has already confirmed it is a regular file or a directory, and POSIX
+// defines `O_NONBLOCK` as having no effect on a regular file's `read`,
+// `write`, or `set_len`. Clearing it would need a raw `fcntl` call, which
+// needs `libc` or `rustix` as a direct dependency (neither is one, see the
+// constant above) or a hand-written FFI declaration, which the workspace's
+// `unsafe_code = "deny"` lint forbids outright.
+fn open_checked(
+    root: &Dir,
+    path: &str,
+    options: &mut OpenOptions,
+) -> Result<(File, FileKind), OpError> {
+    options.custom_flags(O_NONBLOCK);
+    let file = root.open_with(path, options).map_err(|e| map_io(&e))?;
+    let metadata = file.metadata().map_err(|e| map_io(&e))?;
+    let kind = classify(&metadata)?;
+    // The handle is now known to be a regular file or a directory, so a
+    // blocking read cannot hang on it. Clear the flag so the handle behaves
+    // like any other from here on.
+    let flags = fcntl_getfl(&file).map_err(|_| OpError::Internal)?;
+    fcntl_setfl(&file, flags - OFlags::NONBLOCK).map_err(|_| OpError::Internal)?;
+    Ok((file, kind))
 }
 
 // The only place that turns an I/O failure into an `OpError`. Every function
@@ -331,7 +475,9 @@ fn unix_secs_to_system_time(secs: i64) -> SystemTime {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::time::{Duration, Instant};
 
     use super::LocalFs;
     use crate::limits;
@@ -691,13 +837,160 @@ mod tests {
 
         let fs = root.fs();
         assert_eq!(fs.stat(&path("sub/pipe")), Err(OpError::Unsupported));
-        // Reading a FIFO with no writer would block forever if `read` ever
-        // opened it. It must be refused before that, from the metadata alone.
+        // `read` opens this FIFO with `O_NONBLOCK` (see `open_checked`), so
+        // the open returns at once instead of waiting for a writer, and the
+        // handle is then refused because it is not a regular file.
         assert_eq!(fs.read(&path("sub/pipe"), 0, 10), Err(OpError::Unsupported));
 
         let (entries, next_cursor) = fs.list(&path("sub"), 0).unwrap();
         assert_eq!(next_cursor, None);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["a.txt"]);
+    }
+
+    #[test]
+    fn a_fifo_swapped_in_after_the_check_does_not_block() {
+        let root = TempRoot::new("fifo-race");
+        let target_name = "target.bin";
+        std::fs::write(root.dir.join(target_name), b"hello").unwrap();
+
+        // `mkfifo` availability is checked once, the same way the other FIFO
+        // test above does it. If it is missing, this test cannot run the
+        // race it exists to check, so it is skipped rather than failed.
+        let probe_path = root.dir.join("mkfifo-probe");
+        let made_fifo = std::process::Command::new("mkfifo")
+            .arg(&probe_path)
+            .status()
+            .is_ok_and(|status| status.success());
+        if !made_fifo {
+            eprintln!("mkfifo is not available here; skipping the FIFO race check");
+            return;
+        }
+        std::fs::remove_file(&probe_path).unwrap();
+
+        // This is FINDING 1 of the audit `localfs.rs` fixes. The old `read`
+        // checked what was at a path with `symlink_metadata`, then opened
+        // that same path a moment later, as two separate calls. A local
+        // process that swaps a FIFO in between the two calls makes the
+        // second one open a FIFO with no writer, which blocks the calling
+        // thread forever; the auditor's reproduction hung after 1017 reads.
+        // Reading the fixed code cannot prove the race is closed. Only
+        // racing the two calls against a real swap does, so this test swaps
+        // the target between a regular file and a FIFO on one thread while
+        // reading it on another, thousands of times, against a deadline.
+        let keep_swapping = Arc::new(AtomicBool::new(true));
+        let swapper = {
+            let keep_swapping = Arc::clone(&keep_swapping);
+            let dir = root.dir.clone();
+            std::thread::spawn(move || {
+                let regular_spare = dir.join("regular-spare");
+                let fifo_spare = dir.join("fifo-spare");
+                let target = dir.join(target_name);
+                while keep_swapping.load(Ordering::Relaxed) {
+                    // `rename` replaces the destination in one step, the
+                    // same atomic replacement `docs/protocol.md` section 8
+                    // relies on for a real transfer landing its final file.
+                    let _ = std::fs::write(&regular_spare, b"hello");
+                    let _ = std::fs::rename(&regular_spare, &target);
+                    let made = std::process::Command::new("mkfifo")
+                        .arg(&fifo_spare)
+                        .status()
+                        .is_ok_and(|status| status.success());
+                    if made {
+                        let _ = std::fs::rename(&fifo_spare, &target);
+                    }
+                }
+            })
+        };
+
+        let fs = root.fs();
+        let (done_send, done_recv) = mpsc::channel();
+        std::thread::spawn(move || {
+            let target = path(target_name);
+            for _ in 0..5_000u32 {
+                match fs.read(&target, 0, 5) {
+                    Ok(_) | Err(OpError::Unsupported) => {}
+                    Err(other) => {
+                        let _ = done_send
+                            .send(Err(format!("expected bytes or Unsupported, got {other:?}")));
+                        return;
+                    }
+                }
+            }
+            let _ = done_send.send(Ok(()));
+        });
+
+        // A blocked read would hang the reading thread forever, not just for
+        // ten seconds, so this deadline is what turns that hang into an
+        // observable test failure instead of a stuck test binary. The
+        // reading thread itself is abandoned if the deadline is hit; nothing
+        // needs to join it, because a process exit tears down every thread,
+        // blocked or not.
+        let outcome = done_recv.recv_timeout(Duration::from_secs(10));
+        keep_swapping.store(false, Ordering::Relaxed);
+        swapper.join().unwrap();
+
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => panic!("{message}"),
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "5000 reads did not finish within the 10 second deadline; \
+                 a read most likely blocked on an open FIFO"
+            ),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the reading thread ended without reporting a result")
+            }
+        }
+    }
+
+    #[test]
+    fn paging_a_large_directory_sorts_it_once() {
+        let root = TempRoot::new("list-cache-timing");
+        let fs = root.fs();
+        fs.mkdir(&path("many")).unwrap();
+
+        let total = 3_000usize;
+        for i in 0..total {
+            fs.write(&path(&format!("many/{i:05}")), 0, b"").unwrap();
+        }
+
+        // FINDING 4: `list` used to read and sort the whole directory again
+        // on every page, which measured at 118 ms a page at 60,000 entries.
+        // The first page still pays for one read and one sort; every later
+        // page in the same paging run must not.
+        let first_start = Instant::now();
+        let (first_page, mut cursor) = fs.list(&path("many"), 0).unwrap();
+        let first_page_time = first_start.elapsed();
+        assert_eq!(first_page.len(), limits::MAX_LIST_ENTRIES as usize);
+
+        let mut seen = first_page.len();
+        let mut second_page_time = None;
+        while let Some(next) = cursor {
+            let page_start = Instant::now();
+            let (page, next_cursor) = fs.list(&path("many"), next).unwrap();
+            second_page_time.get_or_insert_with(|| page_start.elapsed());
+            seen += page.len();
+            cursor = next_cursor;
+        }
+        let total_time = first_start.elapsed();
+
+        assert_eq!(seen, total);
+        // A generous bound. Reading, sorting, and paging 3000 entries should
+        // not come close to this on any machine that can run the test suite
+        // at all; it is here to catch a real regression, not to be tight.
+        assert!(
+            total_time < Duration::from_secs(5),
+            "paging 3000 entries took {total_time:?}"
+        );
+
+        let second_page_time = second_page_time
+            .expect("3000 entries at a 1024 entry page size must page more than once");
+        assert!(
+            second_page_time < first_page_time / 4,
+            "the second page ({second_page_time:?}) should be well under a \
+             quarter of the first page's time ({first_page_time:?}); the \
+             cache should mean it skips reading and sorting the directory \
+             again"
+        );
     }
 }
