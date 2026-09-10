@@ -309,14 +309,29 @@ block the serving thread forever, and so does a device file.
 
 The filesystem layer must therefore also:
 
-1. Open every path with `O_NOFOLLOW_ANY` on macOS, and with `O_NOFOLLOW` on
-   each component on Android.
-2. Refuse anything that is not a regular file or a directory.
-3. Resolve the result and confirm it still sits inside the shared root.
+1. Resolve every path inside a directory capability that cannot be talked into
+   leaving the root. Ferry uses `cap-std` for this rather than hand-written
+   `O_NOFOLLOW` handling.
+2. Refuse every symlink, even one that points inside the root. A symlink is
+   never listed, never opened, and never followed as the last component. This
+   is stricter than a symlink check needs to be, and simpler to get right.
+3. Check the file type on the open descriptor, not on the path. A check on the
+   path can be raced: a regular file is swapped for a FIFO between the check
+   and the open, and the open then blocks forever. So a file is opened without
+   blocking, its type is read from the handle, and anything that is not a
+   regular file is refused before the first read.
+4. Skip any directory entry whose name is not valid UTF-8. Such a name cannot
+   be sent and then used again, so it is never shown.
+
+Two things the layer does not defend against, stated so nobody assumes it
+does. A hard link created from outside the root into it by a local process is
+indistinguishable from a real file, and is served. A local process that can
+write inside the shared root can change any file at any time, which is what
+sharing a folder means.
 
 The lexical rules live in `crates/ferry-core/src/path.rs`. A test there named
-`a_validated_path_can_still_escape_through_a_symlink` records the gap so that
-nobody forgets step 1.
+`a_validated_path_can_still_escape_through_a_symlink` records the gap that
+rule 1 closes. The filesystem rules live in `crates/ferry-core/src/localfs.rs`.
 
 ## 9. Transfers
 
