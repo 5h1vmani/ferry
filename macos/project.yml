@@ -1,0 +1,40 @@
+# XcodeGen project spec for Ferry on the Mac. This is the single source of
+# truth for the Xcode project. Run `xcodegen generate` in this folder to
+# produce Ferry.xcodeproj, which is not committed.
+name: Ferry
+options:
+  bundleIdPrefix: app.ferry
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+targets:
+  Ferry:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Ferry
+    settings:
+      base:
+        PRODUCT_NAME: Ferry
+        PRODUCT_BUNDLE_IDENTIFIER: app.ferry.mac
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Ferry/Ferry.entitlements
+        SWIFT_VERSION: "5.9"
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
+    info:
+      path: Ferry/Info.plist
+      properties:
+        CFBundleName: Ferry
+        CFBundleDisplayName: Ferry
+        CFBundleShortVersionString: "1.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.utilities
+        NSPrincipalClass: NSApplication
