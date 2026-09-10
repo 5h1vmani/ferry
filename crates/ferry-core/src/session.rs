@@ -249,24 +249,43 @@ impl Transfer {
     }
 }
 
-/// Read one byte range from local storage, in pieces the trait allows.
+/// Read a whole byte range from a source that only serves limited pieces.
+///
+/// Both local storage and a remote peer cap a single read, so both need the
+/// same loop. Writing it twice invites the two copies to drift.
+///
+/// `fetch` is called with an offset relative to the start of the range. It
+/// returns an empty result when the source has no more bytes, which ends the
+/// loop and leaves the caller to decide whether a short result is a problem.
+fn read_range<E>(
+    length: u32,
+    mut fetch: impl FnMut(u64, u32) -> Result<Vec<u8>, E>,
+) -> Result<Vec<u8>, E> {
+    let mut out: Vec<u8> = Vec::with_capacity(length as usize);
+    loop {
+        let done = u32::try_from(out.len()).unwrap_or(length);
+        if done >= length {
+            return Ok(out);
+        }
+        let piece = (length - done).min(limits::MAX_READ_LEN);
+        let got = fetch(u64::from(done), piece)?;
+        if got.is_empty() {
+            return Ok(out);
+        }
+        out.extend_from_slice(&got);
+    }
+}
+
+/// Read one byte range from local storage.
+///
+/// A short result means the partial file does not reach that far yet.
 fn read_local(
     local: &dyn FileOps,
     path: &RemotePath,
     offset: u64,
     length: u32,
 ) -> Result<Vec<u8>, OpError> {
-    let mut out = Vec::with_capacity(length as usize);
-    while out.len() < length as usize {
-        let remaining = length - u32::try_from(out.len()).unwrap_or(length);
-        let piece = remaining.min(limits::MAX_READ_LEN);
-        let got = local.read(path, offset + out.len() as u64, piece)?;
-        if got.is_empty() {
-            break;
-        }
-        out.extend_from_slice(&got);
-    }
-    Ok(out)
+    read_range(length, |at, piece| local.read(path, offset + at, piece))
 }
 
 /// Write one byte range to local storage, in pieces the trait allows.
@@ -292,7 +311,9 @@ fn write_local(
     Ok(())
 }
 
-/// Fetch one whole chunk from the peer, in pieces the protocol allows.
+/// Fetch one whole chunk from the peer.
+///
+/// A chunk may be larger than one read allows, so this may take several calls.
 fn fetch_chunk<S: Read + Write>(
     client: &mut Client<S>,
     source: &RemotePath,
@@ -300,21 +321,17 @@ fn fetch_chunk<S: Read + Write>(
     offset: u64,
     length: u32,
 ) -> Result<Vec<u8>, TransferError> {
-    let mut out = Vec::with_capacity(length as usize);
-    while out.len() < length as usize {
-        let remaining = length - u32::try_from(out.len()).unwrap_or(length);
-        let piece = remaining.min(limits::MAX_READ_LEN);
-        let got = client.read(source, offset + out.len() as u64, piece)?;
-        if got.is_empty() {
-            return Err(TransferError::ShortRead {
-                index,
-                wanted: length,
-                got: out.len(),
-            });
-        }
-        out.extend_from_slice(&got);
+    let got = read_range(length, |at, piece| client.read(source, offset + at, piece))?;
+    // A chunk inside the file is always whole. Anything shorter means the peer
+    // no longer holds the file the manifest describes.
+    if got.len() != length as usize {
+        return Err(TransferError::ShortRead {
+            index,
+            wanted: length,
+            got: got.len(),
+        });
     }
-    Ok(out)
+    Ok(got)
 }
 
 /// Find the first chunk the partial file does not already hold.

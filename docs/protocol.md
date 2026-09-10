@@ -194,30 +194,57 @@ Implemented in `crates/ferry-core/src/wire.rs`.
 
 ## 7. Limits
 
-Every limit below exists so that one peer cannot exhaust the other. Some of
-these trigger during ordinary use, not only under attack. A camera folder with
-20,000 photos is normal.
+Every limit exists so that one peer cannot exhaust the other. Some are reached
+during ordinary use, not only under attack. A camera folder holding twenty
+thousand photos is normal, and it does not fit in one frame.
 
-| Limit | Why |
-|---|---|
-| Limit | Value | Why |
+### Normative limits
+
+A second implementation must match these two. Everything else is free.
+
+| Limit | Value | Why it is fixed |
 |---|---|---|
-| Frame payload | 1 MiB plus 64 KiB | An unbounded length exhausts memory |
-| `read` length in one request | 1 MiB | Bounds the buffer the server must hold |
-| `write` bytes in one request | 1 MiB | The same, on the writing side |
-| Requests in flight per connection | 64 | Pipelining without a cap is a memory attack |
-| Outstanding response bytes per connection | 16 MiB | Sixty four reads of 1 MiB would ask a phone for 64 MiB |
-| Entries in one `list` response | 1024 | A folder can hold more entries than one frame |
-| Path length | 1024 bytes | Below every common filesystem limit |
-| Handshake timeout | 10 seconds | Half-open handshakes must not accumulate |
-| Connections awaiting a handshake | 8 | Any host on the network can otherwise fill the table |
-| Plaintext in one Noise message | 65519 bytes | The Noise cap of 65535, less the 16 byte tag |
+| Frame payload | 1 MiB plus 64 KiB | A peer cannot send a frame the other refuses to read |
+| Plaintext in one Noise message | 65519 bytes | The Noise specification caps a transport message at 65535, and the tag takes 16 |
+
+### Local policy
+
+Everything below is each side's own choice. Two devices need not agree.
+
+If this side caps a read at one mebibyte and the other caps at half that, both
+still work. The smaller side refuses, and the caller asks for less. So an
+implementation must always be ready to have a request refused for being too
+large, and must never assume the peer's numbers match its own.
+
+| Limit | This build's value |
+|---|---|
+| `read` length in one request | 1 MiB |
+| `write` bytes in one request | 1 MiB |
+| Entries in one `list` response | 1024 |
+| Path length | 1024 bytes |
+| Chunks in one manifest | 32768 |
 
 A chunk larger than the `read` limit is fetched with several reads, because
 reads carry a byte range.
 
-Implemented in `crates/ferry-core/src/limits.rs`. If a value changes there,
-change it here too.
+The values live in `crates/ferry-core/src/limits.rs`, where each is documented
+with its reason. They are listed here to show the shape, not to bind anyone.
+
+### Limits that are designed but not built
+
+These are needed and are not yet enforced by any code. Two of them cannot be
+built until there is a real socket, because a blocking read has no timeout
+until then.
+
+| Limit | Waiting on |
+|---|---|
+| Requests in flight per connection | Pipelining, which is not built |
+| Outstanding response bytes per connection | Pipelining, which is not built |
+| Handshake timeout | The TCP transport |
+| Connections awaiting a handshake | The TCP transport |
+
+They are recorded here rather than as constants in `limits.rs`. A constant that
+nothing checks reads as protection during a review and provides none.
 
 ## 8. File operations
 

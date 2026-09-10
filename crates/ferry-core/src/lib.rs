@@ -27,6 +27,8 @@
 pub mod chunk;
 pub mod frame;
 pub mod limits;
+/// The reference filesystem, used by tests and by nothing that ships.
+#[cfg(any(test, feature = "testing"))]
 pub mod memfs;
 pub mod noise;
 pub mod ops;
@@ -39,11 +41,12 @@ pub mod wire;
 
 pub use chunk::{ChainingValue, ChunkSize, ChunkSizeError, Manifest, ManifestBuilder};
 pub use frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
+#[cfg(any(test, feature = "testing"))]
 pub use memfs::MemoryFs;
 pub use ops::{Entry, FileKind, OpError, Request, Response};
 pub use path::{PathError, RemotePath};
 pub use rpc::{Client, FileOps, RpcError, serve};
 pub use session::{Progress, SessionId, Transfer, TransferError, pull, resume_point};
-pub use transport::{Endpoint, Stream, loopback};
+pub use transport::{Endpoint, loopback};
 pub use version::{Agreed, Role, VersionError, negotiate};
 pub use wire::{Decoder, Encoder, WireError};

@@ -4,8 +4,18 @@
 //! during ordinary use, not only under attack. A camera folder holding twenty
 //! thousand photos is normal, and it does not fit in one frame.
 //!
-//! This module mirrors the limits table in `docs/protocol.md`. If a value
-//! changes here, change it there too.
+//! Almost all of these are local policy, not wire format. Two devices need not
+//! agree on them. If this side caps a read at one mebibyte and the other caps
+//! at half that, both still work, because the smaller side simply refuses and
+//! the caller asks for less.
+//!
+//! Only two are normative, meaning a second implementation must match them:
+//! [`MAX_FRAME_PAYLOAD`], because a peer cannot send a frame the other refuses
+//! to read, and [`MAX_NOISE_PLAINTEXT`], because the Noise specification fixes
+//! it.
+//!
+//! Every constant here is enforced somewhere in this crate. A limit that
+//! nothing checks belongs in the plan, not in a module named `limits`.
 
 /// The largest frame payload, in bytes.
 ///
@@ -23,18 +33,6 @@ pub const MAX_READ_LEN: u32 = 1024 * 1024;
 /// The largest number of bytes one `write` may carry.
 pub const MAX_WRITE_LEN: u32 = MAX_READ_LEN;
 
-/// The largest number of requests one connection may have in flight.
-///
-/// Pipelining without this cap is a memory attack. It is also how an ordinary
-/// client accidentally asks for more than a phone can hold.
-pub const MAX_REQUESTS_IN_FLIGHT: u32 = 64;
-
-/// The largest number of response bytes a connection may owe at one moment.
-///
-/// Sixty four requests of one mebibyte each would otherwise ask a phone to
-/// buffer sixty four mebibytes.
-pub const MAX_OUTSTANDING_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
-
 /// The largest number of entries one `list` response may carry.
 ///
 /// A folder with more entries than this is read across several calls, using
@@ -43,15 +41,6 @@ pub const MAX_LIST_ENTRIES: u32 = 1024;
 
 /// The longest a path may be, in bytes.
 pub const MAX_PATH_LEN: usize = 1024;
-
-/// How long a handshake may take before the connection is dropped.
-///
-/// Half-open handshakes must not accumulate. Any host on the network can start
-/// one.
-pub const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-
-/// How many connections may be waiting on a handshake at one moment.
-pub const MAX_PENDING_HANDSHAKES: u32 = 8;
 
 /// The largest plaintext a single Noise transport message may carry.
 ///

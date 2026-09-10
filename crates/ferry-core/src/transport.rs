@@ -2,8 +2,11 @@
 //!
 //! The protocol needs one thing from a transport: a reliable, ordered stream of
 //! bytes in both directions. TCP gives that. An adb tunnel gives that. A USB
-//! bulk endpoint pair gives that. So the core asks for [`Stream`], which is
-//! just [`Read`] plus [`Write`], and nothing more.
+//! bulk endpoint pair gives that.
+//!
+//! Nothing in the core names a transport trait. Every layer simply asks for
+//! [`Read`] plus [`Write`], which `TcpStream` and a USB pipe wrapper already
+//! provide.
 //!
 //! [`loopback`] returns two endpoints joined in memory. It lets the whole
 //! protocol run inside one process, with no phone, no cable, and no network.
@@ -13,13 +16,6 @@ use std::collections::VecDeque;
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-
-/// Anything the protocol can run over.
-///
-/// The `Send` bound exists because a connection is usually handed to a thread.
-pub trait Stream: Read + Write + Send {}
-
-impl<T: Read + Write + Send> Stream for T {}
 
 /// Shared state for one direction of a loopback link.
 #[derive(Debug, Default)]
