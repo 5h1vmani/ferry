@@ -45,13 +45,8 @@ enum EngineAdapter {
     }
 
     /// A transport that is available but not carrying bytes.
-    ///
-    /// TODO(engine 3): DeviceInfo holds one `reachable_via`, so it cannot
-    /// say "USB active, Wi-Fi spare". Until `available_transports` lands
-    /// there is nothing to compare the active path against, and the line is
-    /// left out rather than assumed.
     private static func spareTransport(for info: DeviceInfo) -> Transport? {
-        nil
+        info.availableTransports.first { $0 != info.reachableVia }
     }
 
     // MARK: - Movement

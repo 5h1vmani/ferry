@@ -11,13 +11,16 @@
 import Foundation
 
 enum PreviewData {
+    /// On a cable with Wi-Fi also in reach, so the sidebar's spare transport
+    /// line has something to show.
     static let reachablePhone = DeviceInfo(
         keyHex: String(repeating: "8c4f2a91", count: 8),
         name: "Pixel 3 XL",
         pairedUnixSecs: 1_757_000_000,
         reachableVia: .usb,
         speedBytesPerSec: 38_000_000,
-        lastSeenUnixSecs: nil
+        lastSeenUnixSecs: nil,
+        availableTransports: [.usb, .wifi]
     )
 
     static let idlePhone = DeviceInfo(
@@ -26,7 +29,8 @@ enum PreviewData {
         pairedUnixSecs: 1_756_000_000,
         reachableVia: .wifi,
         speedBytesPerSec: nil,
-        lastSeenUnixSecs: nil
+        lastSeenUnixSecs: nil,
+        availableTransports: [.wifi]
     )
 
     static let unreachablePhone = DeviceInfo(
@@ -35,7 +39,8 @@ enum PreviewData {
         pairedUnixSecs: 1_750_000_000,
         reachableVia: nil,
         speedBytesPerSec: nil,
-        lastSeenUnixSecs: 1_757_100_000
+        lastSeenUnixSecs: 1_757_100_000,
+        availableTransports: []
     )
 
     static let devices = [reachablePhone, idlePhone, unreachablePhone]

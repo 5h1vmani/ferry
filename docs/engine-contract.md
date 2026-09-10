@@ -130,7 +130,7 @@ pub chunks_verified: u32,
 derived on load from what the record already holds, so nothing new is
 stored. `error.detail` already carries the failing chunk index.
 
-### 3. A device lists every transport it has — open
+### 3. A device lists every transport it has — built
 
 ```rust
 // on DeviceInfo
