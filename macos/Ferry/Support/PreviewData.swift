@@ -40,7 +40,9 @@ enum PreviewData {
 
     static let devices = [reachablePhone, idlePhone, unreachablePhone]
 
-    /// One transfer in each state the engine reports.
+    /// One transfer in each state the engine reports. `chunksTotal` and
+    /// `chunksVerified` use a 50,000,000 byte chunk for round numbers; the
+    /// real size comes from `ferry-core`, but no preview reads it.
     static let transfers = [
         TransferInfo(
             id: "1",
@@ -50,7 +52,13 @@ enum PreviewData {
             bytesDone: 2_700_000_000,
             state: .active,
             transport: .usb,
-            error: nil
+            error: nil,
+            startedUnixSecs: 1_757_500_000,
+            endedUnixSecs: nil,
+            direction: .pull,
+            speedBytesPerSec: 38_000_000,
+            chunksTotal: 96,
+            chunksVerified: 54
         ),
         TransferInfo(
             id: "2",
@@ -60,7 +68,13 @@ enum PreviewData {
             bytesDone: 900_000_000,
             state: .paused,
             transport: .usb,
-            error: .Failed(code: "TransferError::Rpc", detail: nil)
+            error: .Failed(code: "TransferError::Rpc", detail: nil),
+            startedUnixSecs: 1_757_400_000,
+            endedUnixSecs: nil,
+            direction: .pull,
+            speedBytesPerSec: nil,
+            chunksTotal: 38,
+            chunksVerified: 18
         ),
         TransferInfo(
             id: "3",
@@ -70,7 +84,13 @@ enum PreviewData {
             bytesDone: 4_800_000_000,
             state: .done,
             transport: .usb,
-            error: nil
+            error: nil,
+            startedUnixSecs: 1_757_300_000,
+            endedUnixSecs: 1_757_300_180,
+            direction: .pull,
+            speedBytesPerSec: nil,
+            chunksTotal: 96,
+            chunksVerified: 96
         ),
         TransferInfo(
             id: "4",
@@ -80,7 +100,13 @@ enum PreviewData {
             bytesDone: 500_000_000,
             state: .failed,
             transport: .wifi,
-            error: .Failed(code: "TransferError::ChunkFailedVerification", detail: "14")
+            error: .Failed(code: "TransferError::ChunkFailedVerification", detail: "14"),
+            startedUnixSecs: 1_757_200_000,
+            endedUnixSecs: 1_757_200_060,
+            direction: .pull,
+            speedBytesPerSec: nil,
+            chunksTotal: 44,
+            chunksVerified: 10
         ),
     ]
 

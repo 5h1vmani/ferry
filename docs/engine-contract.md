@@ -68,7 +68,7 @@ Every field already exists in engine state (`state.rs`, `engine.rs`). This
 item deletes `EngineModel.cachedAdvertising`, the only place the Mac app
 holds a fact twice.
 
-### 9. A transfer has a start and an end — open
+### 9. A transfer has a start and an end — built
 
 ```rust
 // on TransferInfo

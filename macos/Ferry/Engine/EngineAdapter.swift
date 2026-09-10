@@ -103,9 +103,9 @@ enum EngineAdapter {
             transport: transfer.transport,
             error: words,
             chunks: chunks(for: transfer),
-            // TODO(engine 9): no timestamps on TransferInfo, so a done row
-            // states its size and file count and not how long it took.
-            duration: nil
+            duration: transfer.endedUnixSecs.map {
+                FerryFormat.duration(seconds: $0 - transfer.startedUnixSecs)
+            }
         )
     }
 
