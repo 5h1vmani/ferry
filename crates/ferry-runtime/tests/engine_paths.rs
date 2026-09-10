@@ -39,8 +39,8 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
-    Config, Direction, Engine, EngineListener, FerryError, KeyPair, PairingState, Root,
-    TransferState, generate_key,
+    Config, DeviceKind as RuntimeDeviceKind, Direction, Engine, EngineListener, FerryError,
+    KeyPair, PairingState, Root, TransferState, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -212,6 +212,7 @@ fn make_engine(
             display_name: name.to_owned(),
             listen_port: 0,
             key,
+            kind: RuntimeDeviceKind::Mac,
         },
         Box::new(Recorder {
             inbox: Arc::clone(inbox),

@@ -18,7 +18,8 @@ use ferry_core::peers::PeerStore;
 use ferry_core::tcp::PairedConnection;
 
 use crate::{
-    DeviceInfo, Direction, FerryError, PairingCandidate, PairingState, TransferState, Transport,
+    DeviceInfo, DeviceKind, Direction, FerryError, PairingCandidate, PairingState, TransferState,
+    Transport,
 };
 
 /// How long a Wi-Fi success still counts in `available_transports`, once no
@@ -381,6 +382,7 @@ impl State {
                     speed_bytes_per_sec: live.and_then(|l| l.speed_bytes_per_sec),
                     last_seen_unix_secs: live.and_then(|l| l.last_seen_unix_secs),
                     available_transports: available_transports(live, now),
+                    kind: DeviceKind::from(peer.kind),
                 }
             })
             .collect()

@@ -14,7 +14,9 @@ use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::ops::FileKind;
 use ferry_core::path::{PathError, RemotePath};
-use ferry_core::peers::{DeviceKind, Peer, PeerStore};
+// Aliased: `crate::DeviceKind` is the boundary enum `Config` and `DeviceInfo`
+// carry; this is `ferry-core`'s own, which `hello` and `PeerStore` speak.
+use ferry_core::peers::{DeviceKind as CoreDeviceKind, Peer, PeerStore};
 use ferry_core::roots::{RootSpec, Roots};
 use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
@@ -34,8 +36,8 @@ use crate::state::{
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
-    Config, DeviceInfo, Direction, EngineListener, Entry, EntryKind, FerryError, KeyPair,
-    PairingCandidate, PairingState, Root, Status, TransferInfo, TransferState, Transport,
+    Config, DeviceInfo, DeviceKind, Direction, EngineListener, Entry, EntryKind, FerryError,
+    KeyPair, PairingCandidate, PairingState, Root, Status, TransferInfo, TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -77,7 +79,7 @@ const FINISH_PAIRING_DEADLINE: Duration = Duration::from_secs(10);
 const FINISH_PAIRING_TICK: Duration = Duration::from_millis(50);
 
 // ---------------------------------------------------------------------------
-// A conversion between the boundary's record and `ferry-core`'s own.
+// Conversions between the boundary's records and `ferry-core`'s own.
 // ---------------------------------------------------------------------------
 
 impl From<Root> for RootSpec {
@@ -90,6 +92,24 @@ impl From<Root> for RootSpec {
     }
 }
 
+impl From<DeviceKind> for CoreDeviceKind {
+    fn from(kind: DeviceKind) -> Self {
+        match kind {
+            DeviceKind::Phone => Self::Phone,
+            DeviceKind::Mac => Self::Mac,
+        }
+    }
+}
+
+impl From<CoreDeviceKind> for DeviceKind {
+    fn from(kind: CoreDeviceKind) -> Self {
+        match kind {
+            CoreDeviceKind::Phone => Self::Phone,
+            CoreDeviceKind::Mac => Self::Mac,
+        }
+    }
+}
+
 /// Everything the engine's threads share.
 pub(crate) struct Shared {
     /// Where change notifications go, while the engine is running.
@@ -98,6 +118,8 @@ pub(crate) struct Shared {
     pub(crate) key: StaticKey,
     /// The name sent in `hello`.
     pub(crate) display_name: String,
+    /// What kind of device this is. Sent in `hello`.
+    pub(crate) kind: CoreDeviceKind,
     /// Where transfer records live.
     pub(crate) transfers_dir: PathBuf,
     /// The port to bind, or zero for any free port.
@@ -422,12 +444,13 @@ impl Engine {
         std::fs::create_dir_all(&transfers_dir)
             .map_err(|_| bad_config("The transfers folder could not be made."))?;
 
+        let kind: CoreDeviceKind = config.kind.into();
         // A version 1 peer file predates the kind byte, so every peer in it
         // is assumed to be the opposite of this device: with one Mac and
-        // one phone, that is always right. See `this_devices_kind`.
-        let assumed_peer_kind = match this_devices_kind() {
-            DeviceKind::Mac => DeviceKind::Phone,
-            DeviceKind::Phone => DeviceKind::Mac,
+        // one phone, that is always right.
+        let assumed_peer_kind = match kind {
+            CoreDeviceKind::Mac => CoreDeviceKind::Phone,
+            CoreDeviceKind::Phone => CoreDeviceKind::Mac,
         };
         let peers = PeerStore::load(&data_dir.join("peers.bin"), assumed_peer_kind)
             .map_err(|_| bad_config("The paired device list could not be read."))?;
@@ -439,6 +462,7 @@ impl Engine {
             notify: Notify::new(listener),
             key,
             display_name: config.display_name.clone(),
+            kind,
             transfers_dir,
             listen_port: config.listen_port,
             state: Mutex::new(State::new(peers)),
@@ -954,7 +978,7 @@ impl Engine {
         mark_reachable(&self.shared, &device_key_hex, addr, via);
 
         let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
-        exchange_hello(&mut stream, &self.shared.display_name, this_devices_kind())
+        exchange_hello(&mut stream, &self.shared.display_name, self.shared.kind)
             .map_err(|error| from_rpc(&error))?;
 
         let mut client = Client::new(stream);
@@ -1161,21 +1185,6 @@ fn open_roots(roots: &[Root]) -> Result<RootsState, FerryError> {
         specs: roots.to_vec(),
         opened: Arc::new(opened),
     })
-}
-
-/// This device's own kind, for the hello payload and for the assumed kind
-/// of a version 1 peer file.
-///
-/// `Config` has no `kind` field yet, so this guesses from the target OS:
-/// every build of this engine today is either the Mac app or the Android
-/// app, and never both.
-// TODO(engine 11): replaced by Config.kind on main.
-pub(crate) fn this_devices_kind() -> DeviceKind {
-    if cfg!(target_os = "macos") {
-        DeviceKind::Mac
-    } else {
-        DeviceKind::Phone
-    }
 }
 
 /// The last component of a path, for display.
@@ -1547,16 +1556,17 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
 fn hello_with_deadline(
     shared: &Arc<Shared>,
     stream: SecureStream,
-) -> Result<(String, DeviceKind, StopAware<SecureStream>), FerryError> {
+) -> Result<(String, CoreDeviceKind, StopAware<SecureStream>), FerryError> {
     let (sender, receiver) = std::sync::mpsc::channel();
     let my_name = shared.display_name.clone();
+    let my_kind = shared.kind;
     let stopping = Arc::clone(&shared.stopping);
     // Not joined. It ends when the exchange ends, or when the wrapper below
     // fails the next read because the engine is stopping.
     drop(std::thread::spawn(move || {
         let mut stream = StopAware::new(stream, stopping);
-        let outcome = exchange_hello(&mut stream, &my_name, this_devices_kind())
-            .map(|(name, kind)| (name, kind, stream));
+        let outcome =
+            exchange_hello(&mut stream, &my_name, my_kind).map(|(name, kind)| (name, kind, stream));
         drop(sender.send(outcome));
     }));
 
@@ -1684,8 +1694,7 @@ fn serve_stream(
     transport: Transport,
     allowed: &Arc<AtomicBool>,
 ) {
-    let Ok((name, _kind)) = exchange_hello(&mut stream, &shared.display_name, this_devices_kind())
-    else {
+    let Ok((name, _kind)) = exchange_hello(&mut stream, &shared.display_name, shared.kind) else {
         release_serving(shared, &hex_of(&peer), allowed);
         return;
     };

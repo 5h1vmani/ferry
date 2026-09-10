@@ -30,13 +30,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+// Aliased: `ferry_runtime::DeviceKind`, used unaliased below, is the
+// boundary enum `Config` and `DeviceInfo` carry. This is `ferry-core`'s own,
+// needed only for the raw `exchange_hello` call in the no-reconnect test.
 use ferry_core::noise::{PublicKey, StaticKey};
 use ferry_core::path::RemotePath;
-use ferry_core::peers::DeviceKind;
+use ferry_core::peers::DeviceKind as CoreDeviceKind;
 use ferry_core::rpc::{Client, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
-    Config, Engine, EngineListener, KeyPair, PairingState, Root, TransferState, generate_key,
+    Config, DeviceKind, Engine, EngineListener, KeyPair, PairingState, Root, TransferState,
+    generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -153,8 +157,7 @@ struct Side {
 }
 
 /// Build and start one engine, of the given device kind, on fresh folders.
-/// Build and start one engine on fresh folders.
-fn build(name: &str) -> Side {
+fn build_as(name: &str, kind: DeviceKind) -> Side {
     let data = tempfile::tempdir().expect("a temporary folder for engine files");
     let shared = tempfile::tempdir().expect("a temporary folder for shared files");
     let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
@@ -171,6 +174,7 @@ fn build(name: &str) -> Side {
         display_name: name.to_owned(),
         listen_port: 0,
         key: key.clone(),
+        kind,
     };
     let engine = Engine::new(
         config,
@@ -190,6 +194,11 @@ fn build(name: &str) -> Side {
         _shared: shared,
         _download: download,
     }
+}
+
+/// Build and start one engine on fresh folders, as a Mac.
+fn build(name: &str) -> Side {
+    build_as(name, DeviceKind::Mac)
 }
 
 /// The address another engine in this process can dial.
@@ -264,8 +273,8 @@ fn sample_bytes() -> Vec<u8> {
 // smaller functions would hide that it is one path, not several.
 #[allow(clippy::too_many_lines)]
 fn two_engines_pair_and_move_a_file() {
-    let phone = build("Pixel 3 XL");
-    let mac = build("Vamana");
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
 
     // The phone is the side that waits. The Mac is the side that looks.
     phone.engine.set_reachable(true);
@@ -326,9 +335,19 @@ fn two_engines_pair_and_move_a_file() {
     let on_mac = mac.engine.devices();
     assert_eq!(on_mac.len(), 1, "the Mac lists the phone");
     assert_eq!(on_mac[0].name, "Pixel 3 XL");
+    assert_eq!(
+        on_mac[0].kind,
+        DeviceKind::Phone,
+        "the Mac reports the phone's own kind, from its Config"
+    );
     let on_phone = phone.engine.devices();
     assert_eq!(on_phone.len(), 1, "the phone lists the Mac");
     assert_eq!(on_phone[0].name, "Vamana");
+    assert_eq!(
+        on_phone[0].kind,
+        DeviceKind::Mac,
+        "the phone reports the Mac's own kind, from its Config"
+    );
 
     // A real file, over a real socket, verified chunk by chunk. The remote
     // path names the phone's one root, "Root".
@@ -500,8 +519,8 @@ fn the_mac_lists_a_folder_on_the_phone() {
 /// the same way `engine_paths.rs` does, to keep it open across the change.
 #[test]
 fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
-    let phone = build("Pixel 3 XL");
-    let mac = build("Vamana");
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
     // Only pairing itself is needed here: this test drives its own raw
     // connection rather than `mac.engine.list`.
     let _phone_key = pair(&mac, &phone);
@@ -513,7 +532,8 @@ fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
     )
     .expect("a paired peer should be able to connect");
     let mut stream = connection.stream;
-    exchange_hello(&mut stream, "Vamana", DeviceKind::Mac).expect("the name exchange should run");
+    exchange_hello(&mut stream, "Vamana", CoreDeviceKind::Mac)
+        .expect("the name exchange should run");
     let mut client = Client::new(stream);
 
     let root_path = RemotePath::parse("").expect("the empty path is valid");
@@ -706,6 +726,7 @@ fn a_bad_config_is_refused_before_anything_starts() {
                 display_name: name,
                 listen_port: 0,
                 key,
+                kind: DeviceKind::Mac,
             },
             Box::new(Recorder {
                 inbox: Arc::clone(&inbox),

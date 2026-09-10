@@ -209,6 +209,17 @@ pub struct Root {
     pub writable: bool,
 }
 
+/// What kind of device this is, or a peer said it is in `hello`.
+///
+/// `docs/engine-contract.md`, batch C, item 11.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum DeviceKind {
+    /// An Android phone.
+    Phone,
+    /// A Mac.
+    Mac,
+}
+
 /// What the app tells the engine at construction.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Config {
@@ -225,6 +236,8 @@ pub struct Config {
     pub listen_port: u16,
     /// This device's long-lived key. The app loaded it from secure storage.
     pub key: KeyPair,
+    /// What kind of device this is. Sent in `hello`.
+    pub kind: DeviceKind,
 }
 
 /// A static key pair as bytes. The platform stores it; the engine uses it.
@@ -288,6 +301,8 @@ pub struct DeviceInfo {
     /// `Usb` first. `reachable_via`, when it is `Some`, is always in this
     /// list.
     pub available_transports: Vec<Transport>,
+    /// What kind of device it said it was, in `hello` at pairing time.
+    pub kind: DeviceKind,
 }
 
 /// Where a transfer is.

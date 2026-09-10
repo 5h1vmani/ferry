@@ -93,7 +93,8 @@ use ferry_core::peers::DeviceKind;
 use ferry_core::rpc::{FileOps, exchange_hello, serve};
 use ferry_core::tcp::{Listener, Pending};
 use ferry_runtime::{
-    Config, Engine, EngineListener, KeyPair, PairingState, Root, TransferState, generate_key,
+    Config, DeviceKind as RuntimeDeviceKind, Engine, EngineListener, KeyPair, PairingState, Root,
+    TransferState, generate_key,
 };
 
 // ---------------------------------------------------------------------------
@@ -331,6 +332,7 @@ fn build() -> Side {
             display_name: ENGINE_NAME.to_owned(),
             listen_port: 0,
             key: key.clone(),
+            kind: RuntimeDeviceKind::Mac,
         },
         Box::new(Recorder {
             inbox: Arc::clone(&inbox),
