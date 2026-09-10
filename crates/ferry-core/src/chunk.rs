@@ -39,36 +39,30 @@ use crate::wire::{Decoder, Encoder, WireError};
 pub type ChainingValue = [u8; 32];
 
 /// The reason a chunk size was rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ChunkSizeError {
     /// The size was not a power of two.
+    #[error("chunk size is not a power of two")]
     NotPowerOfTwo,
     /// The size was below [`blake3::CHUNK_LEN`], which is 1024 bytes.
+    #[error("chunk size is below 1024 bytes")]
     TooSmall,
     /// The size was above [`ChunkSize::MAX`].
+    #[error("chunk size is above the maximum")]
     TooLarge,
 }
 
-impl core::fmt::Display for ChunkSizeError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(match self {
-            Self::NotPowerOfTwo => "chunk size is not a power of two",
-            Self::TooSmall => "chunk size is below 1024 bytes",
-            Self::TooLarge => "chunk size is above the maximum",
-        })
-    }
-}
-
-impl std::error::Error for ChunkSizeError {}
-
 /// The reason a stored or received manifest was refused.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ManifestError {
     /// The bytes were malformed.
-    Wire(WireError),
+    #[error("manifest did not decode: {0}")]
+    Wire(#[from] WireError),
     /// The chunk size was not one BLAKE3 can use.
-    BadChunkSize(ChunkSizeError),
+    #[error("manifest chunk size is unusable: {0}")]
+    BadChunkSize(#[from] ChunkSizeError),
     /// The number of chunks did not match the stated file length.
+    #[error("manifest lists {found} chunks but the length implies {expected}")]
     WrongChunkCount {
         /// How many the length implies.
         expected: usize,
@@ -76,42 +70,13 @@ pub enum ManifestError {
         found: usize,
     },
     /// The manifest held more chunks than [`limits::MAX_MANIFEST_CHUNKS`].
+    #[error("manifest holds more chunks than the limit")]
     TooManyChunks,
     /// The chunk values did not merge to the stated root hash.
     ///
     /// Someone edited the manifest, or it was written by a different build.
+    #[error("manifest chunks do not match its root hash")]
     RootMismatch,
-}
-
-impl core::fmt::Display for ManifestError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Wire(e) => write!(f, "manifest did not decode: {e}"),
-            Self::BadChunkSize(e) => write!(f, "manifest chunk size is unusable: {e}"),
-            Self::WrongChunkCount { expected, found } => {
-                write!(
-                    f,
-                    "manifest lists {found} chunks but the length implies {expected}"
-                )
-            }
-            Self::TooManyChunks => f.write_str("manifest holds more chunks than the limit"),
-            Self::RootMismatch => f.write_str("manifest chunks do not match its root hash"),
-        }
-    }
-}
-
-impl std::error::Error for ManifestError {}
-
-impl From<WireError> for ManifestError {
-    fn from(value: WireError) -> Self {
-        Self::Wire(value)
-    }
-}
-
-impl From<ChunkSizeError> for ManifestError {
-    fn from(value: ChunkSizeError) -> Self {
-        Self::BadChunkSize(value)
-    }
 }
 
 /// A chunk size that BLAKE3 accepts as a subtree length.

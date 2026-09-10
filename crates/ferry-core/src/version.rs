@@ -14,7 +14,6 @@
 //! hashes, and the handshake fails. So the version exchange is unauthenticated
 //! when it happens, and authenticated a moment later.
 
-use std::fmt;
 use std::io::{self, Read, Write};
 
 /// The bytes that start every Ferry connection.
@@ -42,42 +41,22 @@ pub enum Role {
 }
 
 /// The reason version negotiation failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum VersionError {
     /// The stream failed.
-    Io(io::Error),
+    #[error("stream failed: {0}")]
+    Io(#[from] io::Error),
     /// The first bytes were not [`MAGIC`].
+    #[error("not a Ferry connection, first bytes were {0:?}")]
     NotFerry([u8; 5]),
     /// No version is supported by both sides.
+    #[error("no shared version, this build has {ours} and the peer has {theirs}")]
     NoSharedVersion {
         /// The newest version this build supports.
         ours: u16,
         /// The newest version the peer claims to support.
         theirs: u16,
     },
-}
-
-impl fmt::Display for VersionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "stream failed: {e}"),
-            Self::NotFerry(got) => write!(f, "not a Ferry connection, first bytes were {got:?}"),
-            Self::NoSharedVersion { ours, theirs } => {
-                write!(
-                    f,
-                    "no shared version, this build has {ours} and the peer has {theirs}"
-                )
-            }
-        }
-    }
-}
-
-impl std::error::Error for VersionError {}
-
-impl From<io::Error> for VersionError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
 }
 
 /// What both sides agreed on.

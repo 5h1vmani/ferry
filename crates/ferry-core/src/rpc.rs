@@ -12,7 +12,6 @@
 //! The frame format already carries request identifiers, so adding it later
 //! does not change the wire format.
 
-use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
@@ -106,15 +105,19 @@ pub trait FileOps: Send + Sync {
 }
 
 /// The reason a call failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum RpcError {
     /// The frame layer failed.
-    Frame(FrameError),
+    #[error("frame layer failed: {0}")]
+    Frame(#[from] FrameError),
     /// A payload did not decode.
-    Wire(WireError),
+    #[error("payload did not decode: {0}")]
+    Wire(#[from] WireError),
     /// The peer refused the operation. This is a normal outcome, not a fault.
-    Remote(OpError),
+    #[error("the peer refused: {0}")]
+    Remote(#[from] OpError),
     /// The peer used a request identifier that was never sent.
+    #[error("expected request {expected} but got {got}")]
     MismatchedRequestId {
         /// What was sent.
         expected: u32,
@@ -122,41 +125,8 @@ pub enum RpcError {
         got: u32,
     },
     /// The peer sent a response where a request belonged, or the reverse.
+    #[error("unexpected frame kind {0:?}")]
     UnexpectedFrameKind(FrameKind),
-}
-
-impl fmt::Display for RpcError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Frame(e) => write!(f, "frame layer failed: {e}"),
-            Self::Wire(e) => write!(f, "payload did not decode: {e}"),
-            Self::Remote(e) => write!(f, "the peer refused: {e}"),
-            Self::MismatchedRequestId { expected, got } => {
-                write!(f, "expected request {expected} but got {got}")
-            }
-            Self::UnexpectedFrameKind(k) => write!(f, "unexpected frame kind {k:?}"),
-        }
-    }
-}
-
-impl std::error::Error for RpcError {}
-
-impl From<FrameError> for RpcError {
-    fn from(value: FrameError) -> Self {
-        Self::Frame(value)
-    }
-}
-
-impl From<WireError> for RpcError {
-    fn from(value: WireError) -> Self {
-        Self::Wire(value)
-    }
-}
-
-impl From<OpError> for RpcError {
-    fn from(value: OpError) -> Self {
-        Self::Remote(value)
-    }
 }
 
 /// Calls file operations on the other device.

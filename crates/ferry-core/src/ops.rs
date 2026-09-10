@@ -18,8 +18,6 @@
 //! this side to allocate an unbounded amount of memory from a few header
 //! bytes.
 
-use std::fmt;
-
 use crate::limits;
 use crate::path::RemotePath;
 use crate::wire::{Decoder, Encoder, WireError};
@@ -534,28 +532,38 @@ impl Response {
 ///
 /// This is a fixed, structured value, never text. A caller acts on the tag
 /// directly, instead of parsing a message meant for a person.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[repr(u8)]
 pub enum OpError {
     /// No file or directory exists at the path.
+    #[error("no file or directory exists at the path")]
     NotFound = 1,
     /// The path names a file where a directory was required.
+    #[error("the path is not a directory")]
     NotADirectory = 2,
     /// The path names a directory where a file was required.
+    #[error("the path is a directory")]
     IsADirectory = 3,
     /// A `delete` targeted a directory that still holds entries.
+    #[error("the directory is not empty")]
     NotEmpty = 4,
     /// The target of a `rename` or a `mkdir` already exists.
+    #[error("the target already exists")]
     AlreadyExists = 5,
     /// The filesystem refused the operation.
+    #[error("the filesystem denied permission")]
     PermissionDenied = 6,
     /// The path failed the checks in [`RemotePath::parse`].
+    #[error("the path failed validation")]
     InvalidPath = 7,
     /// A `read` or `write` range was larger than the protocol allows.
+    #[error("the requested range is too large")]
     RangeTooLarge = 8,
     /// This side does not support the operation.
+    #[error("this side does not support the operation")]
     Unsupported = 9,
     /// The operation failed for a reason the caller cannot act on.
+    #[error("the operation failed for an internal reason")]
     Internal = 10,
 }
 
@@ -598,26 +606,6 @@ impl OpError {
         Ok(error)
     }
 }
-
-impl fmt::Display for OpError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let text = match self {
-            Self::NotFound => "no file or directory exists at the path",
-            Self::NotADirectory => "the path is not a directory",
-            Self::IsADirectory => "the path is a directory",
-            Self::NotEmpty => "the directory is not empty",
-            Self::AlreadyExists => "the target already exists",
-            Self::PermissionDenied => "the filesystem denied permission",
-            Self::InvalidPath => "the path failed validation",
-            Self::RangeTooLarge => "the requested range is too large",
-            Self::Unsupported => "this side does not support the operation",
-            Self::Internal => "the operation failed for an internal reason",
-        };
-        f.write_str(text)
-    }
-}
-
-impl std::error::Error for OpError {}
 
 // Writes a path the same way any other text is written. This exists only so
 // every `Request` variant does not repeat `path.as_str()` by hand.

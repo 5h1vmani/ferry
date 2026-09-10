@@ -27,40 +27,30 @@
 use std::fmt;
 
 /// The reason a path was rejected.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PathError {
     /// The path had no components, or was an empty string.
+    #[error("path is empty")]
     Empty,
     /// The path started with `/`. Remote paths are always relative to a root.
+    #[error("path is absolute")]
     Absolute,
     /// The path contained a `..` component, which could escape the root.
+    #[error("path contains a `..` component")]
     ParentComponent,
     /// The path contained a `.` component, which adds nothing and hides intent.
+    #[error("path contains a `.` component")]
     CurrentComponent,
     /// The path contained a NUL byte, which no supported filesystem accepts.
+    #[error("path contains a NUL byte")]
     NulByte,
     /// The path contained a backslash, which is a separator on some systems.
+    #[error("path contains a backslash")]
     Backslash,
     /// The path was longer than [`RemotePath::MAX_LEN`] bytes.
+    #[error("path is too long")]
     TooLong,
 }
-
-impl fmt::Display for PathError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let text = match self {
-            Self::Empty => "path is empty",
-            Self::Absolute => "path is absolute",
-            Self::ParentComponent => "path contains a `..` component",
-            Self::CurrentComponent => "path contains a `.` component",
-            Self::NulByte => "path contains a NUL byte",
-            Self::Backslash => "path contains a backslash",
-            Self::TooLong => "path is too long",
-        };
-        f.write_str(text)
-    }
-}
-
-impl std::error::Error for PathError {}
 
 /// A relative path whose text is safe to join onto a shared root.
 ///

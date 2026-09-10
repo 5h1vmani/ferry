@@ -65,25 +65,31 @@ impl fmt::Display for SessionId {
 }
 
 /// The reason a transfer stopped.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum TransferError {
     /// The connection or the peer failed.
-    Rpc(RpcError),
+    #[error("the connection failed: {0}")]
+    Rpc(#[from] RpcError),
     /// The local filesystem refused something.
-    Local(OpError),
+    #[error("local storage refused: {0}")]
+    Local(#[from] OpError),
     /// A stored transfer record was malformed.
-    Record(ManifestError),
+    #[error("the stored transfer is unusable: {0}")]
+    Record(#[from] ManifestError),
     /// A stored transfer record held an unusable path.
-    BadPath(PathError),
+    #[error("the stored transfer holds a bad path: {0}")]
+    BadPath(#[from] PathError),
     /// A chunk arrived, but its bytes do not match the manifest.
     ///
     /// The sender is faulty, or the file changed under it. Either way the
     /// transfer stops rather than writing bytes that will not verify.
+    #[error("chunk {index} did not match the manifest")]
     ChunkFailedVerification {
         /// Which chunk failed.
         index: usize,
     },
     /// The peer returned fewer bytes than the range holds.
+    #[error("chunk {index} needed {wanted} bytes but {got} arrived")]
     ShortRead {
         /// Which chunk was being fetched.
         index: usize,
@@ -93,51 +99,8 @@ pub enum TransferError {
         got: usize,
     },
     /// The system could not supply random bytes.
+    #[error("the system supplied no random bytes")]
     NoRandomness,
-}
-
-impl fmt::Display for TransferError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Rpc(e) => write!(f, "the connection failed: {e}"),
-            Self::Local(e) => write!(f, "local storage refused: {e}"),
-            Self::Record(e) => write!(f, "the stored transfer is unusable: {e}"),
-            Self::BadPath(e) => write!(f, "the stored transfer holds a bad path: {e}"),
-            Self::ChunkFailedVerification { index } => {
-                write!(f, "chunk {index} did not match the manifest")
-            }
-            Self::ShortRead { index, wanted, got } => {
-                write!(f, "chunk {index} needed {wanted} bytes but {got} arrived")
-            }
-            Self::NoRandomness => f.write_str("the system supplied no random bytes"),
-        }
-    }
-}
-
-impl std::error::Error for TransferError {}
-
-impl From<RpcError> for TransferError {
-    fn from(value: RpcError) -> Self {
-        Self::Rpc(value)
-    }
-}
-
-impl From<OpError> for TransferError {
-    fn from(value: OpError) -> Self {
-        Self::Local(value)
-    }
-}
-
-impl From<ManifestError> for TransferError {
-    fn from(value: ManifestError) -> Self {
-        Self::Record(value)
-    }
-}
-
-impl From<PathError> for TransferError {
-    fn from(value: PathError) -> Self {
-        Self::BadPath(value)
-    }
 }
 
 impl From<WireError> for TransferError {

@@ -158,60 +158,35 @@ impl fmt::Display for PairingCode {
 }
 
 /// The reason a handshake failed.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum NoiseError {
     /// The stream failed.
-    Io(io::Error),
+    #[error("stream failed: {0}")]
+    Io(#[from] io::Error),
     /// The Noise library refused something.
-    Crypto(snow::Error),
+    #[error("handshake failed: {0}")]
+    Crypto(#[from] snow::Error),
     /// A pattern string in this crate is wrong. This is a bug, not an attack.
+    #[error("the Noise pattern string is wrong")]
     BadPattern,
     /// A stored key was not 32 bytes.
+    #[error("a stored key was not 32 bytes")]
     BadKeyLength,
     /// The initiator revealed a nonce that does not match what it committed to.
     ///
     /// Someone tried to change their identity after seeing the other side's
     /// input. Abort and show nothing.
+    #[error("the peer changed its identity after committing to it")]
     CommitmentMismatch,
     /// A handshake message was larger than this build will read.
+    #[error("handshake message of {0} bytes is over the limit")]
     HandshakeMessageTooLarge(usize),
     /// A handshake payload was not the size the pattern requires.
+    #[error("a handshake payload was the wrong size")]
     BadHandshakePayload,
     /// The peer finished the handshake without offering a static key.
+    #[error("the peer offered no static key")]
     MissingPeerKey,
-}
-
-impl fmt::Display for NoiseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "stream failed: {e}"),
-            Self::Crypto(e) => write!(f, "handshake failed: {e}"),
-            Self::BadPattern => f.write_str("the Noise pattern string is wrong"),
-            Self::BadKeyLength => f.write_str("a stored key was not 32 bytes"),
-            Self::CommitmentMismatch => {
-                f.write_str("the peer changed its identity after committing to it")
-            }
-            Self::HandshakeMessageTooLarge(n) => {
-                write!(f, "handshake message of {n} bytes is over the limit")
-            }
-            Self::BadHandshakePayload => f.write_str("a handshake payload was the wrong size"),
-            Self::MissingPeerKey => f.write_str("the peer offered no static key"),
-        }
-    }
-}
-
-impl std::error::Error for NoiseError {}
-
-impl From<io::Error> for NoiseError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<snow::Error> for NoiseError {
-    fn from(value: snow::Error) -> Self {
-        Self::Crypto(value)
-    }
 }
 
 /// What a completed pairing produced.

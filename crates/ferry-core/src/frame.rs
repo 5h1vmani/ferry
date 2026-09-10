@@ -18,7 +18,6 @@
 //! Noise layer below splits those bytes into transport messages. Framing does
 //! not know about that split, and does not need to.
 
-use std::fmt;
 use std::io::{self, Read, Write};
 
 use crate::limits;
@@ -65,47 +64,20 @@ pub struct Frame {
 }
 
 /// The reason a frame could not be read or written.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum FrameError {
     /// The stream failed.
-    Io(io::Error),
+    #[error("stream failed: {0}")]
+    Io(#[from] io::Error),
     /// The declared payload length was over [`limits::MAX_FRAME_PAYLOAD`].
+    #[error("payload of {0} bytes is over the limit of {max}", max = limits::MAX_FRAME_PAYLOAD)]
     PayloadTooLarge(u32),
     /// The kind byte named nothing this version knows.
+    #[error("unknown frame kind {0}")]
     UnknownKind(u8),
     /// The payload did not decode.
-    Wire(WireError),
-}
-
-impl fmt::Display for FrameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(e) => write!(f, "stream failed: {e}"),
-            Self::PayloadTooLarge(n) => {
-                write!(
-                    f,
-                    "payload of {n} bytes is over the limit of {}",
-                    limits::MAX_FRAME_PAYLOAD
-                )
-            }
-            Self::UnknownKind(k) => write!(f, "unknown frame kind {k}"),
-            Self::Wire(e) => write!(f, "payload did not decode: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for FrameError {}
-
-impl From<io::Error> for FrameError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
-impl From<WireError> for FrameError {
-    fn from(value: WireError) -> Self {
-        Self::Wire(value)
-    }
+    #[error("payload did not decode: {0}")]
+    Wire(#[from] WireError),
 }
 
 /// The bytes before the payload: length, kind, and request identifier.

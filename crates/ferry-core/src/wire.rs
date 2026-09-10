@@ -8,41 +8,30 @@
 //! All integers are big endian. Byte strings and text carry a `u32` length
 //! first.
 
-use std::fmt;
-
 /// The reason a value could not be decoded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum WireError {
     /// The input ended in the middle of a value.
+    #[error("input ended in the middle of a value")]
     UnexpectedEnd,
     /// A length field was larger than the limit for its kind.
+    #[error("a length field was over its limit")]
     TooLong,
     /// Text was not valid UTF-8.
+    #[error("text was not valid UTF-8")]
     NotUtf8,
     /// A tag byte did not name anything this version knows.
+    #[error("unknown tag byte {0}")]
     UnknownTag(u8),
     /// Bytes were left over after the value was decoded.
+    #[error("bytes were left over after decoding")]
     TrailingBytes,
     /// A path was not valid, for a reason other than its length.
     ///
     /// See `crate::path::RemotePath::parse`, which runs the checks.
+    #[error("path failed validation")]
     InvalidPath,
 }
-
-impl fmt::Display for WireError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnexpectedEnd => f.write_str("input ended in the middle of a value"),
-            Self::TooLong => f.write_str("a length field was over its limit"),
-            Self::NotUtf8 => f.write_str("text was not valid UTF-8"),
-            Self::UnknownTag(t) => write!(f, "unknown tag byte {t}"),
-            Self::TrailingBytes => f.write_str("bytes were left over after decoding"),
-            Self::InvalidPath => f.write_str("path failed validation"),
-        }
-    }
-}
-
-impl std::error::Error for WireError {}
 
 /// Appends values to a growing buffer.
 #[derive(Debug, Default)]
