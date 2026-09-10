@@ -29,12 +29,14 @@ import app.ferry.R
 import app.ferry.components.EmptyState
 import app.ferry.components.ProgressLine
 import app.ferry.components.TransportBadge
+import app.ferry.formatDate
 import app.ferry.model.ConnectionState
 import app.ferry.model.DeviceInfo
 import app.ferry.model.TransferInfo
 import app.ferry.model.TransferState
 
 // A paired Mac's detail: Transfers, newest first, then Info. docs/ia.md.
+// Info carries the name, the transport, the key fingerprint, and Forget.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceScreen(
@@ -73,7 +75,11 @@ fun DeviceScreen(
                 }
             } else {
                 items(transfers, key = { it.id }) { transfer ->
-                    TransferRow(transfer = transfer, onRetry = { onRetryTransfer(transfer) })
+                    TransferRow(
+                        transfer = transfer,
+                        deviceState = device.connectionState,
+                        onRetry = { onRetryTransfer(transfer) },
+                    )
                 }
             }
 
@@ -82,11 +88,24 @@ fun DeviceScreen(
                 SectionHeader(stringResource(R.string.device_section_info))
             }
             item {
-                Column(modifier = Modifier.padding(horizontal = FerrySpace.s4, vertical = FerrySpace.s2)) {
+                Column(
+                    modifier = Modifier.padding(
+                        horizontal = FerrySpace.s4,
+                        vertical = FerrySpace.s2,
+                    ),
+                ) {
                     Text(text = device.name, style = FerryFont.body(), color = FerryColor.text())
                     Spacer(Modifier.height(FerrySpace.s2))
+                    TransportBadge(
+                        transport = device.transport,
+                        state = device.connectionState,
+                    )
+                    Spacer(Modifier.height(FerrySpace.s2))
                     Text(
-                        text = stringResource(R.string.device_info_paired_label, device.pairedOnText),
+                        text = stringResource(
+                            R.string.device_info_paired_label,
+                            formatDate(device.pairedUnixSecs),
+                        ),
                         style = FerryFont.body(),
                         color = FerryColor.textSecondary(),
                     )
@@ -96,7 +115,11 @@ fun DeviceScreen(
                         style = FerryFont.label(),
                         color = FerryColor.textSecondary(),
                     )
-                    Text(text = device.keyFingerprint, style = FerryFont.mono(), color = FerryColor.text())
+                    Text(
+                        text = device.keyFingerprint,
+                        style = FerryFont.mono(),
+                        color = FerryColor.text(),
+                    )
                     Spacer(Modifier.height(FerrySpace.s4))
                     OutlinedButton(onClick = onForget) {
                         Text(stringResource(R.string.action_forget_this_mac))
@@ -117,8 +140,15 @@ private fun SectionHeader(title: String) {
     )
 }
 
+// The badge on an active transfer shows the transport carrying it and the
+// device's own speed. The engine reports speed per device, not per
+// transfer, so this is the speed there is.
 @Composable
-private fun TransferRow(transfer: TransferInfo, onRetry: () -> Unit) {
+private fun TransferRow(
+    transfer: TransferInfo,
+    deviceState: ConnectionState,
+    onRetry: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -133,10 +163,7 @@ private fun TransferRow(transfer: TransferInfo, onRetry: () -> Unit) {
             )
             // The badge appears on every active transfer, docs/components.md.
             if (transfer.state == TransferState.Active) {
-                TransportBadge(
-                    transport = transfer.transport,
-                    state = ConnectionState.Moving(transfer.speedMBps ?: 0),
-                )
+                TransportBadge(transport = transfer.transport, state = deviceState)
             }
         }
         Spacer(Modifier.height(FerrySpace.s1))

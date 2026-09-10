@@ -16,6 +16,7 @@ import app.ferry.FerryColor
 import app.ferry.FerryFont
 import app.ferry.FerryIcon
 import app.ferry.R
+import app.ferry.formatAgo
 import app.ferry.model.ConnectionState
 import app.ferry.model.DeviceInfo
 
@@ -37,10 +38,15 @@ fun DeviceRow(
     val iconColor = if (notReachable) FerryColor.textSecondary() else FerryColor.text()
 
     val badgeDescription = transportBadgeContentDescription(device.transport, device.connectionState)
-    val lastSeenDescription = device.lastSeenText?.let {
-        stringResource(R.string.device_last_seen, it)
+    // The engine reports when the device was last reachable as a unix time.
+    // The row turns it into "2 hours" and places that in the template.
+    val lastSeen = device.lastSeenUnixSecs
+    val lastSeenLine = if (notReachable && lastSeen != null) {
+        stringResource(R.string.device_last_seen, formatAgo(lastSeen))
+    } else {
+        null
     }
-    val rowDescription = listOfNotNull(device.name, badgeDescription, lastSeenDescription)
+    val rowDescription = listOfNotNull(device.name, badgeDescription, lastSeenLine)
         .joinToString(". ")
 
     ListItem(
@@ -54,9 +60,9 @@ fun DeviceRow(
         supportingContent = {
             Column {
                 TransportBadge(transport = device.transport, state = device.connectionState)
-                if (notReachable && device.lastSeenText != null) {
+                if (lastSeenLine != null) {
                     Text(
-                        text = stringResource(R.string.device_last_seen, device.lastSeenText),
+                        text = lastSeenLine,
                         style = FerryFont.caption(),
                         color = FerryColor.textSecondary(),
                     )

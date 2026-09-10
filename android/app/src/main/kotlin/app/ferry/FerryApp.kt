@@ -1,27 +1,23 @@
 package app.ferry
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import app.ferry.model.SampleState
+import app.ferry.engine.FerryEngine
+import app.ferry.model.ThreePartError
+import app.ferry.model.toUi
 import app.ferry.screens.DeviceScreen
 import app.ferry.screens.DevicesScreen
+import app.ferry.screens.FirstRunScreen
 import app.ferry.screens.PairingScreen
 import app.ferry.screens.SettingsScreen
 
@@ -35,23 +31,15 @@ sealed class Screen {
     data object Settings : Screen()
 }
 
-// The one activity's content. Holds which screen is showing and today's
-// stand-in for the Rust core: SampleState, toggled empty or populated by
-// the debug switch at the top.
-//
-// TODO: the persistent "reachable" notification (docs/ia.md, "While the
-// phone is reachable...") starts its foreground service from here, once
-// Settings' Reachable switch is wired to something real. Nothing starts it
-// yet; the manifest already declares the permission and service type it
-// will need.
+// The one activity's content. Every value on screen comes from the engine's
+// flows. Nothing here is sample data.
 @Composable
-fun FerryApp() {
-    var screen by remember { mutableStateOf<Screen>(Screen.Devices) }
-    var populated by remember { mutableStateOf(true) }
-
-    val devices = if (populated) SampleState.devicesPopulated else SampleState.devicesEmpty
-    val transfers = if (populated) SampleState.transfersPopulated else SampleState.transfersEmpty
-
+fun FerryApp(
+    onContinueFirstRun: () -> Unit,
+    onOpenAllFilesAccess: () -> Unit,
+    onOpenNotificationSettings: () -> Unit,
+    onSetReachable: (Boolean) -> Unit,
+) {
     val darkTheme = isSystemInDarkTheme()
     val baseScheme = if (darkTheme) darkColorScheme() else lightColorScheme()
     val colorScheme = baseScheme.copy(
@@ -61,76 +49,98 @@ fun FerryApp() {
         onSurface = FerryColor.text(),
     )
 
-    MaterialTheme(colorScheme = colorScheme) {
-        Column(modifier = Modifier.background(FerryColor.background())) {
-            DebugSampleDataToggle(populated = populated, onToggle = { populated = it })
+    var screen by remember { mutableStateOf<Screen>(Screen.Devices) }
 
-            when (val current = screen) {
-                is Screen.Devices -> DevicesScreen(
-                    devices = devices,
-                    onDeviceClick = { device -> screen = Screen.Device(device.id) },
-                    onPairClick = { screen = Screen.Pairing },
-                    onSettingsClick = { screen = Screen.Settings },
-                )
+    val allFilesAccess by Permissions.allFilesAccess.collectAsState()
+    val notificationsAllowed by Permissions.notifications.collectAsState()
+    val firstRunDone by Permissions.firstRunDone.collectAsState()
+    val engineDevices by FerryEngine.devices.collectAsState()
+    val engineTransfers by FerryEngine.transfers.collectAsState()
+    val engineError by FerryEngine.error.collectAsState()
+    val reachable by FerryEngine.reachable.collectAsState()
 
-                is Screen.Device -> {
-                    val device = devices.find { it.id == current.deviceId }
-                    if (device != null) {
-                        DeviceScreen(
-                            device = device,
-                            transfers = transfers.filter { it.deviceId == device.id },
-                            onBack = { screen = Screen.Devices },
-                            onForget = { screen = Screen.Devices },
-                            // Sample state never changes at runtime, so a
-                            // retry has nothing to do yet.
-                            onRetryTransfer = {},
-                        )
-                    } else {
-                        // The debug switch moved to "empty" while this
-                        // device was open. Devices is always a safe screen
-                        // to fall back to.
-                        DevicesScreen(
-                            devices = devices,
-                            onDeviceClick = { d -> screen = Screen.Device(d.id) },
-                            onPairClick = { screen = Screen.Pairing },
-                            onSettingsClick = { screen = Screen.Settings },
-                        )
-                    }
-                }
+    val devices = engineDevices.map { it.toUi() }
+    val transfers = engineTransfers.map { it.toUi() }
 
-                is Screen.Pairing -> PairingScreen(
-                    onCancel = { screen = Screen.Devices },
-                    onConfirm = { screen = Screen.Devices },
-                    // Sample state never changes at runtime, so a retry has
-                    // nothing to do yet.
-                    onRetry = {},
-                    onBack = { screen = Screen.Devices },
-                )
-
-                is Screen.Settings -> SettingsScreen(onBack = { screen = Screen.Devices })
-            }
+    // Devices carries whatever is stopping Ferry from working, in the order
+    // that matters. A missing all files access grant comes first, because
+    // it is the one a person can fix, and it is why the engine did not
+    // start at all.
+    var errorWords: ThreePartError? = null
+    var errorActionLabel: String? = null
+    var errorAction: (() -> Unit)? = null
+    if (!allFilesAccess) {
+        errorWords = threePartError("Runtime::AllFilesAccess")
+        errorActionLabel = stringResource(R.string.action_open_settings)
+        errorAction = onOpenAllFilesAccess
+    } else {
+        val failure = engineError
+        if (failure != null) {
+            errorWords = threePartError(failure)
         }
     }
-}
 
-// Debug only, not a docs/voice.md string: swaps SampleState between its
-// empty and populated lists so every screen state can be seen without a
-// real device. Not part of the product.
-@Composable
-private fun DebugSampleDataToggle(populated: Boolean, onToggle: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(FerryColor.surfaceRaised())
-            .padding(FerrySpace.s2),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = stringResource(R.string.debug_sample_data_label),
-            style = FerryFont.caption(),
-            color = FerryColor.textSecondary(),
-            modifier = Modifier.weight(1f),
-        )
-        Switch(checked = populated, onCheckedChange = onToggle)
+    MaterialTheme(colorScheme = colorScheme) {
+        if (!firstRunDone) {
+            // docs/ia.md, phone first run step 1. It is shown until the
+            // person uses Continue. After that Devices carries the error
+            // block, so the app opens rather than refusing to.
+            FirstRunScreen(onContinue = onContinueFirstRun)
+            return@MaterialTheme
+        }
+
+        when (val current = screen) {
+            is Screen.Devices -> DevicesScreen(
+                devices = devices,
+                error = errorWords,
+                errorActionLabel = errorActionLabel,
+                onErrorAction = errorAction,
+                onDeviceClick = { device -> screen = Screen.Device(device.id) },
+                onPairClick = {
+                    // Pairing needs the phone to be reachable, because the
+                    // Mac dials it. Turning the switch on is part of the
+                    // tap, not something to ask for first.
+                    if (!reachable) {
+                        onSetReachable(true)
+                    }
+                    screen = Screen.Pairing
+                },
+                onSettingsClick = { screen = Screen.Settings },
+            )
+
+            is Screen.Device -> {
+                val device = devices.find { it.id == current.deviceId }
+                if (device == null) {
+                    // The Mac was forgotten, or the engine dropped it while
+                    // this screen was open. Devices is always safe.
+                    LaunchedEffect(current.deviceId) { screen = Screen.Devices }
+                } else {
+                    DeviceScreen(
+                        device = device,
+                        transfers = transfers.filter { it.deviceId == device.id },
+                        onBack = { screen = Screen.Devices },
+                        onForget = {
+                            FerryEngine.forget(device.id)
+                            screen = Screen.Devices
+                        },
+                        onRetryTransfer = { transfer -> FerryEngine.retry(transfer.id) },
+                    )
+                }
+            }
+
+            is Screen.Pairing -> PairingScreen(
+                onDone = { screen = Screen.Devices },
+            )
+
+            is Screen.Settings -> SettingsScreen(
+                reachable = reachable,
+                allFilesAccessGranted = allFilesAccess,
+                notificationsAllowed = notificationsAllowed,
+                onSetReachable = onSetReachable,
+                onOpenAllFilesAccess = onOpenAllFilesAccess,
+                onOpenNotificationSettings = onOpenNotificationSettings,
+                onBack = { screen = Screen.Devices },
+            )
+        }
     }
 }

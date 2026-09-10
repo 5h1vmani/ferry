@@ -15,6 +15,14 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        // arm64 only. The Rust runtime is built for arm64-v8a and nothing
+        // else, so the app cannot run on another architecture whatever
+        // else is packaged. JNA's aar carries a helper library for six
+        // architectures; this drops the five that are dead weight.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildTypes {
@@ -37,6 +45,45 @@ android {
     }
 }
 
+// Builds the Rust runtime for the phone before the app compiles.
+//
+// `cargo-ndk` writes libferry_runtime.so straight into src/main/jniLibs,
+// which the Android plugin packages into the APK. It reads ANDROID_NDK_HOME
+// from the environment, which scripts/env.sh sets, so this task passes the
+// whole environment through instead of writing a path down.
+//
+// arm64-v8a only. The phone is a Pixel 3 XL, which is arm64. Building a
+// second architecture would double the time and ship bytes nobody runs.
+//
+// CARGO_TARGET_DIR is set to target/android so this cross build does not
+// fight the host build in target/ over the same lock.
+val repoRoot = rootProject.layout.projectDirectory.dir("..")
+val jniLibsDir = layout.projectDirectory.dir("src/main/jniLibs")
+
+val buildRustForPhone = tasks.register<Exec>("buildRustForPhone") {
+    group = "build"
+    description = "Builds ferry-runtime for arm64-v8a into src/main/jniLibs."
+    workingDir = repoRoot.asFile
+    environment("CARGO_TARGET_DIR", repoRoot.dir("target/android").asFile.absolutePath)
+    commandLine(
+        "cargo", "ndk",
+        "-t", "arm64-v8a",
+        "-o", jniLibsDir.asFile.absolutePath,
+        "build", "--release",
+        "-p", "ferry-runtime",
+    )
+    // Gradle skips the task when no Rust source changed and the library is
+    // already in place.
+    inputs.dir(repoRoot.dir("crates"))
+    inputs.file(repoRoot.file("Cargo.toml"))
+    inputs.file(repoRoot.file("Cargo.lock"))
+    outputs.dir(jniLibsDir)
+}
+
+tasks.named("preBuild") {
+    dependsOn(buildRustForPhone)
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
@@ -46,5 +93,11 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
+    // The generated Kotlin bindings in uniffi/ferry_runtime load
+    // libferry_runtime.so through JNA. The Android build of JNA ships as an
+    // aar, so it is asked for by that classifier.
+    implementation(variantOf(libs.jna) { artifactType("aar") })
+    // Dispatchers.IO, for the engine calls that block on disk or network.
+    implementation(libs.kotlinx.coroutines.android)
     debugImplementation(libs.androidx.ui.tooling)
 }

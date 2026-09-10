@@ -33,12 +33,18 @@ import app.ferry.model.ThreePartError
 // else Ferry shows here. The failed icon and surface_raised carry the
 // weight instead.
 //
-// The Retry button is a real button, so TalkBack appends ", button" to its
+// The action button is a real button, so TalkBack appends ", button" to its
 // own label on its own; there is no need to add the word here.
+//
+// docs/components.md names that button Retry, which is what most errors
+// offer. One does not: a missing all files access grant is fixed on a
+// system screen, so its block carries "Open settings" instead. The label is
+// a parameter for that reason and defaults to Retry.
 @Composable
 fun ErrorBlock(
     error: ThreePartError,
-    onRetry: (() -> Unit)? = null,
+    onAction: (() -> Unit)? = null,
+    actionLabel: String? = null,
     modifier: Modifier = Modifier,
 ) {
     val description = listOfNotNull(error.stopped, error.why, error.todo).joinToString(" ")
@@ -68,13 +74,13 @@ fun ErrorBlock(
             if (error.todo != null) {
                 Text(text = error.todo, style = FerryFont.body(), color = FerryColor.text())
             }
-            if (onRetry != null) {
+            if (onAction != null) {
                 Spacer(Modifier.height(FerrySpace.s2))
                 OutlinedButton(
-                    onClick = onRetry,
+                    onClick = onAction,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = FerryColor.accent()),
                 ) {
-                    Text(stringResource(R.string.action_retry))
+                    Text(actionLabel ?: stringResource(R.string.action_retry))
                 }
             }
         }
