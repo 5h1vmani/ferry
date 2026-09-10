@@ -165,7 +165,7 @@ decision reverses. Nothing else in the structure changes.
 
 Every string here follows `docs/voice.md`. These are the real words, not
 placeholders. Where a string is new in this version it is marked **new**, and
-every new string is listed in `docs/handoff.md` for the strings file.
+every new string is written out in `macos/Ferry/Strings.swift`.
 
 ### Presence, both platforms
 
