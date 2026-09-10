@@ -207,7 +207,7 @@ pulls into `~/Downloads/Ferry`. The phone shares one root named
 "Internal storage" at its external storage path, writable, and its
 download folder is that path's `Download` folder.
 
-### 11. A device has a kind — open
+### 11. A device has a kind — built
 
 ```rust
 #[derive(uniffi::Enum)]

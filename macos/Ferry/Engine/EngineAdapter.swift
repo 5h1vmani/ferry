@@ -6,8 +6,8 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// Six items in docs/engine-contract.md have no field in the engine yet: 2,
-// 6, 11, 12, 13, and 14. Each one is marked `TODO(engine N)`, where N is its
+// Five items in docs/engine-contract.md have no field in the engine yet: 2,
+// 6, 12, 13, and 14. Each one is marked `TODO(engine N)`, where N is its
 // item number, and each has a default here that is honest: a missing count
 // is absent, not zero, and a missing sentence is left out, not guessed.
 // That is the three-part rule from docs/voice.md applied to the boundary
@@ -28,10 +28,7 @@ enum EngineAdapter {
         DeviceSnapshot(
             keyHex: info.keyHex,
             name: info.name,
-            // TODO(engine 11): DeviceInfo carries a kind, but nothing reads
-            // it yet. Every peer of this Mac is a phone, so this is correct
-            // until two Macs pair.
-            kind: .phone,
+            kind: info.kind,
             isReachable: info.reachableVia != nil,
             badge: TransportBadgeState(device: info),
             spareTransport: spareTransport(for: info),
