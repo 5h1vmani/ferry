@@ -241,8 +241,17 @@ fn derive_code(handshake_hash: &[u8], nonce_a: &[u8; 32], nonce_b: &[u8; 32]) ->
 fn send_handshake(out: &mut impl Write, message: &[u8]) -> Result<(), NoiseError> {
     let len = u16::try_from(message.len())
         .map_err(|_| NoiseError::HandshakeMessageTooLarge(message.len()))?;
-    out.write_all(&len.to_be_bytes())?;
-    out.write_all(message)?;
+    // One buffer for the length prefix and the message, so the socket sees
+    // one write instead of two. See `SecureStream::write` for why this
+    // matters: two writes back to back can each cost tens of milliseconds
+    // on a loopback connection. `message` is a caller-owned slice into a
+    // reused buffer, so it is copied here; a handshake message is at most
+    // `MAX_HANDSHAKE_MESSAGE` bytes, so the copy costs nothing worth
+    // measuring next to the write it replaces.
+    let mut buf = Vec::with_capacity(2 + message.len());
+    buf.extend_from_slice(&len.to_be_bytes());
+    buf.extend_from_slice(message);
+    out.write_all(&buf)?;
     out.flush()?;
     Ok(())
 }
@@ -515,15 +524,23 @@ impl Read for SecureStream {
 impl Write for SecureStream {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let n = bytes.len().min(limits::MAX_NOISE_PLAINTEXT);
-        let mut ciphertext = vec![0u8; n + 16];
+
+        // One buffer holds the length prefix and the ciphertext, with the
+        // first 2 bytes left for the prefix. `write_message` encrypts
+        // straight into its final position in the buffer, so no copy is
+        // needed to join the two, and one `write_all` sends both. Two
+        // writes back to back meet Nagle's algorithm on the sender and
+        // delayed acknowledgement on the receiver, which costs tens of
+        // milliseconds per message on a loopback connection.
+        let mut buf = vec![0u8; 2 + n + 16];
         let written = self
             .state
-            .write_message(&bytes[..n], &mut ciphertext)
+            .write_message(&bytes[..n], &mut buf[2..])
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let len = u16::try_from(written)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "message too long"))?;
-        self.inner.write_all(&len.to_be_bytes())?;
-        self.inner.write_all(&ciphertext[..written])?;
+        buf[0..2].copy_from_slice(&len.to_be_bytes());
+        self.inner.write_all(&buf[..2 + written])?;
         Ok(n)
     }
 
@@ -541,7 +558,8 @@ mod tests {
     };
     use crate::frame::{Frame, FrameKind, read_frame, write_frame};
     use crate::transport::{Endpoint, loopback};
-    use std::io::{Read, Write};
+    use std::io::{self, Read, Write};
+    use std::sync::{Arc, Mutex};
 
     const PROLOGUE: &[u8] = b"FERRY\x00\x01FERRY\x00\x01";
 
@@ -552,6 +570,31 @@ mod tests {
         let key_a = StaticKey::generate().unwrap();
         let initiator = pair_as_initiator(a, &key_a, PROLOGUE).unwrap();
         (initiator, responder.join().unwrap().unwrap())
+    }
+
+    /// A loopback endpoint that counts how many times `write` is called on
+    /// it, shared through `counter` so the count can be read after the
+    /// endpoint has been moved into a `SecureStream`.
+    struct CountingEndpoint {
+        inner: Endpoint,
+        counter: Arc<Mutex<usize>>,
+    }
+
+    impl Read for CountingEndpoint {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            self.inner.read(out)
+        }
+    }
+
+    impl Write for CountingEndpoint {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            *self.counter.lock().expect("counter lock poisoned") += 1;
+            self.inner.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.inner.flush()
+        }
     }
 
     #[test]
@@ -592,6 +635,39 @@ mod tests {
         let mut buf = [0u8; 16];
         responder.stream.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"hello over noise");
+    }
+
+    #[test]
+    fn writing_one_noise_message_calls_write_exactly_once() {
+        let (a, b) = loopback();
+        let counter = Arc::new(Mutex::new(0usize));
+        let counting_a = CountingEndpoint {
+            inner: a,
+            counter: Arc::clone(&counter),
+        };
+
+        let key_b = StaticKey::generate().unwrap();
+        let responder = std::thread::spawn(move || pair_as_responder(b, &key_b, PROLOGUE));
+        let key_a = StaticKey::generate().unwrap();
+        let mut initiator = pair_as_initiator(counting_a, &key_a, PROLOGUE).unwrap();
+        let mut responder = responder.join().unwrap().unwrap();
+
+        // The handshake above already wrote through the counted endpoint.
+        // Only the write below, after pairing, is a transport message, so
+        // the count is read on both sides of it.
+        let before = *counter.lock().unwrap();
+        initiator.stream.write_all(b"one message").unwrap();
+        let after = *counter.lock().unwrap();
+
+        assert_eq!(
+            after - before,
+            1,
+            "the length prefix and the ciphertext must share one write"
+        );
+
+        let mut buf = [0u8; 11];
+        responder.stream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"one message");
     }
 
     #[test]

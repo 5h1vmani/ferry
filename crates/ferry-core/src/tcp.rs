@@ -359,6 +359,12 @@ impl Listener {
     /// reached.
     pub fn accept(&self) -> Result<Pending, TcpError> {
         let (stream, remote) = self.inner.accept()?;
+        // Every frame and Noise message is its own write. Without this, the
+        // second write of a pair waits on a delayed acknowledgement from the
+        // other side, which costs tens of milliseconds per request. A
+        // failure to set it does not stop the connection from working, so
+        // the error is ignored rather than failing the accept.
+        let _ = stream.set_nodelay(true);
         let slot = self.reserve_slot()?;
         let deadline = Instant::now() + self.handshake_timeout;
 
@@ -504,6 +510,9 @@ pub fn connect(
     peer: &PublicKey,
 ) -> Result<Connection, TcpError> {
     let stream = TcpStream::connect(addr)?;
+    // As in `Listener::accept`: without this, a small write waits on a
+    // delayed acknowledgement instead of reaching the wire at once.
+    let _ = stream.set_nodelay(true);
     let remote = stream.peer_addr()?;
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
     run_handshake(
@@ -530,6 +539,9 @@ pub fn connect(
 /// that the peer's identity was wrong.
 pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpError> {
     let stream = TcpStream::connect(addr)?;
+    // As in `Listener::accept`: without this, a small write waits on a
+    // delayed acknowledgement instead of reaching the wire at once.
+    let _ = stream.set_nodelay(true);
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
     run_handshake(
         stream,

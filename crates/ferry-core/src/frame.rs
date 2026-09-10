@@ -105,8 +105,20 @@ pub fn write_frame(out: &mut impl Write, frame: &Frame) -> Result<(), FrameError
     header[0..4].copy_from_slice(&len.to_be_bytes());
     header[4] = frame.kind as u8;
     header[5..9].copy_from_slice(&frame.request_id.to_be_bytes());
-    out.write_all(&header)?;
-    out.write_all(&frame.payload)?;
+
+    // One buffer holding the header and the payload, so the socket sees one
+    // write instead of two. Two writes back to back meet Nagle's algorithm
+    // on the sender and delayed acknowledgement on the receiver, which costs
+    // tens of milliseconds per frame on a loopback connection.
+    //
+    // `frame` is a borrow, so the payload is copied into this buffer rather
+    // than moved. The copy costs microseconds even at the largest allowed
+    // payload; the extra write it replaces cost tens of milliseconds, so the
+    // copy is the right trade.
+    let mut buf = Vec::with_capacity(HEADER_LEN + frame.payload.len());
+    buf.extend_from_slice(&header);
+    buf.extend_from_slice(&frame.payload);
+    out.write_all(&buf)?;
     out.flush()?;
     Ok(())
 }
@@ -146,7 +158,7 @@ pub fn read_frame(input: &mut impl Read) -> Result<Frame, FrameError> {
 mod tests {
     use super::{Frame, FrameError, FrameKind, read_frame, write_frame};
     use crate::limits;
-    use std::io::ErrorKind;
+    use std::io::{self, ErrorKind, Write};
 
     fn frame(payload: Vec<u8>) -> Frame {
         Frame {
@@ -154,6 +166,42 @@ mod tests {
             request_id: 42,
             payload,
         }
+    }
+
+    /// A writer that counts how many times `write` is called, and keeps the
+    /// bytes it was given.
+    ///
+    /// It always accepts the whole buffer in one call, so a caller such as
+    /// `write_all` never has to call `write` twice for one call of its own.
+    #[derive(Default)]
+    struct CountingWriter {
+        calls: usize,
+        bytes: Vec<u8>,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.calls += 1;
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn writing_one_frame_calls_write_exactly_once() {
+        let original = frame(b"hello".to_vec());
+        let mut writer = CountingWriter::default();
+        write_frame(&mut writer, &original).unwrap();
+
+        assert_eq!(
+            writer.calls, 1,
+            "the header and the payload must share one write"
+        );
+        assert_eq!(read_frame(&mut writer.bytes.as_slice()).unwrap(), original);
     }
 
     #[test]
