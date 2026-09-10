@@ -80,6 +80,10 @@ There is no loading state. The list is local and instant.
 
 ### Pairing
 
+This table is the Mac's screen. The phone's pairing states are the ones in
+the first run section below, because the phone waits and shows a code rather
+than searching and picking.
+
 | State | Shows |
 |---|---|
 | Waiting | "Looking for a phone." Below it: "Plug in a cable, or open Ferry on the phone and turn on pairing." A Cancel control. |

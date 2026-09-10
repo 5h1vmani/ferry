@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Every user-facing string in the Ferry Android app. A string inline in a
+    view is a bug (docs/design.md). Words follow docs/voice.md; most are
+    taken directly from docs/ia.md and docs/components.md.
+
+    Text a screen actually generates at runtime (a paused reason, a
+    three-part error, a device name, a fingerprint) is not here. It lives in
+    model/SampleState.kt for now, standing in for what the Rust core will
+    send once it is linked, the same way design/errors.json holds that text
+    today. What follows is the fixed wording around that data: titles,
+    labels, button text, and the templates a number is placed into.
+-->
+<resources>
+    <string name="app_name">Ferry</string>
+
+    <!-- Debug-only. Not a docs/voice.md string: it names a developer
+         control, not something the finished app says. -->
+    <string name="debug_sample_data_label">Sample data</string>
+
+    <!-- Shared actions, reused wherever the same button appears. -->
+    <string name="action_pair">Pair</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_confirm">Confirm</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_forget_this_mac">Forget this Mac</string>
+    <string name="action_open_settings">Open settings</string>
+    <string name="cd_back">Back</string>
+
+    <!-- TransportBadge, docs/components.md. -->
+    <string name="transport_usb">USB</string>
+    <string name="transport_wifi">Wi-Fi</string>
+    <string name="transport_connecting">Connecting</string>
+    <string name="transport_not_reachable">Not reachable</string>
+    <string name="transport_speed_value">%1$d MB/s</string>
+    <string name="transport_with_speed">%1$s · %2$s</string>
+    <string name="cd_transport_usb_idle">Connected over USB</string>
+    <string name="cd_transport_usb_moving">Connected over USB, %1$d megabytes per second</string>
+    <string name="cd_transport_wifi_idle">Connected over Wi-Fi</string>
+    <string name="cd_transport_wifi_moving">Connected over Wi-Fi, %1$d megabytes per second</string>
+    <string name="cd_transport_connecting">Connecting</string>
+    <string name="cd_transport_not_reachable">Not reachable</string>
+
+    <!-- DeviceRow, docs/components.md. -->
+    <string name="device_last_seen">Last seen %1$s ago</string>
+
+    <!-- ProgressLine, docs/components.md. -->
+    <string name="progress_active">%1$d of %2$d files · %3$s remaining · %4$s</string>
+    <string name="progress_paused">Paused. %1$s</string>
+    <string name="progress_done">%1$d files · %2$s · %3$s</string>
+    <string name="cd_progress_transferring_percent">Transferring, %1$d percent</string>
+
+    <!-- PairingCode, docs/components.md. Digit words spell the code for a
+         screen reader, one digit at a time. -->
+    <string-array name="digit_words">
+        <item>zero</item>
+        <item>one</item>
+        <item>two</item>
+        <item>three</item>
+        <item>four</item>
+        <item>five</item>
+        <item>six</item>
+        <item>seven</item>
+        <item>eight</item>
+        <item>nine</item>
+    </string-array>
+    <string name="cd_pairing_code">Pairing code, %1$s</string>
+    <!-- Adapted from docs/components.md's "Confirm this matches on the
+         phone.": that line is written from the Mac's screen. This is the
+         phone's own screen, confirming against the Mac's, so it names the
+         Mac instead. See the ambiguity note in the scaffolding report. -->
+    <string name="pairing_code_instruction">Confirm this matches on the Mac.</string>
+    <string name="pairing_confirmed_label">Confirmed.</string>
+
+    <!-- EmptyState, docs/components.md. -->
+    <string name="devices_empty_line">No Mac paired.</string>
+    <string name="transfers_empty_line">No transfers.</string>
+
+    <!-- Devices screen, docs/ia.md. -->
+    <string name="devices_title">Devices</string>
+    <string name="cd_settings_action">Settings</string>
+
+    <!-- Device (detail) screen, docs/ia.md. -->
+    <string name="device_section_transfers">Transfers</string>
+    <string name="device_section_info">Info</string>
+    <string name="device_info_paired_label">Paired %1$s</string>
+    <string name="device_info_fingerprint_label">Key fingerprint</string>
+
+    <!-- Pairing screen, docs/ia.md phone first run, steps 5-7. -->
+    <string name="pairing_title">Pairing</string>
+    <string name="pairing_segment_waiting">Waiting</string>
+    <string name="pairing_segment_code">Code</string>
+    <string name="pairing_segment_confirmed">Confirmed</string>
+    <string name="pairing_segment_failed">Failed</string>
+    <string name="pairing_waiting_title">Pairing on. Open Ferry on the Mac.</string>
+    <string name="pairing_waiting_short_code_label">Short code %1$s</string>
+
+    <!-- Settings screen, docs/ia.md. -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_reachable_label">Reachable</string>
+    <string name="settings_reachable_caption">On: the phone advertises and accepts connections. Off: neither.</string>
+    <string name="settings_shared_folders_label">Shared folders</string>
+    <string name="settings_shared_folders_caption">Not editable in phase 1.</string>
+    <string-array name="settings_shared_folder_names">
+        <item>DCIM</item>
+        <item>Pictures</item>
+        <item>Movies</item>
+        <item>Music</item>
+        <item>Download</item>
+        <item>Documents</item>
+    </string-array>
+    <string name="settings_all_files_access_label">All files access</string>
+    <string name="settings_status_granted">Granted</string>
+    <string name="settings_status_not_granted">Not granted</string>
+    <string name="settings_notifications_label">Notifications</string>
+    <string name="settings_status_allowed">Allowed</string>
+    <string name="settings_status_not_allowed">Not allowed</string>
+</resources>

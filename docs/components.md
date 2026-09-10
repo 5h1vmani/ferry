@@ -85,7 +85,7 @@ The six digits, on both devices at once.
 
 | State | Shows |
 |---|---|
-| Showing | "481 920" in `display` type with monospaced digits, grouped three and three. Below, in `body`: "Confirm this matches on the phone." Confirm and Cancel controls. |
+| Showing | "481 920" in `display` type with monospaced digits, grouped three and three. Below, in `body`, the instruction names the other device: "Confirm this matches on the phone." on the Mac, "Confirm this matches on the Mac." on the phone. Confirm and Cancel controls. |
 | Confirmed | the paired icon in `accent` for one second, then the view closes |
 | Mismatched | an ErrorBlock takes its place |
 

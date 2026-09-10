@@ -1,0 +1,45 @@
+# The Gradle version catalog. Every version used by the Android build lives
+# here once, so a bump happens in one place.
+#
+# Looked up on 10 September 2026:
+#   agp            https://developer.android.com/build/releases/gradle-plugin
+#                  (confirmed against dl.google.com/dl/android/maven2, the
+#                  9.5.0 line was still alpha-only)
+#   kotlin         https://kotlinlang.org/docs/whatsnew2420.html
+#                  (confirmed against repo1.maven.org)
+#   composeBom     https://developer.android.com/develop/ui/compose/bom/bom-mapping
+#                  (confirmed against dl.google.com/dl/android/maven2, which
+#                  lists a newer 2026.09.00 than the doc page's 2026.08.00;
+#                  the newer one is used)
+#   activityCompose newest non-alpha release on dl.google.com/dl/android/maven2
+#   gradle         the version `brew install gradle` installed, 9.7.1, which
+#                  is above the 9.6.0 that agp 9.4.0 requires
+
+[versions]
+agp = "9.4.0"
+kotlin = "2.4.20"
+# 2026.09.00 and 2026.08.00 are newer, but both pin compose ui/foundation to
+# 1.12.x, whose AAR metadata declares minCompileSdk=37 (checked against
+# dl.google.com's aar-metadata.properties for each). The task fixes
+# compileSdk at 36, so this build uses the newest BOM whose pinned ui
+# version (1.11.4) still declares minCompileSdk=35.
+composeBom = "2026.06.01"
+activityCompose = "1.13.0"
+coreKtx = "1.18.0"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
+androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
+androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+# No kotlin-android plugin: AGP 9's built-in Kotlin compiles the Kotlin
+# sources, so app/build.gradle.kts applies only the Compose compiler plugin.
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

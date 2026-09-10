@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Job 5: invisible to strangers. Runs the foreground service behind
+         the "reachable" notification, which is the honest, always-visible
+         answer to whether Ferry is advertising and accepting connections. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- Job 5: invisible to strangers. Android 13 and later require this to
+         show the "reachable" notification the foreground service posts. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Job 1: use the phone's files like any other folder. Ferry cannot
+         serve the shared folders to the Mac without this. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+
+    <!-- Job 1: use the phone's files like any other folder. The Wi-Fi
+         transport that carries the file traffic needs a network socket. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Job 2: the cable always works. The transport indicator has to know
+         whether Wi-Fi is up to decide which path is active. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Job 1: use the phone's files like any other folder. mDNS discovery,
+         which finds the Mac on Wi-Fi, needs multicast. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
