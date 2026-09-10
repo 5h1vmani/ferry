@@ -44,7 +44,7 @@ to built in the same commit that removes its `TODO(engine N)` markers.
 
 ## Batch B: the small fields
 
-### 1. `status()` — open
+### 1. `status()` — built
 
 `set_reachable(on: bool)` has no counterpart, so no presence surface can
 state what is true.

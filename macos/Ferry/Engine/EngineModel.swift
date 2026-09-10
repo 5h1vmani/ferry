@@ -47,15 +47,6 @@ final class EngineModel: ObservableObject {
     /// engine is told about it and the sheet may be rebuilt at any moment.
     private var pairingMethod: PairingMethod?
 
-    /// What this Mac last told the engine about advertising.
-    ///
-    /// TODO(engine 1): this is a cached copy because `set_reachable` has no
-    /// getter. It is the one piece of state in the app that is not read
-    /// from its owner, it is wrong after a restart, and it is deleted the
-    /// day `status()` lands. Nothing outside this file may read it: views
-    /// read `presence`.
-    private var cachedAdvertising = true
-
     private var engine: Engine?
     private var events: EngineEvents?
 
@@ -151,10 +142,11 @@ final class EngineModel: ObservableObject {
     }
 
     private func refreshPresence() {
-        presence = EngineAdapter.presence(
-            cachedAdvertising: cachedAdvertising,
-            devices: deviceInfos
-        )
+        guard let engine else {
+            presence = .unknown
+            return
+        }
+        presence = EngineAdapter.presence(status: engine.status(), devices: deviceInfos)
     }
 
     private func refreshPairing() {
@@ -196,7 +188,6 @@ final class EngineModel: ObservableObject {
 
     /// Turns advertising on or off. Job 5's only control.
     func setAdvertising(_ on: Bool) {
-        cachedAdvertising = on
         engine?.setReachable(on: on)
         refreshPresence()
     }

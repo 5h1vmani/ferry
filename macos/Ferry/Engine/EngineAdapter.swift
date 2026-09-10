@@ -152,13 +152,8 @@ enum EngineAdapter {
     // MARK: - Presence
 
     /// What the four presence surfaces show.
-    ///
-    /// TODO(engine 1): `set_reachable` has no getter, so `isAdvertising` is
-    /// the app's own copy of what it last set and `isReportedByEngine` is
-    /// false. When `status()` lands, both come from the engine and the
-    /// cached value in EngineModel is deleted.
     static func presence(
-        cachedAdvertising: Bool,
+        status: Status,
         devices: [DeviceInfo]
     ) -> PresenceSnapshot {
         // The menu bar states the fastest thing moving, because it has room
@@ -168,10 +163,10 @@ enum EngineAdapter {
             .max { ($0.speedBytesPerSec ?? 0) < ($1.speedBytesPerSec ?? 0) }
 
         return PresenceSnapshot(
-            isAdvertising: cachedAdvertising,
+            isAdvertising: status.reachable,
             activeTransport: moving?.reachableVia,
             speedBytesPerSec: moving?.speedBytesPerSec,
-            isReportedByEngine: false
+            isReportedByEngine: true
         )
     }
 

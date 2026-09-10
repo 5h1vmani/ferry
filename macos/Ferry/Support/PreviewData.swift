@@ -94,12 +94,12 @@ enum PreviewData {
     )
 
     static let advertising = EngineAdapter.presence(
-        cachedAdvertising: true,
+        status: Status(reachable: true, listenPort: 53317, adbPresent: true, mount: nil),
         devices: devices
     )
 
     static let notAdvertising = EngineAdapter.presence(
-        cachedAdvertising: false,
+        status: Status(reachable: false, listenPort: 53317, adbPresent: true, mount: nil),
         devices: []
     )
 
