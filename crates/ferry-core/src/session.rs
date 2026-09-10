@@ -349,6 +349,28 @@ pub fn pull<S: Read + Write>(
     transfer: &Transfer,
     local: &dyn FileOps,
 ) -> Result<Progress, TransferError> {
+    pull_with_progress(client, transfer, local, |_| {})
+}
+
+/// Pull a file, and report after every chunk that verifies.
+///
+/// This is [`pull`] with one extra argument. `on_chunk` is called once per
+/// chunk, after the chunk has verified and reached the disk. It is never
+/// called for a chunk that a resume skipped, because those bytes moved on an
+/// earlier connection.
+///
+/// The engine uses this to drive a progress bar. `pull` is the same function
+/// with a callback that does nothing.
+///
+/// # Errors
+///
+/// As [`pull`].
+pub fn pull_with_progress<S: Read + Write>(
+    client: &mut Client<S>,
+    transfer: &Transfer,
+    local: &dyn FileOps,
+    mut on_chunk: impl FnMut(Progress),
+) -> Result<Progress, TransferError> {
     let manifest = &transfer.manifest;
     let temporary = transfer.temporary_path()?;
     let start = resume_point(local, &temporary, manifest)?;
@@ -363,6 +385,11 @@ pub fn pull<S: Read + Write>(
             return Err(TransferError::ChunkFailedVerification { index });
         }
         write_local(local, &temporary, offset, &bytes)?;
+        on_chunk(Progress {
+            chunks_done: index + 1,
+            chunks_total: manifest.chunk_count(),
+            bytes_done: offset + u64::from(length),
+        });
     }
 
     // A resumed file may be longer than the manifest if an earlier attempt
