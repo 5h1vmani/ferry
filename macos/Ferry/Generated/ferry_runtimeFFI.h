@@ -350,6 +350,11 @@ void uniffi_ferry_runtime_fn_method_engine_start(uint64_t ptr, RustCallStatus *_
 void uniffi_ferry_runtime_fn_method_engine_start_pairing(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STATUS
+RustBuffer uniffi_ferry_runtime_fn_method_engine_status(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STOP
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STOP
 void uniffi_ferry_runtime_fn_method_engine_stop(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -718,6 +723,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_start(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_START_PAIRING
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_START_PAIRING
 uint16_t uniffi_ferry_runtime_checksum_method_engine_start_pairing(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_STATUS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_STATUS
+uint16_t uniffi_ferry_runtime_checksum_method_engine_status(void
     
 );
 #endif

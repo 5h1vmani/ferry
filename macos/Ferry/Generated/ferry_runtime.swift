@@ -487,6 +487,22 @@ fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
+    typealias FfiType = UInt32
+    typealias SwiftType = UInt32
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt32 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
     typealias FfiType = UInt64
     typealias SwiftType = UInt64
@@ -749,6 +765,12 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * again.
      */
     func startPairing() 
+    
+    /**
+     * Everything this engine currently is: whether it accepts connections,
+     * what port it listens on, and whether `adb` was found.
+     */
+    func status()  -> Status
     
     /**
      * Stop everything and join every loop. Safe to call twice.
@@ -1076,6 +1098,19 @@ open func startPairing()  {try! rustCall() {
 }
     
     /**
+     * Everything this engine currently is: whether it accepts connections,
+     * what port it listens on, and whether `adb` was found.
+     */
+open func status() -> Status  {
+    return try!  FfiConverterTypeStatus_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_status(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Stop everything and join every loop. Safe to call twice.
      *
      * After this returns the listener is never called again, no file is
@@ -1279,6 +1314,12 @@ public struct DeviceInfo: Equatable, Hashable {
      * When it was last reachable, if it is not reachable now.
      */
     public var lastSeenUnixSecs: Int64?
+    /**
+     * Every transport this device could currently be reached through,
+     * `Usb` first. `reachable_via`, when it is `Some`, is always in this
+     * list.
+     */
+    public var availableTransports: [Transport]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1300,13 +1341,19 @@ public struct DeviceInfo: Equatable, Hashable {
          */speedBytesPerSec: UInt64?, 
         /**
          * When it was last reachable, if it is not reachable now.
-         */lastSeenUnixSecs: Int64?) {
+         */lastSeenUnixSecs: Int64?, 
+        /**
+         * Every transport this device could currently be reached through,
+         * `Usb` first. `reachable_via`, when it is `Some`, is always in this
+         * list.
+         */availableTransports: [Transport]) {
         self.keyHex = keyHex
         self.name = name
         self.pairedUnixSecs = pairedUnixSecs
         self.reachableVia = reachableVia
         self.speedBytesPerSec = speedBytesPerSec
         self.lastSeenUnixSecs = lastSeenUnixSecs
+        self.availableTransports = availableTransports
     }
 
     
@@ -1330,7 +1377,8 @@ public struct FfiConverterTypeDeviceInfo: FfiConverterRustBuffer {
                 pairedUnixSecs: FfiConverterInt64.read(from: &buf), 
                 reachableVia: FfiConverterOptionTypeTransport.read(from: &buf), 
                 speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
-                lastSeenUnixSecs: FfiConverterOptionInt64.read(from: &buf)
+                lastSeenUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
+                availableTransports: FfiConverterSequenceTypeTransport.read(from: &buf)
         )
     }
 
@@ -1341,6 +1389,7 @@ public struct FfiConverterTypeDeviceInfo: FfiConverterRustBuffer {
         FfiConverterOptionTypeTransport.write(value.reachableVia, into: &buf)
         FfiConverterOptionUInt64.write(value.speedBytesPerSec, into: &buf)
         FfiConverterOptionInt64.write(value.lastSeenUnixSecs, into: &buf)
+        FfiConverterSequenceTypeTransport.write(value.availableTransports, into: &buf)
     }
 }
 
@@ -1601,6 +1650,98 @@ public func FfiConverterTypePairingCandidate_lower(_ value: PairingCandidate) ->
 
 
 /**
+ * Everything this engine currently is, as one call rather than several
+ * facts held twice.
+ */
+public struct Status: Equatable, Hashable {
+    /**
+     * True while this device advertises and accepts connections.
+     */
+    public var reachable: Bool
+    /**
+     * The port the listener is bound to. Zero before `start` has run.
+     */
+    public var listenPort: UInt16
+    /**
+     * Whether `adb` was found when the engine started.
+     */
+    public var adbPresent: Bool
+    /**
+     * Where the peer's roots are mounted on this device. `None` until item
+     * 6 is built.
+     */
+    public var mount: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * True while this device advertises and accepts connections.
+         */reachable: Bool, 
+        /**
+         * The port the listener is bound to. Zero before `start` has run.
+         */listenPort: UInt16, 
+        /**
+         * Whether `adb` was found when the engine started.
+         */adbPresent: Bool, 
+        /**
+         * Where the peer's roots are mounted on this device. `None` until item
+         * 6 is built.
+         */mount: String?) {
+        self.reachable = reachable
+        self.listenPort = listenPort
+        self.adbPresent = adbPresent
+        self.mount = mount
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension Status: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStatus: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Status {
+        return
+            try Status(
+                reachable: FfiConverterBool.read(from: &buf), 
+                listenPort: FfiConverterUInt16.read(from: &buf), 
+                adbPresent: FfiConverterBool.read(from: &buf), 
+                mount: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: Status, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.reachable, into: &buf)
+        FfiConverterUInt16.write(value.listenPort, into: &buf)
+        FfiConverterBool.write(value.adbPresent, into: &buf)
+        FfiConverterOptionString.write(value.mount, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStatus_lift(_ buf: RustBuffer) throws -> Status {
+    return try FfiConverterTypeStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStatus_lower(_ value: Status) -> RustBuffer {
+    return FfiConverterTypeStatus.lower(value)
+}
+
+
+/**
  * One transfer, as the Transfers screen shows it.
  */
 public struct TransferInfo: Equatable, Hashable {
@@ -1636,6 +1777,31 @@ public struct TransferInfo: Equatable, Hashable {
      * Why it failed or paused, when it did.
      */
     public var error: FerryError?
+    /**
+     * When `pull` created this transfer.
+     */
+    public var startedUnixSecs: Int64
+    /**
+     * When the state last became `Done` or `Failed`. Cleared by `retry`.
+     */
+    public var endedUnixSecs: Int64?
+    /**
+     * Which way this transfer moves the file.
+     */
+    public var direction: Direction
+    /**
+     * Bytes per second, measured over this transfer's own bytes across the
+     * last two seconds. `None` unless the state is `Active`.
+     */
+    public var speedBytesPerSec: UInt64?
+    /**
+     * The chunk count of the file, known once the size is.
+     */
+    public var chunksTotal: UInt32
+    /**
+     * How many chunks have a verified hash so far.
+     */
+    public var chunksVerified: UInt32
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1663,7 +1829,26 @@ public struct TransferInfo: Equatable, Hashable {
          */transport: Transport?, 
         /**
          * Why it failed or paused, when it did.
-         */error: FerryError?) {
+         */error: FerryError?, 
+        /**
+         * When `pull` created this transfer.
+         */startedUnixSecs: Int64, 
+        /**
+         * When the state last became `Done` or `Failed`. Cleared by `retry`.
+         */endedUnixSecs: Int64?, 
+        /**
+         * Which way this transfer moves the file.
+         */direction: Direction, 
+        /**
+         * Bytes per second, measured over this transfer's own bytes across the
+         * last two seconds. `None` unless the state is `Active`.
+         */speedBytesPerSec: UInt64?, 
+        /**
+         * The chunk count of the file, known once the size is.
+         */chunksTotal: UInt32, 
+        /**
+         * How many chunks have a verified hash so far.
+         */chunksVerified: UInt32) {
         self.id = id
         self.deviceKeyHex = deviceKeyHex
         self.fileName = fileName
@@ -1672,6 +1857,12 @@ public struct TransferInfo: Equatable, Hashable {
         self.state = state
         self.transport = transport
         self.error = error
+        self.startedUnixSecs = startedUnixSecs
+        self.endedUnixSecs = endedUnixSecs
+        self.direction = direction
+        self.speedBytesPerSec = speedBytesPerSec
+        self.chunksTotal = chunksTotal
+        self.chunksVerified = chunksVerified
     }
 
     
@@ -1697,7 +1888,13 @@ public struct FfiConverterTypeTransferInfo: FfiConverterRustBuffer {
                 bytesDone: FfiConverterUInt64.read(from: &buf), 
                 state: FfiConverterTypeTransferState.read(from: &buf), 
                 transport: FfiConverterOptionTypeTransport.read(from: &buf), 
-                error: FfiConverterOptionTypeFerryError.read(from: &buf)
+                error: FfiConverterOptionTypeFerryError.read(from: &buf), 
+                startedUnixSecs: FfiConverterInt64.read(from: &buf), 
+                endedUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
+                direction: FfiConverterTypeDirection.read(from: &buf), 
+                speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
+                chunksTotal: FfiConverterUInt32.read(from: &buf), 
+                chunksVerified: FfiConverterUInt32.read(from: &buf)
         )
     }
 
@@ -1710,6 +1907,12 @@ public struct FfiConverterTypeTransferInfo: FfiConverterRustBuffer {
         FfiConverterTypeTransferState.write(value.state, into: &buf)
         FfiConverterOptionTypeTransport.write(value.transport, into: &buf)
         FfiConverterOptionTypeFerryError.write(value.error, into: &buf)
+        FfiConverterInt64.write(value.startedUnixSecs, into: &buf)
+        FfiConverterOptionInt64.write(value.endedUnixSecs, into: &buf)
+        FfiConverterTypeDirection.write(value.direction, into: &buf)
+        FfiConverterOptionUInt64.write(value.speedBytesPerSec, into: &buf)
+        FfiConverterUInt32.write(value.chunksTotal, into: &buf)
+        FfiConverterUInt32.write(value.chunksVerified, into: &buf)
     }
 }
 
@@ -1727,6 +1930,83 @@ public func FfiConverterTypeTransferInfo_lift(_ buf: RustBuffer) throws -> Trans
 public func FfiConverterTypeTransferInfo_lower(_ value: TransferInfo) -> RustBuffer {
     return FfiConverterTypeTransferInfo.lower(value)
 }
+
+
+/**
+ * Which way a transfer moves a file.
+ *
+ * Always `Pull` until item 5 lands.
+ */
+
+public enum Direction: Equatable, Hashable {
+    
+    /**
+     * This device fetched the file from the peer.
+     */
+    case pull
+    /**
+     * This device sent the file to the peer.
+     */
+    case push
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Direction: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDirection: FfiConverterRustBuffer {
+    typealias SwiftType = Direction
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Direction {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .pull
+        
+        case 2: return .push
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Direction, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .pull:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .push:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirection_lift(_ buf: RustBuffer) throws -> Direction {
+    return try FfiConverterTypeDirection.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDirection_lower(_ value: Direction) -> RustBuffer {
+    return FfiConverterTypeDirection.lower(value)
+}
+
 
 
 /**
@@ -1912,14 +2192,21 @@ public enum PairingState: Equatable, Hashable {
     /**
      * Looking for a device, or on the phone, waiting for a Mac.
      */
-    case waiting
+    case waiting(
+        /**
+         * When this pairing attempt gives up.
+         */expiresUnixSecs: Int64
+    )
     /**
      * The Mac has candidates to pick from.
      */
     case found(
         /**
          * What can be picked.
-         */candidates: [PairingCandidate]
+         */candidates: [PairingCandidate], 
+        /**
+         * When this pairing attempt gives up.
+         */expiresUnixSecs: Int64
     )
     /**
      * Both screens show the code.
@@ -1927,7 +2214,10 @@ public enum PairingState: Equatable, Hashable {
     case code(
         /**
          * Six digits, zero padded.
-         */code: String
+         */code: String, 
+        /**
+         * When this pairing attempt gives up.
+         */expiresUnixSecs: Int64
     )
     /**
      * Both sides confirmed. The device is now in `devices()`.
@@ -1968,12 +2258,13 @@ public struct FfiConverterTypePairingState: FfiConverterRustBuffer {
         
         case 1: return .idle
         
-        case 2: return .waiting
-        
-        case 3: return .found(candidates: try FfiConverterSequenceTypePairingCandidate.read(from: &buf)
+        case 2: return .waiting(expiresUnixSecs: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 4: return .code(code: try FfiConverterString.read(from: &buf)
+        case 3: return .found(candidates: try FfiConverterSequenceTypePairingCandidate.read(from: &buf), expiresUnixSecs: try FfiConverterInt64.read(from: &buf)
+        )
+        
+        case 4: return .code(code: try FfiConverterString.read(from: &buf), expiresUnixSecs: try FfiConverterInt64.read(from: &buf)
         )
         
         case 5: return .confirmed(device: try FfiConverterTypeDeviceInfo.read(from: &buf)
@@ -1994,18 +2285,21 @@ public struct FfiConverterTypePairingState: FfiConverterRustBuffer {
             writeInt(&buf, Int32(1))
         
         
-        case .waiting:
+        case let .waiting(expiresUnixSecs):
             writeInt(&buf, Int32(2))
-        
-        
-        case let .found(candidates):
-            writeInt(&buf, Int32(3))
-            FfiConverterSequenceTypePairingCandidate.write(candidates, into: &buf)
+            FfiConverterInt64.write(expiresUnixSecs, into: &buf)
             
         
-        case let .code(code):
+        case let .found(candidates,expiresUnixSecs):
+            writeInt(&buf, Int32(3))
+            FfiConverterSequenceTypePairingCandidate.write(candidates, into: &buf)
+            FfiConverterInt64.write(expiresUnixSecs, into: &buf)
+            
+        
+        case let .code(code,expiresUnixSecs):
             writeInt(&buf, Int32(4))
             FfiConverterString.write(code, into: &buf)
+            FfiConverterInt64.write(expiresUnixSecs, into: &buf)
             
         
         case let .confirmed(device):
@@ -2635,6 +2929,31 @@ fileprivate struct FfiConverterSequenceTypeTransferInfo: FfiConverterRustBuffer 
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTransport: FfiConverterRustBuffer {
+    typealias SwiftType = [Transport]
+
+    public static func write(_ value: [Transport], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTransport.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Transport] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Transport]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTransport.read(from: &buf))
+        }
+        return seq
+    }
+}
 /**
  * Make a fresh key pair for first run. The app stores it.
  *
@@ -2720,6 +3039,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_start_pairing() != 608) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_status() != 3994) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_stop() != 10378) {

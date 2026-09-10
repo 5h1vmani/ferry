@@ -735,6 +735,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_start_pairing(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_status(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_stop(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_transfers(
@@ -796,6 +798,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_start_pairing(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_stop(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_transfers(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -965,6 +969,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_start_pairing() and 0xFFFF) != 608) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_status() and 0xFFFF) != 3994) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_stop() and 0xFFFF) != 10378) {
@@ -1197,6 +1204,29 @@ public object FfiConverterUShort: FfiConverter<UShort, Short> {
 
     override fun write(value: UShort, buf: ByteBuffer) {
         buf.putShort(value.toShort())
+    }
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterUInt: FfiConverter<UInt, Int> {
+    override fun lift(value: Int): UInt {
+        return value.toUInt()
+    }
+
+    override fun read(buf: ByteBuffer): UInt {
+        return lift(buf.getInt())
+    }
+
+    override fun lower(value: UInt): Int {
+        return value.toInt()
+    }
+
+    override fun allocationSize(value: UInt) = 4UL
+
+    override fun write(value: UInt, buf: ByteBuffer) {
+        buf.putInt(value.toInt())
     }
 }
 
@@ -1583,6 +1613,12 @@ public interface EngineInterface {
      * again.
      */
     fun `startPairing`()
+    
+    /**
+     * Everything this engine currently is: whether it accepts connections,
+     * what port it listens on, and whether `adb` was found.
+     */
+    fun `status`(): Status
     
     /**
      * Stop everything and join every loop. Safe to call twice.
@@ -2015,6 +2051,23 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * Everything this engine currently is: whether it accepts connections,
+     * what port it listens on, and whether `adb` was found.
+     */override fun `status`(): Status {
+            return FfiConverterTypeStatus.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_status(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Stop everything and join every loop. Safe to call twice.
      *
      * After this returns the listener is never called again, no file is
@@ -2193,6 +2246,13 @@ data class DeviceInfo (
      * When it was last reachable, if it is not reachable now.
      */
     var `lastSeenUnixSecs`: kotlin.Long?
+    , 
+    /**
+     * Every transport this device could currently be reached through,
+     * `Usb` first. `reachable_via`, when it is `Some`, is always in this
+     * list.
+     */
+    var `availableTransports`: List<Transport>
     
 ){
     
@@ -2215,6 +2275,7 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalTypeTransport.read(buf),
             FfiConverterOptionalULong.read(buf),
             FfiConverterOptionalLong.read(buf),
+            FfiConverterSequenceTypeTransport.read(buf),
         )
     }
 
@@ -2224,7 +2285,8 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterLong.allocationSize(value.`pairedUnixSecs`) +
             FfiConverterOptionalTypeTransport.allocationSize(value.`reachableVia`) +
             FfiConverterOptionalULong.allocationSize(value.`speedBytesPerSec`) +
-            FfiConverterOptionalLong.allocationSize(value.`lastSeenUnixSecs`)
+            FfiConverterOptionalLong.allocationSize(value.`lastSeenUnixSecs`) +
+            FfiConverterSequenceTypeTransport.allocationSize(value.`availableTransports`)
     )
 
     override fun write(value: DeviceInfo, buf: ByteBuffer) {
@@ -2234,6 +2296,7 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalTypeTransport.write(value.`reachableVia`, buf)
             FfiConverterOptionalULong.write(value.`speedBytesPerSec`, buf)
             FfiConverterOptionalLong.write(value.`lastSeenUnixSecs`, buf)
+            FfiConverterSequenceTypeTransport.write(value.`availableTransports`, buf)
     }
 }
 
@@ -2407,6 +2470,71 @@ public object FfiConverterTypePairingCandidate: FfiConverterRustBuffer<PairingCa
 
 
 /**
+ * Everything this engine currently is, as one call rather than several
+ * facts held twice.
+ */
+data class Status (
+    /**
+     * True while this device advertises and accepts connections.
+     */
+    var `reachable`: kotlin.Boolean
+    , 
+    /**
+     * The port the listener is bound to. Zero before `start` has run.
+     */
+    var `listenPort`: kotlin.UShort
+    , 
+    /**
+     * Whether `adb` was found when the engine started.
+     */
+    var `adbPresent`: kotlin.Boolean
+    , 
+    /**
+     * Where the peer's roots are mounted on this device. `None` until item
+     * 6 is built.
+     */
+    var `mount`: kotlin.String?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeStatus: FfiConverterRustBuffer<Status> {
+    override fun read(buf: ByteBuffer): Status {
+        return Status(
+            FfiConverterBoolean.read(buf),
+            FfiConverterUShort.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: Status) = (
+            FfiConverterBoolean.allocationSize(value.`reachable`) +
+            FfiConverterUShort.allocationSize(value.`listenPort`) +
+            FfiConverterBoolean.allocationSize(value.`adbPresent`) +
+            FfiConverterOptionalString.allocationSize(value.`mount`)
+    )
+
+    override fun write(value: Status, buf: ByteBuffer) {
+            FfiConverterBoolean.write(value.`reachable`, buf)
+            FfiConverterUShort.write(value.`listenPort`, buf)
+            FfiConverterBoolean.write(value.`adbPresent`, buf)
+            FfiConverterOptionalString.write(value.`mount`, buf)
+    }
+}
+
+
+
+/**
  * One transfer, as the Transfers screen shows it.
  */
 data class TransferInfo (
@@ -2449,6 +2577,37 @@ data class TransferInfo (
      * Why it failed or paused, when it did.
      */
     var `error`: FerryException?
+    , 
+    /**
+     * When `pull` created this transfer.
+     */
+    var `startedUnixSecs`: kotlin.Long
+    , 
+    /**
+     * When the state last became `Done` or `Failed`. Cleared by `retry`.
+     */
+    var `endedUnixSecs`: kotlin.Long?
+    , 
+    /**
+     * Which way this transfer moves the file.
+     */
+    var `direction`: Direction
+    , 
+    /**
+     * Bytes per second, measured over this transfer's own bytes across the
+     * last two seconds. `None` unless the state is `Active`.
+     */
+    var `speedBytesPerSec`: kotlin.ULong?
+    , 
+    /**
+     * The chunk count of the file, known once the size is.
+     */
+    var `chunksTotal`: kotlin.UInt
+    , 
+    /**
+     * How many chunks have a verified hash so far.
+     */
+    var `chunksVerified`: kotlin.UInt
     
 ){
     
@@ -2473,6 +2632,12 @@ public object FfiConverterTypeTransferInfo: FfiConverterRustBuffer<TransferInfo>
             FfiConverterTypeTransferState.read(buf),
             FfiConverterOptionalTypeTransport.read(buf),
             FfiConverterOptionalTypeFerryError.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterTypeDirection.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterUInt.read(buf),
         )
     }
 
@@ -2484,7 +2649,13 @@ public object FfiConverterTypeTransferInfo: FfiConverterRustBuffer<TransferInfo>
             FfiConverterULong.allocationSize(value.`bytesDone`) +
             FfiConverterTypeTransferState.allocationSize(value.`state`) +
             FfiConverterOptionalTypeTransport.allocationSize(value.`transport`) +
-            FfiConverterOptionalTypeFerryError.allocationSize(value.`error`)
+            FfiConverterOptionalTypeFerryError.allocationSize(value.`error`) +
+            FfiConverterLong.allocationSize(value.`startedUnixSecs`) +
+            FfiConverterOptionalLong.allocationSize(value.`endedUnixSecs`) +
+            FfiConverterTypeDirection.allocationSize(value.`direction`) +
+            FfiConverterOptionalULong.allocationSize(value.`speedBytesPerSec`) +
+            FfiConverterUInt.allocationSize(value.`chunksTotal`) +
+            FfiConverterUInt.allocationSize(value.`chunksVerified`)
     )
 
     override fun write(value: TransferInfo, buf: ByteBuffer) {
@@ -2496,8 +2667,59 @@ public object FfiConverterTypeTransferInfo: FfiConverterRustBuffer<TransferInfo>
             FfiConverterTypeTransferState.write(value.`state`, buf)
             FfiConverterOptionalTypeTransport.write(value.`transport`, buf)
             FfiConverterOptionalTypeFerryError.write(value.`error`, buf)
+            FfiConverterLong.write(value.`startedUnixSecs`, buf)
+            FfiConverterOptionalLong.write(value.`endedUnixSecs`, buf)
+            FfiConverterTypeDirection.write(value.`direction`, buf)
+            FfiConverterOptionalULong.write(value.`speedBytesPerSec`, buf)
+            FfiConverterUInt.write(value.`chunksTotal`, buf)
+            FfiConverterUInt.write(value.`chunksVerified`, buf)
     }
 }
+
+
+
+/**
+ * Which way a transfer moves a file.
+ *
+ * Always `Pull` until item 5 lands.
+ */
+
+enum class Direction {
+    
+    /**
+     * This device fetched the file from the peer.
+     */
+    PULL,
+    /**
+     * This device sent the file to the peer.
+     */
+    PUSH;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDirection: FfiConverterRustBuffer<Direction> {
+    override fun read(buf: ByteBuffer) = try {
+        Direction.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: Direction) = 4UL
+
+    override fun write(value: Direction, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
 
 
 
@@ -2643,8 +2865,17 @@ sealed class PairingState {
     /**
      * Looking for a device, or on the phone, waiting for a Mac.
      */
-    object Waiting : PairingState()
-    
+    data class Waiting(
+        /**
+         * When this pairing attempt gives up.
+         */
+        val `expiresUnixSecs`: kotlin.Long) : PairingState()
+        
+    {
+        
+
+        companion object
+    }
     
     /**
      * The Mac has candidates to pick from.
@@ -2653,7 +2884,11 @@ sealed class PairingState {
         /**
          * What can be picked.
          */
-        val `candidates`: List<uniffi.ferry_runtime.PairingCandidate>) : PairingState()
+        val `candidates`: List<uniffi.ferry_runtime.PairingCandidate>, 
+        /**
+         * When this pairing attempt gives up.
+         */
+        val `expiresUnixSecs`: kotlin.Long) : PairingState()
         
     {
         
@@ -2668,7 +2903,11 @@ sealed class PairingState {
         /**
          * Six digits, zero padded.
          */
-        val `code`: kotlin.String) : PairingState()
+        val `code`: kotlin.String, 
+        /**
+         * When this pairing attempt gives up.
+         */
+        val `expiresUnixSecs`: kotlin.Long) : PairingState()
         
     {
         
@@ -2723,12 +2962,16 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
     override fun read(buf: ByteBuffer): PairingState {
         return when(buf.getInt()) {
             1 -> PairingState.Idle
-            2 -> PairingState.Waiting
+            2 -> PairingState.Waiting(
+                FfiConverterLong.read(buf),
+                )
             3 -> PairingState.Found(
                 FfiConverterSequenceTypePairingCandidate.read(buf),
+                FfiConverterLong.read(buf),
                 )
             4 -> PairingState.Code(
                 FfiConverterString.read(buf),
+                FfiConverterLong.read(buf),
                 )
             5 -> PairingState.Confirmed(
                 FfiConverterTypeDeviceInfo.read(buf),
@@ -2751,6 +2994,7 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
             // Add the size for the Int that specifies the variant plus the size needed for all fields
             (
                 4UL
+                + FfiConverterLong.allocationSize(value.`expiresUnixSecs`)
             )
         }
         is PairingState.Found -> {
@@ -2758,6 +3002,7 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
             (
                 4UL
                 + FfiConverterSequenceTypePairingCandidate.allocationSize(value.`candidates`)
+                + FfiConverterLong.allocationSize(value.`expiresUnixSecs`)
             )
         }
         is PairingState.Code -> {
@@ -2765,6 +3010,7 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`code`)
+                + FfiConverterLong.allocationSize(value.`expiresUnixSecs`)
             )
         }
         is PairingState.Confirmed -> {
@@ -2791,16 +3037,19 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
             }
             is PairingState.Waiting -> {
                 buf.putInt(2)
+                FfiConverterLong.write(value.`expiresUnixSecs`, buf)
                 Unit
             }
             is PairingState.Found -> {
                 buf.putInt(3)
                 FfiConverterSequenceTypePairingCandidate.write(value.`candidates`, buf)
+                FfiConverterLong.write(value.`expiresUnixSecs`, buf)
                 Unit
             }
             is PairingState.Code -> {
                 buf.putInt(4)
                 FfiConverterString.write(value.`code`, buf)
+                FfiConverterLong.write(value.`expiresUnixSecs`, buf)
                 Unit
             }
             is PairingState.Confirmed -> {
@@ -3289,6 +3538,34 @@ public object FfiConverterSequenceTypeTransferInfo: FfiConverterRustBuffer<List<
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeTransferInfo.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeTransport: FfiConverterRustBuffer<List<Transport>> {
+    override fun read(buf: ByteBuffer): List<Transport> {
+        val len = buf.getInt()
+        return List<Transport>(len) {
+            FfiConverterTypeTransport.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<Transport>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeTransport.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<Transport>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeTransport.write(it, buf)
         }
     }
 }
