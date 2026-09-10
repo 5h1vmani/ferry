@@ -40,7 +40,7 @@ use ferry_core::rpc::{Client, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
     AccessVerb, Actor, Config, DeviceKind, Engine, EngineListener, KeyPair, PairingState, Root,
-    TransferState, generate_key,
+    TransferState, Transport, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -407,6 +407,30 @@ fn two_engines_pair_and_move_a_file() {
         leftovers.is_empty(),
         "no partial file should be left behind, found {leftovers:?}"
     );
+
+    // Batch B, item 3, and the C3 fix: the pull dialled the phone, and the
+    // phone accepted that connection, so a Wi-Fi success should be on
+    // record on both sides, not only the side that dialled. The Mac's own
+    // dial already proves this regardless of this machine's own tools.
+    // `transport_for_inbound` treats a loopback connection as `Usb` on a
+    // machine with no `adb`, the same ambiguity
+    // `status_reports_reachability_listen_port_and_adb_presence` below
+    // works around, so the phone's side of this only tells the two apart on
+    // a machine that has `adb`.
+    assert!(
+        mac.engine.devices()[0]
+            .available_transports
+            .contains(&Transport::Wifi),
+        "the Mac, which dialled, lists Wifi for the phone"
+    );
+    if ferry_core::adb::find_adb().is_some() {
+        assert!(
+            phone.engine.devices()[0]
+                .available_transports
+                .contains(&Transport::Wifi),
+            "the phone, which accepted the connection, lists Wifi for the Mac too"
+        );
+    }
 
     // Forgetting takes the device out of the list and takes its transfer
     // records off the disk.

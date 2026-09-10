@@ -1993,6 +1993,7 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
             stream,
             peer_key,
             transport_for_inbound(shared, addr),
+            addr,
             name,
             &allowed,
         );
@@ -2145,7 +2146,14 @@ fn serve_connection(shared: &Arc<Shared>, connection: Connection, peer: PublicKe
     let transport = transport_for_inbound(shared, connection.remote);
     let key_hex = hex_of(&peer);
     let allowed = register_serving(shared, &key_hex, connection.remote);
-    serve_stream(shared, connection.stream, peer, transport, &allowed);
+    serve_stream(
+        shared,
+        connection.stream,
+        peer,
+        transport,
+        connection.remote,
+        &allowed,
+    );
 }
 
 /// Serve the shared root on one stream, and keep the device list honest.
@@ -2154,13 +2162,14 @@ fn serve_stream(
     mut stream: impl std::io::Read + std::io::Write,
     peer: PublicKey,
     transport: Transport,
+    addr: SocketAddr,
     allowed: &Arc<AtomicBool>,
 ) {
     let Ok((name, _kind)) = exchange_hello(&mut stream, &shared.display_name, shared.kind) else {
         release_serving(shared, &hex_of(&peer), allowed);
         return;
     };
-    serve_named_stream(shared, stream, peer, transport, name, allowed);
+    serve_named_stream(shared, stream, peer, transport, addr, name, allowed);
 }
 
 /// Serve the shared root on a stream whose names were already exchanged.
@@ -2169,12 +2178,13 @@ fn serve_named_stream(
     mut stream: impl std::io::Read + std::io::Write,
     peer: PublicKey,
     transport: Transport,
+    addr: SocketAddr,
     name: String,
     allowed: &Arc<AtomicBool>,
 ) {
     let key_hex = hex_of(&peer);
     let renamed = {
-        let mut state = lock(&shared.state);
+        let state = lock(&shared.state);
         // The handshake proved that the caller held a paired key at that
         // moment. `forget` may have run in the short gap before this
         // connection's switch was registered, and a switch registered after
@@ -2188,8 +2198,6 @@ fn serve_named_stream(
         let name_changed = stored.name != name;
         let paired_unix_secs = stored.paired_unix_secs;
         let kind = stored.kind;
-        let live = state.live_mut(&key_hex);
-        live.reachable_via = Some(transport);
         // A name the peer changed since pairing is stored, so the list stays
         // current without another pairing. Its kind does not change here: it
         // was set once, from the hello sent at pairing time.
@@ -2200,6 +2208,13 @@ fn serve_named_stream(
             kind,
         })
     };
+    // docs/engine-contract.md, batch B, item 3: the dialling side already
+    // calls `mark_reachable` before it serves a connection; the accepting
+    // side never did, so it never recorded a Wi-Fi success and
+    // `available_transports` never listed `Wifi` for the caller once the
+    // connection ended. Calling the same path here records it on both
+    // transports, the same way the dialling side does.
+    mark_reachable(shared, &key_hex, addr, transport);
     if let Some(peer) = renamed {
         // Outside the lock. Writing the list calls `fsync`, and any peer can
         // ask for this by sending a name of its own choosing.
