@@ -2,7 +2,7 @@
 //!
 //! `ferry-core` is a library of protocol pieces. This crate composes them into
 //! one object, [`Engine`], with one callback, [`EngineListener`], and exposes
-//! both through UniFFI so the Swift and Kotlin apps stay thin. Every decision
+//! both through `UniFFI` so the Swift and Kotlin apps stay thin. Every decision
 //! lives on this side of the boundary. The apps show state and forward taps.
 //!
 //! # Shape of the boundary
@@ -133,7 +133,9 @@ pub struct KeyPair {
 impl fmt::Debug for KeyPair {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The private half must never reach a log.
-        f.debug_struct("KeyPair").field("public", &self.public).finish_non_exhaustive()
+        f.debug_struct("KeyPair")
+            .field("public", &self.public)
+            .finish_non_exhaustive()
     }
 }
 
