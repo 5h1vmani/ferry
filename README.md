@@ -71,10 +71,15 @@ The wire protocol is written up in [docs/protocol.md](docs/protocol.md).
 ## Repository layout
 
 ```
-crates/ferry-core   Shared Rust core. Protocol, transports, transfer engine.
-docs/               Protocol document and decision records.
-spike/              Throwaway probes that answer one question each.
-PLAN.md             The build plan, with scope, phases, and cut list.
+crates/ferry-core      Protocol, transports, filesystem, transfer engine.
+crates/ferry-runtime   The Engine both apps link, exposed through UniFFI.
+macos/                 The Mac app. XcodeGen builds it from project.yml.
+android/               The phone app. Gradle with a version catalog.
+design/                Colours, tokens, and error words. Generated into both apps.
+docs/                  Protocol, decisions, jobs, IA, components, voice, audits.
+scripts/               Generators and the environment script.
+spike/                 Throwaway probes that answer one question each.
+PLAN.md                The build plan, with scope, phases, and cut list.
 ```
 
 ## Licence

@@ -384,7 +384,28 @@ authenticated, and from any host on the network. The resume manifest is parsed
 from a file on disk that another process may have edited. A paired device that
 is later compromised is authenticated and hostile at the same time.
 
-## 12. Next actions
+## 12. Where phase 1 stands
 
-Phase 1 is under way. The Rust side is in `crates/ferry-core`. The UX side
-follows `docs/ux-plan.md`, which keeps its own status.
+Done, 10 September 2026:
+
+- `crates/ferry-core`: every protocol piece, the real filesystem, TCP with
+  its limits, discovery, the peer store, the adb tunnel, and the hello
+  exchange. Audited once, six findings fixed. See `docs/audit-1.md`.
+- `crates/ferry-runtime`: the Engine both apps link, behind `UniFFI`. Two
+  engines pair and move a file in one process in under a second. Builds as a
+  shared library for Android.
+- Both app shells build, with every screen in every state from sample data,
+  the tokens, the components, and the error words. No Rust is linked yet.
+
+Not done, in order:
+
+1. Wire each app to the engine through the generated bindings. Key storage in
+   the Keychain and in Android private storage. The foreground service and
+   the reachable notification on the phone. The permission flow on first run.
+2. Run it for real: a Mac and the Pixel, over Wi-Fi, then over the cable.
+   The outcome metrics in `docs/jobs.md` are the acceptance criteria.
+3. Phase 2 work the runtime recorded as limits: a responder that tries each
+   stored key against the first KK message instead of guessing; a manifest
+   request so the first pass of a pull verifies too; a way for `stop` to
+   close a socket held inside an encrypted stream; push, from the Mac to the
+   phone.

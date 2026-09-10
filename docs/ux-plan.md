@@ -10,9 +10,9 @@ survives any one conversation.
 | 2 | Information architecture in `docs/ia.md`: the objects, the navigation on each platform, the states of every screen, and the first run. | Judgment | Done, 10 September 2026 |
 | 3 | The token layer. `design/tokens.json` holds spacing, radius, semantic type styles, and semantic colour roles on top of `design/colors.json`. A script generates `Tokens.swift` and `Tokens.kt`. | Mechanical, delegated | Done, 10 September 2026. Swift typechecked; Kotlin not yet compiled. |
 | 4 | The component inventory: the custom views that appear on more than one screen, each with its states. About six. | Judgment | Done, 10 September 2026, in `docs/components.md` |
-| 5 | The error table: every error the core can emit, mapped to what stopped, why, and what to do. One file, both apps read it. A test checks no cell is empty. | Content | Not started |
+| 5 | The error table: every error the core can emit, mapped to what stopped, why, and what to do. One file, both apps read it. A test checks no cell is empty. | Content | Done, 10 September 2026. 89 rows. The test caught a missing row on its first run. |
 | 6 | Low-fi wireframes of the four screens in their key states. Boxes and real copy. No colour, no polish. Reviewed by Shiva, changed while cheap. | Judgment, then review | Not started |
-| 7 | Build the screens natively. No tests on screens until they have settled. | Mechanical, delegated, reviewed | Not started |
+| 7 | Build the screens natively. No tests on screens until they have settled. | Mechanical, delegated, reviewed | Shells built on both platforms with sample state, 10 September 2026. Not yet wired to the engine. Step 6 was skipped in favour of viewing the real shells; revisit if the structure needs to change. |
 
 ## Decisions already made
 
