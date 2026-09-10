@@ -56,7 +56,7 @@ use ferry_core::tcp;
 
 use crate::engine::{Shared, dial_targets, mark_reachable, notify, remove_record};
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
-use crate::guard::StopAware;
+use crate::guard::{Cut, StopAware};
 use crate::notify::Change;
 use crate::record::{FirstPass, Record, read_record, write_record};
 use crate::state::{key_from_hex, lock};
@@ -147,7 +147,7 @@ pub(crate) fn spawn(shared: &Arc<Shared>, id: &str) {
         }
         row.running = true;
         row.attempt_after = None;
-        row.backoff = BACKOFF_MIN;
+        row.backoff = *lock(&shared.backoff_min);
         state.queue.push_back(id.to_owned());
         let free = state.workers < MAX_WORKERS;
         if free {
@@ -339,6 +339,10 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     };
     mark_reachable(shared, &plan.device_key_hex, addr, via);
 
+    // A cut a test armed is for this dial only. Taking it here, right after
+    // the dial it belongs to, means the dial after this one starts clean.
+    let cut_after = lock(&shared.cut).take();
+    let stream = Cut::new(stream, cut_after, Arc::clone(&shared.wire_bytes));
     // The wrapper fails the next read once `stop` runs, so a transfer does
     // not hold `stop` for a whole file.
     let mut stream = StopAware::new(stream, Arc::clone(&shared.stopping));
@@ -354,7 +358,7 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
             // A link that works starts the backoff again from the shortest
             // wait, so a long transfer that drops now and then is not
             // punished for having lived a long time.
-            row.backoff = BACKOFF_MIN;
+            row.backoff = *lock(&shared.backoff_min);
         }
     }
     notify(shared, Change::Transfers);
@@ -435,7 +439,7 @@ fn first_pass<S: Read + Write>(
 
     let temporary = temp_path(&plan.destination, &plan.suffix).map_err(Outcome::Fatal)?;
     ensure_parents(fs, &plan.destination).map_err(|e| Outcome::Fatal(from_op(e)))?;
-    let chunk = ChunkSize::one_mebibyte();
+    let chunk = *lock(&shared.chunk_size);
     // A record from an earlier run says how much was hashed, and no more of
     // the partial file than that is believed.
     let verified = if changed {

@@ -1,13 +1,15 @@
-//! Two small wrappers that let the engine take something back.
+//! Small wrappers that let the engine take something back, or break something
+//! on purpose.
 //!
 //! [`GuardedFs`] can be switched off, so `forget` really does stop a device
 //! from reading files. [`StopAware`] fails the next read or write once the
 //! engine is stopping, so a transfer thread ends instead of finishing a whole
-//! file first.
+//! file first. [`Cut`] fails a stream after a chosen number of bytes, so a
+//! test can break a transfer's link at an exact point.
 
 use std::io::{self, Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ferry_core::localfs::LocalFs;
 use ferry_core::ops::{Entry, OpError};
@@ -133,6 +135,108 @@ impl<S: Write> Write for StopAware<S> {
             return Err(Self::stopping_error());
         }
         self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// A stream that fails once a chosen number of bytes have crossed it.
+///
+/// It counts every byte read and every byte written, in the order they
+/// happen, read and write sharing one count. Once the count reaches the
+/// configured limit, the stream fails with [`io::ErrorKind::ConnectionAborted`].
+/// A read or a write that would cross the limit is cut short at the limit
+/// instead, so the failure lands on exactly that byte, whatever size the
+/// caller's buffer is or the underlying stream hands back.
+///
+/// This is how `tests/resume_sweep.rs` breaks a transfer's link at an exact
+/// byte, so a sweep over many cut points can prove that a resume refetches at
+/// most one chunk, however and whenever the link broke. Every byte is also
+/// added to a running total kept in `Shared`, whether or not a limit is
+/// armed, so a test can read back how much a pull cost on the wire.
+pub(crate) struct Cut<S> {
+    inner: S,
+    /// The byte count this stream fails at, once reached. `None` means this
+    /// dial was not chosen for a cut.
+    limit: Option<u64>,
+    /// Bytes this instance has passed, read and write combined, in order.
+    counted: u64,
+    /// Every byte is added here too, cut or not.
+    wire_bytes: Arc<AtomicU64>,
+}
+
+impl<S> Cut<S> {
+    /// Wrap a stream. `limit` is `None` for an ordinary dial. `wire_bytes` is
+    /// the running total that [`crate::Engine::wire_bytes`] reads back.
+    pub(crate) fn new(inner: S, limit: Option<u64>, wire_bytes: Arc<AtomicU64>) -> Self {
+        Self {
+            inner,
+            limit,
+            counted: 0,
+            wire_bytes,
+        }
+    }
+
+    /// An error that says this stream was cut at the byte the test chose.
+    ///
+    /// The kind matches [`StopAware`]'s: never retried by `read_exact` or
+    /// `write_all`, so the call fails and the attempt ends instead of
+    /// spinning.
+    fn cut_error() -> io::Error {
+        io::Error::new(io::ErrorKind::ConnectionAborted, "the wire was cut")
+    }
+
+    /// How many more bytes may cross before the limit, or `None` when no
+    /// limit is armed.
+    fn left(&self) -> Option<u64> {
+        self.limit.map(|limit| limit.saturating_sub(self.counted))
+    }
+
+    /// Note that `n` more bytes crossed, cut or not.
+    fn account(&mut self, n: usize) {
+        let n = u64::try_from(n).unwrap_or(u64::MAX);
+        self.counted = self.counted.saturating_add(n);
+        self.wire_bytes.fetch_add(n, Ordering::SeqCst);
+    }
+}
+
+impl<S: Read> Read for Cut<S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let Some(left) = self.left() else {
+            let n = self.inner.read(out)?;
+            self.account(n);
+            return Ok(n);
+        };
+        if left == 0 {
+            return Err(Self::cut_error());
+        }
+        // Ask the inner stream for no more than what remains before the cut,
+        // so a read that would cross it lands short instead.
+        let cap = usize::try_from(left).unwrap_or(out.len()).min(out.len());
+        let n = self.inner.read(&mut out[..cap])?;
+        self.account(n);
+        Ok(n)
+    }
+}
+
+impl<S: Write> Write for Cut<S> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let Some(left) = self.left() else {
+            let n = self.inner.write(bytes)?;
+            self.account(n);
+            return Ok(n);
+        };
+        if left == 0 {
+            return Err(Self::cut_error());
+        }
+        let cap = usize::try_from(left)
+            .unwrap_or(bytes.len())
+            .min(bytes.len());
+        let n = self.inner.write(&bytes[..cap])?;
+        self.account(n);
+        Ok(n)
     }
 
     fn flush(&mut self) -> io::Result<()> {

@@ -2,12 +2,13 @@
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ferry_core::adb::{Adb, find_adb};
+use ferry_core::chunk::ChunkSize;
 use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
@@ -19,7 +20,9 @@ use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
 use zeroize::Zeroize;
 
-use crate::errors::{bad_config, failed, from_noise, from_path, from_peer, from_rpc, from_tcp};
+use crate::errors::{
+    bad_config, failed, from_chunk_size, from_noise, from_path, from_peer, from_rpc, from_tcp,
+};
 use crate::guard::{GuardedFs, StopAware};
 use crate::notify::{Change, Notify};
 use crate::record::{Record, read_record};
@@ -104,6 +107,23 @@ pub(crate) struct Shared {
     pub(crate) joins: Mutex<Vec<JoinHandle<()>>>,
     /// How long pairing runs before it gives up.
     pub(crate) pairing_timeout: Mutex<Duration>,
+    /// The shortest wait before a transfer tries again. `BACKOFF_MIN` unless
+    /// a test lowers it.
+    pub(crate) backoff_min: Mutex<Duration>,
+    /// The chunk size the next first pass uses. `ChunkSize::one_mebibyte()`
+    /// unless a test changes it.
+    pub(crate) chunk_size: Mutex<ChunkSize>,
+    /// The byte count the next dial fails at, if a test armed one.
+    ///
+    /// Taken, and cleared, by the dial that carries it, so only that one dial
+    /// is cut.
+    pub(crate) cut: Mutex<Option<u64>>,
+    /// Bytes moved on the wire since this engine started, across every dial.
+    ///
+    /// Counted by [`crate::guard::Cut`], whether or not a cut is armed. A
+    /// test reads this back through [`Engine::wire_bytes`] to measure what a
+    /// pull cost.
+    pub(crate) wire_bytes: Arc<AtomicU64>,
     /// Held by whichever thread is writing the paired device list.
     ///
     /// Writing that list calls `fsync`, which is slow, so the state lock is
@@ -385,6 +405,10 @@ impl Engine {
             adb: find_adb().map(Adb::new),
             joins: Mutex::new(Vec::new()),
             pairing_timeout: Mutex::new(PAIRING_TIMEOUT),
+            backoff_min: Mutex::new(BACKOFF_MIN),
+            chunk_size: Mutex::new(ChunkSize::one_mebibyte()),
+            cut: Mutex::new(None),
+            wire_bytes: Arc::new(AtomicU64::new(0)),
             peers_write: Mutex::new(()),
             dir_lock,
         });
@@ -907,6 +931,48 @@ impl Engine {
     #[doc(hidden)]
     pub fn set_pairing_timeout(&self, timeout: Duration) {
         *lock(&self.shared.pairing_timeout) = timeout;
+    }
+
+    /// Use a different backoff floor. For tests only.
+    ///
+    /// A test that breaks a link on purpose does not want to wait out the
+    /// ordinary one second floor before the retry it is waiting for.
+    #[doc(hidden)]
+    pub fn set_backoff(&self, min: Duration) {
+        *lock(&self.shared.backoff_min) = min;
+    }
+
+    /// Use a different chunk size for the next first pass. For tests only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ChunkSizeError` code when `bytes` is below 1024, above
+    /// [`ChunkSize::MAX`], or not a power of two.
+    #[doc(hidden)]
+    pub fn set_chunk_size(&self, bytes: u32) -> Result<(), FerryError> {
+        let chunk = ChunkSize::new(bytes).map_err(from_chunk_size)?;
+        *lock(&self.shared.chunk_size) = chunk;
+        Ok(())
+    }
+
+    /// Break the next dial after `after_bytes` bytes cross it, read and
+    /// write combined. For tests only.
+    ///
+    /// Armed for one dial only. The dial that carries it takes it, and the
+    /// dial after that has none, so a retry after the cut runs clean.
+    #[doc(hidden)]
+    pub fn set_cut(&self, after_bytes: u64) {
+        *lock(&self.shared.cut) = Some(after_bytes);
+    }
+
+    /// Bytes moved on the wire since this engine started, across every dial.
+    ///
+    /// Counts every byte a transfer's stream reads or writes, whether or not
+    /// a cut is armed. For tests only.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn wire_bytes(&self) -> u64 {
+        self.shared.wire_bytes.load(Ordering::SeqCst)
     }
 
     /// Remove every `adb` forward this engine opened.
