@@ -268,7 +268,7 @@
     },
     "RootsError::RootNameInvalid": {
       "stopped": "The shared folders were not set.",
-      "why": "A folder's name must be 1 to 64 bytes and hold no slash or control character. It must not be a dot or two dots.",
+      "why": "A folder's name must be 1 to 64 bytes. It must hold no slash. It must hold no backslash. It must hold no control character. It must not be a dot. It must not be two dots.",
       "todo": "Give the folder a plain name and try again."
     },
     "RootsError::RootNameTaken": {
@@ -278,7 +278,7 @@
     },
     "RootsError::RootNotAFolder": {
       "stopped": "The shared folders were not set.",
-      "why": "A folder's path is not an existing directory.",
+      "why": "A folder's path is not an existing folder.",
       "todo": "Choose a folder that exists."
     },
     "RootsError::RootOverlaps": {

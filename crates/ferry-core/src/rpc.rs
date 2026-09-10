@@ -107,7 +107,7 @@ pub trait FileOps: Send + Sync {
     /// # Errors
     ///
     /// Returns [`OpError::NotEmpty`] for a directory holding anything. Delete
-    /// is not recursive in version 1.
+    /// is not recursive in version 2.
     fn delete(&self, path: &RemotePath) -> Result<(), OpError>;
 }
 

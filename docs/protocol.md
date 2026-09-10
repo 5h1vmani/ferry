@@ -173,7 +173,7 @@ field below, which names the frame type and is unrelated.
 |---|---|---|
 | `kind` | 1 byte | Always 4. |
 | `request_id` | 4 bytes | Always 0. |
-| payload | 2 to 65 bytes | The display name (1 to 64 bytes, no control character), then one byte for the device's kind: 1 is a phone, 2 is a Mac. |
+| payload | 6 to 69 bytes | The display name as a length-prefixed piece of text (a `u32` length, then 1 to 64 bytes, no control character), then one byte for the device's kind: 1 is a phone, 2 is a Mac. |
 
 ## 6. Framing
 
@@ -314,22 +314,24 @@ folder. A peer never sees anything above any root, and never sees a root's
 real path, only its name.
 
 Every path begins with a root's name as its first segment: `Desktop/Q3
-notes.md` names a file inside the root called `Desktop`. `list("")` returns
-one directory entry per root: the root's name, size 0, and the modified time
-of its folder, in one page, with no cursor. `stat("")` is a directory entry
-for that same top level.
+notes.md` names a file inside the root called `Desktop`. The first segment
+finds its root ignoring case. `list("")` returns one directory entry per
+root: the root's name, size 0, and the modified time of its folder, in one
+page, with no cursor. `stat("")` is a directory entry for that same top
+level.
 
 A path whose first segment names no root is `NotFound`. Writing, truncating,
 making a directory, deleting, or renaming anything inside a root marked not
-writable is `PermissionDenied`. Creating, deleting, or renaming a root
-itself, addressed by a path of exactly one segment, is `PermissionDenied` as
-well: a root is configured on the device, not made or removed through file
-operations. `rename` across two different roots is `Unsupported`; a file
-moves within a root, never between two.
+writable is `PermissionDenied`. Setting a modified time inside a root marked
+not writable is `PermissionDenied` too. Creating, deleting, or renaming a
+root itself, addressed by a path of exactly one segment, is
+`PermissionDenied` as well: a root is configured on the device, not made or
+removed through file operations. `rename` across two different roots is
+`Unsupported`; a file moves within a root, never between two.
 
 On the Mac each root is a folder the user chooses. On the phone each root is
-a folder such as its internal storage. Two roots may point at the same
-folder on disk.
+a folder such as its internal storage. No two roots share a folder or nest
+one inside the other.
 
 Implemented in `crates/ferry-core/src/roots.rs`, which dispatches each call
 to a `LocalFs` per root; `LocalFs` itself is unchanged and still serves one

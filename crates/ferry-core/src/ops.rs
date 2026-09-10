@@ -175,7 +175,7 @@ pub enum Request {
     /// Delete a file, or a directory that is empty.
     ///
     /// Deleting a directory that is not empty is refused. `docs/protocol.md`
-    /// section 7 explains why version 1 has no recursive delete.
+    /// section 8 explains why version 2 has no recursive delete.
     Delete {
         /// The file or directory to delete.
         path: RemotePath,
