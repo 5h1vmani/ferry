@@ -142,8 +142,7 @@ enum EngineAdapter {
         return ChunkFacts(
             verified: transfer.chunksVerified,
             total: transfer.chunksTotal,
-            failedIndex: transfer.error.flatMap(failedChunkIndex(in:)),
-            isCounted: true
+            failedIndex: transfer.error.flatMap(failedChunkIndex(in:))
         )
     }
 

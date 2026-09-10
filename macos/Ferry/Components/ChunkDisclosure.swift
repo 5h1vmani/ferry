@@ -2,10 +2,10 @@
 // transfer, one interaction away and never in the way.
 //
 // Part of the Transfers row, not a component of its own
-// (docs/components.md, ProgressLine). It appears only where the engine
-// holds a chunk-level fact, which today means only after a verify failure.
-// Collapsed by default, always: a person reading an error is not reading a
-// chunk list yet.
+// (docs/components.md, ProgressLine). It appears once a transfer's size is
+// known, which is every transfer past its first `stat`. Collapsed by
+// default, always: a person reading an error is not reading a chunk list
+// yet.
 
 import SwiftUI
 
@@ -22,12 +22,10 @@ struct ChunkDisclosure: View {
                 }
                 // Verified chunks are summarised and never listed: ninety
                 // rows saying "verified" is not depth, it is noise.
-                if chunks.isCounted {
-                    row(S.chunks.verifiedSummary(
-                        verified: Int(chunks.verified),
-                        total: Int(chunks.total)
-                    ))
-                }
+                row(S.chunks.verifiedSummary(
+                    verified: Int(chunks.verified),
+                    total: Int(chunks.total)
+                ))
             }
             .padding(.top, FerrySpace.s1)
         } label: {
@@ -35,17 +33,12 @@ struct ChunkDisclosure: View {
                 Text(S.chunks.show)
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.accentText)
-                // The count is left out while the engine does not publish
-                // it (docs/engine-contract.md, item 7). An unknown part is left
-                // out, not guessed.
-                if chunks.isCounted {
-                    Text(S.chunks.verified(
-                        verified: Int(chunks.verified),
-                        total: Int(chunks.total)
-                    ))
-                    .font(FerryFont.mono)
-                    .foregroundStyle(FerryColor.textSecondary)
-                }
+                Text(S.chunks.verified(
+                    verified: Int(chunks.verified),
+                    total: Int(chunks.total)
+                ))
+                .font(FerryFont.mono)
+                .foregroundStyle(FerryColor.textSecondary)
             }
         }
         .accessibilityHint(S.chunks.accessibilityHint)

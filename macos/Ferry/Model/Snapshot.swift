@@ -163,8 +163,6 @@ struct ChunkFacts: Equatable {
     let total: UInt32
     /// The chunk named in the error, when one was.
     let failedIndex: UInt32?
-    /// True when the counts are the engine's and not a placeholder.
-    let isCounted: Bool
 }
 
 /// Job 7: whether Ferry copies new photos from one device on its own, and
