@@ -232,16 +232,18 @@ with its reason. They are listed here to show the shape, not to bind anyone.
 
 ### Limits that are designed but not built
 
-These are needed and are not yet enforced by any code. Two of them cannot be
-built until there is a real socket, because a blocking read has no timeout
-until then.
+These are needed and are not yet enforced by any code.
 
 | Limit | Waiting on |
 |---|---|
 | Requests in flight per connection | Pipelining, which is not built |
 | Outstanding response bytes per connection | Pipelining, which is not built |
-| Handshake timeout | The TCP transport |
-| Connections awaiting a handshake | The TCP transport |
+
+Two limits that were in this table are now enforced by
+`crates/ferry-core/src/tcp.rs`. A socket carries a ten second timeout from
+accept until the Noise handshake succeeds. At most eight connections may sit
+between accept and a finished handshake, and the ninth is refused before any
+byte is read from it.
 
 They are recorded here rather than as constants in `limits.rs`. A constant that
 nothing checks reads as protection during a review and provides none.
@@ -410,7 +412,10 @@ address. After pairing, `KK` then fails and the connection stalls, which is
 annoying but not dangerous. During pairing it is the attack described in
 section 4, which the pairing mode and the commitment step address.
 
-Service type and exact TXT contents: not designed yet.
+The service type is `_ferry._tcp.local.`. The instance name is sixteen
+lowercase hex characters from the system random source. The TXT record holds
+one key, `v`, whose value is the protocol version in decimal. Implemented in
+`crates/ferry-core/src/discovery.rs`.
 
 Open question. Android needs a `MulticastLock` for multicast receive, and
 recent macOS requires a local network permission. Both are confirmed during
