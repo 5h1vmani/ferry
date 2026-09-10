@@ -1,10 +1,13 @@
 # Checks that need a person at the keyboard
 
-Three questions block parts of this project. None of them can be answered by
-code. Each needs someone to plug in a cable, type a password, or click through
-Xcode.
+Two questions block parts of this project. Neither can be answered by code. One
+needs a cable plugged in, the other needs an Apple ID password.
 
 Do them in this order. Task 1 is the shortest and may save the most work.
+
+A third task about FSKit used to sit here. It is answered and removed. Public
+bug reports run to June 2026 and no source confirms a fix, so the Finder mount
+stays on WebDAV. See decision record 8 for the sources.
 
 For each one, copy what you see and send it back. There is a short "what to
 send me" list at the end of every task.
@@ -170,50 +173,6 @@ folder does not exist. Any change is the result.
 If the App Group worked with no red text, the Finder integration is free.
 If it showed an error, the good version costs 99 US dollars a year, and the
 free version we already proved works stays as the plan.
-
----
-
-## Task 3: does FSKit work on this version of macOS?
-
-**Time: about 20 minutes. Do Task 2 first.**
-
-**Why this matters.** The plan says a Mac technology called FSKit is broken. That
-note is based on macOS 26.1 and 26.2. Your Mac runs 26.6.2, which is four
-updates later. If FSKit works now, it is a cleaner way to show the phone in
-Finder than the method we proved.
-
-I do not know whether it works. That is exactly why this is worth 20 minutes.
-
-### Steps
-
-**1.** Open **Xcode**. Click **File**, then **New**, then **Project**. Choose
-**macOS**, then **App**. Name it `FSKitProbe` and save it to the **Desktop**.
-
-**2.** Set the team the same way as Task 2: click the project icon, click the
-target, open **Signing & Capabilities**, tick **Automatically manage signing**,
-and choose your Personal Team.
-
-**3.** Click **File**, then **New**, then **Target**. Choose **macOS** at the
-top.
-
-**4.** In the list of target types, look for anything with **FSKit** or
-**File System** in its name.
-
-**Stop here and tell me what you find.** There are three possible answers, and
-all three are useful:
-
-- You found something with FSKit or File System in the name. Tell me its exact
-  name and take a screenshot of that list.
-- The list has nothing like that. Tell me, and take a screenshot of the whole
-  list so I can see what is offered.
-- Something else happened. Describe it.
-
-**5.** Drag `FSKitProbe` to the Trash when you are done.
-
-### What to send me
-
-- A screenshot of the target list from step 4.
-- The exact name of any FSKit or File System option, if one exists.
 
 ---
 

@@ -296,11 +296,7 @@ is free and still gives a Finder mount.
    the phone in, turn on USB tethering, and look for a new interface with an
    address in `ifconfig`. If it works, most of phase 3 disappears. Note that
    tethering routes the Mac's internet through the phone.
-5. Does FSKit work on macOS 26.6? The risk below cites macOS 26.1 and 26.2, and
-   this machine runs 26.6.2. A working FSKit extension would be a real
-   filesystem, with no HTTP server, no locking, and no authentication problem.
-   A hello-world extension settles it in an afternoon, after the Xcode sign-in.
-6. Does mDNS need a `MulticastLock` on Android and a local network permission
+5. Does mDNS need a `MulticastLock` on Android and a local network permission
    on macOS 26? Confirm during phase 1.
 
 Throughput is deliberately not an open question. USB is a reliability feature,
@@ -310,9 +306,11 @@ a fake server on localhost.
 
 ## 9. Known risks
 
-- Third-party FSKit extensions were broken on macOS 26.1 and 26.2. That is four
-  point releases behind this machine, so the claim is stale. Retest before
-  ruling FSKit out. Until then, build the Finder integration on WebDAV.
+- FSKit is not usable for this yet. Three separate faults are on public record,
+  the most recent report is dated 22 June 2026 on macOS 26.5.1, and no source
+  confirms a fix in 26.6. FSKit does work for a read-only block device, which
+  is a much easier case than a phone. Build the Finder integration on WebDAV.
+  See decision record 8 for the sources.
 - The Android app holds access to all shared storage. If the app or its
   transport is ever compromised, everything in shared storage is exposed. The
   fixed shared root in section 4 limits that, and it is the reason the root is
@@ -381,5 +379,4 @@ is later compromised is authenticated and hostile at the same time.
 1. Run the USB tethering test. Five minutes, and it may remove most of phase 3.
 2. Sign an Apple ID into Xcode. That answers open question 1, and it also gives
    a stable signing certificate, which phase 1 needs for Keychain storage.
-3. Test FSKit on macOS 26.6, once Xcode is signed in.
-4. Start phase 1.
+3. Start phase 1.

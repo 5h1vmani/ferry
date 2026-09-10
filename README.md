@@ -64,6 +64,8 @@ Each decision below has a short record in [docs/decisions](docs/decisions).
 - [USB is a reliability feature, not a speed feature](docs/decisions/0004-usb-is-reliability.md)
 - [Session resume instead of mid-transfer failover](docs/decisions/0005-session-resume-not-failover.md)
 - [Commit and reveal during pairing](docs/decisions/0006-pairing-commit-and-reveal.md)
+- [Blocking input and output, not async](docs/decisions/0007-blocking-io-not-async.md)
+- [The Finder mount uses WebDAV, not FSKit](docs/decisions/0008-webdav-not-fskit.md)
 
 The wire protocol is written up in [docs/protocol.md](docs/protocol.md).
 
