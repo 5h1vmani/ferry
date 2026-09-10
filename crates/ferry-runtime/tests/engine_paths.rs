@@ -1681,6 +1681,207 @@ fn a_garbage_batch_file_is_removed_when_the_engine_starts() {
 }
 
 // ---------------------------------------------------------------------------
+// Batch D audit, D8: behaviours the audit found missing tests for.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn pull_folder_creates_nothing_when_the_peer_folder_is_too_deep() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    // The folder passed to `pull_folder` is depth 1, so 32 more nested
+    // folders below it reaches depth 33, one past the documented 32 level
+    // cap (design/errors.json, Runtime::FolderTooLarge).
+    let mut path = phone.shared_root().join("Camera");
+    std::fs::create_dir(&path).expect("a folder for the camera roll");
+    for _ in 0..32 {
+        path.push("Sub");
+        std::fs::create_dir(&path).expect("a nested folder");
+    }
+    std::fs::write(path.join("deep.jpg"), sample_bytes(16)).expect("a file at the bottom");
+
+    let error = mac
+        .engine
+        .pull_folder(phone_key, "Root/Camera".to_owned())
+        .expect_err("a folder nested this deep should be refused");
+    assert_eq!(code_of_error(&error), "Runtime::FolderTooLarge");
+    assert!(
+        mac.engine.batches().is_empty(),
+        "a refused folder listing creates no batch"
+    );
+    assert!(
+        mac.engine.transfers().is_empty(),
+        "a refused folder listing creates no transfer"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// A filesystem with one file that always fails once it is fetched: `list`
+/// finds it, but `stat` refuses it. Stands in for a peer whose one file
+/// cannot be read, so the transfer it becomes reaches `Failed` at once.
+struct AlwaysMissingFs;
+
+impl FileOps for AlwaysMissingFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Ok((
+            vec![Entry {
+                name: "missing.bin".to_owned(),
+                kind: FileKind::File,
+                size: 4,
+                modified_unix_secs: 1_000_000,
+            }],
+            None,
+        ))
+    }
+    fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+        Err(OpError::NotFound)
+    }
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+}
+
+#[test]
+fn retry_keeps_a_transfers_batch_id_and_clears_the_batchs_end_time() {
+    let side = build("Vamana");
+    let peer = start_peer_with(&side.key, Arc::new(AlwaysMissingFs));
+    pair_with_peer(&side, &peer);
+
+    let batch_id = side
+        .engine
+        .pull_folder(key_hex(&peer.key), "Camera".to_owned())
+        .expect("the folder copy is accepted; its one file fails once fetched");
+
+    let engine = Arc::clone(&side.engine);
+    let wanted = batch_id.clone();
+    poll_until("the batch to fail", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted && b.state == TransferState::Failed)
+    });
+    let failed_batch = side
+        .engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the failed batch is listed");
+    assert!(
+        failed_batch.ended_unix_secs.is_some(),
+        "a batch with nothing left moving has an end time"
+    );
+
+    let transfer_id = side
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.batch_id.as_deref() == Some(batch_id.as_str()))
+        .expect("the one transfer the batch covers")
+        .id;
+
+    side.engine
+        .retry(transfer_id.clone())
+        .expect("a failed transfer can be retried");
+
+    wait_transfer(&side, &transfer_id, "retry to requeue it under the same batch", |t| {
+        t.state == TransferState::Queued && t.batch_id.as_deref() == Some(batch_id.as_str())
+    });
+    let retried_batch = side
+        .engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the batch is still listed");
+    assert_eq!(
+        retried_batch.ended_unix_secs, None,
+        "a batch with something moving again has no end time"
+    );
+
+    side.engine.stop();
+    peer.close();
+}
+
+#[test]
+fn a_batch_whose_transfers_all_finished_is_dropped_and_its_file_deleted_at_load() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    std::fs::create_dir(phone.shared_root().join("Camera")).expect("a folder for the camera roll");
+    std::fs::write(phone.shared_root().join("Camera/a.bin"), sample_bytes(1024))
+        .expect("the phone's shared folder should accept a file");
+
+    let batch_id = mac
+        .engine
+        .pull_folder(phone_key, "Root/Camera".to_owned())
+        .expect("the folder copy should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = batch_id.clone();
+    poll_until("the batch to finish", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted && b.state == TransferState::Done)
+    });
+
+    let batch_file = mac.data.path().join("batches").join(&batch_id);
+    assert!(
+        batch_file.exists(),
+        "the batch record is on disk while the batch is still known"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+
+    // A new engine on the same folders. The one transfer reached Done, so
+    // its own record does not survive: none of this batch's transfer ids
+    // name a surviving row.
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        mac.key.clone(),
+        mac.data.path(),
+        mac.shared.path(),
+        mac.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+
+    assert!(
+        engine.batches().iter().all(|b| b.id != batch_id),
+        "a batch none of whose transfers survived is dropped at load"
+    );
+    assert!(
+        !batch_file.exists(),
+        "its file is removed at load, the same way a device's forgotten batches are"
+    );
+
+    engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 7: no callback after stop returned.
 // ---------------------------------------------------------------------------
 

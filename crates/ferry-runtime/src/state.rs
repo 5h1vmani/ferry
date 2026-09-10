@@ -587,10 +587,10 @@ fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceLive, Transport, TransferRow, WIFI_SUCCESS_LIFETIME_SECS, available_transports,
-        clear_gone_usb_forwards,
+        BatchRow, DeviceLive, Transport, TransferRow, WIFI_SUCCESS_LIFETIME_SECS,
+        available_transports, clear_gone_usb_forwards, worst_batch_state,
     };
-    use crate::{Direction, TransferState};
+    use crate::{Direction, Origin, TransferState};
     use ferry_core::chunk::ChunkSize;
     use ferry_core::path::RemotePath;
     use std::collections::BTreeMap;
@@ -648,6 +648,123 @@ mod tests {
         assert_eq!(
             info.chunks_verified, 2,
             "1 MiB done is 2 whole 512 KiB chunks, not 1"
+        );
+    }
+
+    /// A batch with `transfer_ids` naming every row in `transfers`, in
+    /// order, one row per name given.
+    fn sample_batch(transfers: &BTreeMap<String, TransferRow>) -> BatchRow {
+        BatchRow {
+            id: "device-batch".to_owned(),
+            device_key_hex: "device".to_owned(),
+            label: "Root/Camera".to_owned(),
+            direction: Direction::Pull,
+            origin: Origin::Manual,
+            started_unix_secs: 0,
+            transfer_ids: transfers.keys().cloned().collect(),
+            done_files: 0,
+            done_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn worst_batch_state_prefers_failed_over_done() {
+        let done_a = TransferRow {
+            state: TransferState::Done,
+            ..sample_row(ChunkSize::one_mebibyte(), 10, 10)
+        };
+        let failed = TransferRow {
+            state: TransferState::Failed,
+            ..sample_row(ChunkSize::one_mebibyte(), 10, 0)
+        };
+        let done_b = TransferRow {
+            state: TransferState::Done,
+            ..sample_row(ChunkSize::one_mebibyte(), 10, 10)
+        };
+        let rows = [&done_a, &failed, &done_b];
+        assert_eq!(
+            worst_batch_state(&rows),
+            TransferState::Failed,
+            "one Failed row among Done ones is still the worst state"
+        );
+    }
+
+    #[test]
+    fn worst_batch_state_prefers_paused_over_active() {
+        let active = TransferRow {
+            state: TransferState::Active,
+            ..sample_row(ChunkSize::one_mebibyte(), 10, 5)
+        };
+        let paused = TransferRow {
+            state: TransferState::Paused,
+            ..sample_row(ChunkSize::one_mebibyte(), 10, 5)
+        };
+        let rows = [&active, &paused];
+        assert_eq!(
+            worst_batch_state(&rows),
+            TransferState::Paused,
+            "Paused ranks worse than Active"
+        );
+    }
+
+    #[test]
+    fn batch_info_speed_sums_only_the_active_rows() {
+        let mut transfers = BTreeMap::new();
+        transfers.insert(
+            "device-1".to_owned(),
+            TransferRow {
+                id: "device-1".to_owned(),
+                state: TransferState::Active,
+                speed_bytes_per_sec: Some(100),
+                ..sample_row(ChunkSize::one_mebibyte(), 10, 5)
+            },
+        );
+        transfers.insert(
+            "device-2".to_owned(),
+            TransferRow {
+                id: "device-2".to_owned(),
+                state: TransferState::Active,
+                speed_bytes_per_sec: Some(50),
+                ..sample_row(ChunkSize::one_mebibyte(), 10, 5)
+            },
+        );
+        transfers.insert(
+            "device-3".to_owned(),
+            TransferRow {
+                id: "device-3".to_owned(),
+                state: TransferState::Paused,
+                // Set to prove it is excluded, not merely absent.
+                speed_bytes_per_sec: Some(9_999),
+                ..sample_row(ChunkSize::one_mebibyte(), 10, 5)
+            },
+        );
+
+        let info = sample_batch(&transfers).info(&transfers);
+        assert_eq!(
+            info.speed_bytes_per_sec,
+            Some(150),
+            "only the two Active rows' speeds are summed"
+        );
+    }
+
+    #[test]
+    fn batch_info_speed_is_none_with_no_active_row() {
+        let mut transfers = BTreeMap::new();
+        transfers.insert(
+            "device-1".to_owned(),
+            TransferRow {
+                id: "device-1".to_owned(),
+                state: TransferState::Paused,
+                // Set to prove it is excluded, not merely absent.
+                speed_bytes_per_sec: Some(100),
+                ..sample_row(ChunkSize::one_mebibyte(), 10, 5)
+            },
+        );
+
+        let info = sample_batch(&transfers).info(&transfers);
+        assert_eq!(
+            info.speed_bytes_per_sec, None,
+            "no row is Active, so there is nothing to report a speed for"
         );
     }
 
