@@ -176,13 +176,18 @@ its download folder in its own settings and passes them in `Config` at the
 next launch. No new engine file.
 
 **Root rules.** A name is 1 to 64 bytes of UTF-8, holds no control
-character and no `/`, and is not `.` or `..`. Names are unique ignoring
-case. A path must be an existing directory. There is at least one root.
-Two roots may overlap on disk. Each root keeps every refusal `LocalFs`
-already makes: symlinks, special files, and paths that leave the folder.
+character, no `/` and no `\`, and is not `.` or `..`. Names are unique
+ignoring case, and a peer's first segment finds its root ignoring case.
+A path must be an existing directory. There is at least one root. No two
+roots share a folder or nest one inside the other, because a read-only
+root inside a writable one could be written through the other name. Each
+root keeps every refusal `LocalFs` already makes: symlinks, special
+files, and paths that leave the folder.
 
-**Errors.** `Runtime::RootNameInvalid`, `Runtime::RootNameTaken`,
-`Runtime::RootNotAFolder`, `Runtime::NoRoots`.
+**Errors.** `RootsError::RootNameInvalid`, `RootsError::RootNameTaken`,
+`RootsError::RootNotAFolder`, `RootsError::RootOverlaps`,
+`RootsError::NoRoots`. The runtime forwards core error names as it does
+for every other core error.
 
 **Protocol.** Every path begins with a root name. `list("")` returns one
 directory entry per root: the root's name, size 0, modified time of the
