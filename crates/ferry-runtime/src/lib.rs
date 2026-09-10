@@ -321,6 +321,9 @@ pub struct TransferInfo {
     pub ended_unix_secs: Option<i64>,
     /// Which way this transfer moves the file.
     pub direction: Direction,
+    /// Bytes per second, measured over this transfer's own bytes across the
+    /// last two seconds. `None` unless the state is `Active`.
+    pub speed_bytes_per_sec: Option<u64>,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

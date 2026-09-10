@@ -641,10 +641,42 @@ fn stop_returns_while_a_transfer_is_moving() {
     wait_transfer(&side, &id, "the transfer to start moving", |t| {
         t.bytes_done > 0
     });
+    // Item 8: speed_bytes_per_sec is measured over the last two seconds of
+    // this transfer's own bytes, so it takes a moment to appear.
+    wait_transfer(&side, &id, "a per-transfer speed to appear", |t| {
+        t.speed_bytes_per_sec.is_some()
+    });
+    let moving = side
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the transfer should be listed while it moves");
+    assert_eq!(
+        moving.state,
+        TransferState::Active,
+        "a speed is reported only while the state is Active"
+    );
+    assert!(
+        moving.speed_bytes_per_sec.expect("checked above") > 0,
+        "a transfer moving real bytes has a nonzero speed"
+    );
 
     let started = Instant::now();
     side.engine.stop();
     let took = started.elapsed();
+
+    let stopped = side
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the transfer is still listed once stop returns");
+    assert_eq!(
+        stopped.speed_bytes_per_sec, None,
+        "speed_bytes_per_sec is None once the state is no longer Active"
+    );
+
     peer.close();
     assert!(took < Duration::from_secs(3), "stop took {took:?}");
 }

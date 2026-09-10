@@ -815,6 +815,7 @@ impl Engine {
                     started_unix_secs: now_unix_secs(),
                     ended_unix_secs: None,
                     direction: Direction::Pull,
+                    speed_bytes_per_sec: None,
                 },
             );
             id
@@ -1191,6 +1192,7 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
         // regardless; see `Meta::ended_unix_secs`.
         ended_unix_secs: None,
         direction: meta.direction,
+        speed_bytes_per_sec: None,
     }
 }
 

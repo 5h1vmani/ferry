@@ -245,6 +245,9 @@ pub(crate) struct TransferRow {
     pub(crate) ended_unix_secs: Option<i64>,
     /// Which way this transfer moves the file. Always `Pull` until item 5.
     pub(crate) direction: Direction,
+    /// This transfer's own bytes per second, over the last two seconds.
+    /// Meaningless once the state is not `Active`; `info` hides it then.
+    pub(crate) speed_bytes_per_sec: Option<u64>,
 }
 
 impl TransferRow {
@@ -262,6 +265,9 @@ impl TransferRow {
             started_unix_secs: self.started_unix_secs,
             ended_unix_secs: self.ended_unix_secs,
             direction: self.direction,
+            speed_bytes_per_sec: (self.state == TransferState::Active)
+                .then_some(self.speed_bytes_per_sec)
+                .flatten(),
         }
     }
 }

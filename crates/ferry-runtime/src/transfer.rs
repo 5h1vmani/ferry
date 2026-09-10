@@ -73,6 +73,9 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// How often the app is told a transfer moved.
 const REPORT_EVERY: Duration = Duration::from_secs(1);
 
+/// How long a transfer's own `speed_bytes_per_sec` is measured over.
+const TRANSFER_SPEED_WINDOW: Duration = Duration::from_secs(2);
+
 /// How many transfers may move at once.
 const MAX_WORKERS: usize = 4;
 
@@ -831,17 +834,24 @@ struct Reporter<'a> {
     device_key_hex: String,
     last_report: Instant,
     bytes_at_last_report: u64,
+    /// The start of the window `TransferInfo::speed_bytes_per_sec` is
+    /// measured over, and the bytes done at that moment.
+    speed_window_start: Instant,
+    bytes_at_speed_window_start: u64,
 }
 
 impl<'a> Reporter<'a> {
     /// Start reporting for one transfer.
     fn new(shared: &'a Arc<Shared>, id: &str, device_key_hex: &str) -> Self {
+        let now = Instant::now();
         Self {
             shared,
             id: id.to_owned(),
             device_key_hex: device_key_hex.to_owned(),
-            last_report: Instant::now(),
+            last_report: now,
             bytes_at_last_report: 0,
+            speed_window_start: now,
+            bytes_at_speed_window_start: 0,
         }
     }
 
@@ -857,15 +867,32 @@ impl<'a> Reporter<'a> {
         } else {
             None
         };
+
+        // The transfer's own speed is measured over a longer window than the
+        // device-level figure above, so a brief stall does not make it jump
+        // around.
+        let window_elapsed = self.speed_window_start.elapsed();
+        let transfer_speed = (window_elapsed >= TRANSFER_SPEED_WINDOW).then(|| {
+            let moved = bytes_done.saturating_sub(self.bytes_at_speed_window_start);
+            moved / window_elapsed.as_secs().max(1)
+        });
+
         {
             let mut state = lock(&self.shared.state);
             if let Some(row) = state.transfers.get_mut(&self.id) {
                 row.bytes_done = bytes_done;
                 row.bytes_total = total;
+                if let Some(transfer_speed) = transfer_speed {
+                    row.speed_bytes_per_sec = Some(transfer_speed);
+                }
             }
             if due {
                 state.live_mut(&self.device_key_hex).speed_bytes_per_sec = speed;
             }
+        }
+        if transfer_speed.is_some() {
+            self.speed_window_start = Instant::now();
+            self.bytes_at_speed_window_start = bytes_done;
         }
         if due {
             self.last_report = Instant::now();
