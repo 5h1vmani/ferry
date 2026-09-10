@@ -102,6 +102,47 @@ the Finder mount uses.
 app's open dialog while the Mac is reachable, and a file opens from it with
 no copy step.
 
+## Job 9: know what a trusted device actually did
+
+**When** I have let a device read my files for months, **I want** to see what
+it actually read and wrote, **so that** trusting a device once does not mean
+never knowing what it did.
+
+Served by: an entry per file operation at the file operations layer, on both
+devices, in one list per paired device.
+
+**Done when:** every file operation either device serves appears in the log
+within one second, no operation the engine performs is missing from it, and a
+person can name what a paired device read on a given day without opening a
+terminal.
+
+### Why this is a job and not a feature
+
+Job 4 is "trust once, then never think about it". Read alone, it argues
+against a log: thinking about it is the thing job 4 removes.
+
+It is the opposite. Trusting a device once is only a reasonable thing to ask
+of a person if that trust can be inspected afterwards. Without a record, job
+4 asks for faith. With one, it asks for a decision that can be checked. Job
+9 is what makes job 4 honest, and the two are built from the same fact — the
+pinned key — read at different times.
+
+It is also the first job in this file served by a screen a person
+deliberately goes to. Every other screen is glanced at or passed through.
+That is why the log is a destination and presence is not.
+
+### What it is not
+
+- Not a debug log. No codes, no chunk indices, no protocol frames. A person
+  reads it, not an engineer.
+- Not an alert. Nothing in it notifies, badges, or interrupts. It is read
+  when a person decides to read it.
+- Not a per-chunk record. One entry per file per session, and one entry per
+  folder operation with a count. Chunk depth stays where it belongs, on a
+  failure.
+- Not forever. Thirty days, then pruned, and the retention is stated on
+  screen.
+
 ## Jobs Ferry is not hired for
 
 These are stated so nobody builds for them by accident.
@@ -110,3 +151,6 @@ These are stated so nobody builds for them by accident.
 - Backing up the phone to the cloud.
 - Keeping two folders in sync over time.
 - Managing a phone that does not have Ferry installed.
+- Alerting on access. Job 9 records what happened. It does not decide that
+  something was wrong, and it never interrupts a person to say so. Anything
+  that judges access rather than stating it is a different product.

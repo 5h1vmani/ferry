@@ -4,8 +4,12 @@ The custom views that appear on more than one screen. Each is built once per
 platform, from native controls and the tokens in `design/`. Nothing here is
 built if a native control already does the job.
 
-Six components. If a seventh appears, it must earn its place by being used on
-two screens.
+**Eight components.** The first version had six. Two were added, each because
+one value is now shown in more than one place and must say the same thing
+everywhere. Four candidates were rejected; they are at the bottom with the
+reason.
+
+If a ninth appears, it must earn its place by being used on two screens.
 
 Every string follows `docs/voice.md`. Every component carries a label a
 screen reader can speak, written here so it is not invented twice.
@@ -27,6 +31,10 @@ every active transfer.
 Built from: an icon and a label in a row, `label` type, `mono` for the speed.
 Colours: `text_secondary` when not reachable, `text` otherwise. No background.
 
+The spare transport is **not** a state of this component. "USB also
+available" sits beside the badge as a plain line, because a badge that names
+two paths stops answering "which one is carrying this".
+
 ## DeviceRow
 
 One paired device in the Devices list.
@@ -34,29 +42,117 @@ One paired device in the Devices list.
 | State | Shows |
 |---|---|
 | Reachable | device icon, name, TransportBadge |
+| Reachable, spare transport | as above, and a line: "USB also available" |
 | Not reachable | device icon in `text_secondary`, name, TransportBadge, and a `caption` line: "Last seen 2 hours ago" |
 | Selected, Mac only | the platform's sidebar selection |
 
-Screen reader says: the name, then the badge text, then last seen if present.
+Screen reader says: the name, then the badge text, then the spare transport
+if present, then last seen if present.
 
 Built from: the platform list row. On the Mac, a `NavigationLink` in a sidebar
-`List`. On the phone, a Material `ListItem`.
+`List`, 32px. On the phone, a Material `ListItem`, 72px. On the phone the row
+is not a link: there is no device detail screen.
 
-## ProgressLine
+## PresenceControl
 
-One transfer's progress, in one line.
+New in this version. Whether this device advertises and accepts connections,
+and what it costs when it does not. Job 5's only control.
+
+Appears in four places: the Mac's sidebar footer, the Mac's menu bar item, the
+phone's home screen under the top bar, and the phone's persistent
+notification. All four read one value. That is why it is a component and not
+four views.
 
 | State | Shows |
 |---|---|
-| Active | a determinate bar in `accent`, then "3 of 120 files · 2.1 GB remaining · 38 MB/s" in `mono` |
+| Advertising | wifi icon, "Advertising", the platform switch, on. No second line. |
+| Not advertising | not_reachable icon, "Not advertising", the switch, off, and a second line: "This phone cannot be found on Wi-Fi. USB still works." The block moves to `surface_raised` with a `border_strong` edge. |
+| Changing | the switch in its platform's own transitional state. Nothing else moves. |
+| In the notification | the state as a sentence, and one action: "Stop advertising" or "Start advertising". No switch; a notification action is a button. |
+| In the menu bar, moving | the transport icon and the speed in mono, beside the control. |
+
+Never red. Switching this off is a thing a person chose, not a thing that
+went wrong. The consequence line is stated because the failure it causes is
+silent and would otherwise have to be guessed.
+
+Screen reader says: "Advertising, on" or "Not advertising, off", then the
+consequence line, then "switch".
+
+Built from: the platform switch and two labels. `Toggle` in a `Section`
+footer on the Mac; a Material `ListItem` with a trailing `Switch` on the
+phone. The switch is never a custom control.
+
+## AccessLogRow
+
+New in this version. One file operation, as a sentence. L5, job 9.
+
+Appears on the Mac's Access log section and the phone's Access log screen.
+
+| State | Shows |
+|---|---|
+| Served, read | the time in mono, "Pixel 3 XL read Desktop/Q3 notes.md", the amount in mono: "48 KB" |
+| Served, written | "Pixel 3 XL wrote Downloads/scan.pdf" |
+| Served, listed | "Pixel 3 XL listed Desktop", and a count: "31 entries" |
+| Performed by this device | "This Mac read DCIM/Camera, 120 files", and the amount |
+| Rolled up | a file count inside the sentence: "DCIM/Camera, 120 files". Never one row per chunk. |
+
+The subject is always named. Never "you", never "your phone", and never a
+direction icon: a log is read months later, out of context, and an arrow does
+not survive that. The verb is the file operations layer's own word, so a log
+line and a protocol trace agree.
+
+The path is `mono`, because it is machine-produced. The sentence around it is
+`body`. Nothing in the row is coloured, and nothing in it is a control: a row
+states a fact and offers no judgment and no action.
+
+Screen reader says the sentence, then the time, then the amount. In that
+order, because the sentence is what a person is looking for and the numbers
+qualify it.
+
+Built from: a row of three labels on the Mac; a two-line Material `ListItem`
+on the phone, where the sentence is the headline and the time and amount are
+the supporting line.
+
+## ProgressLine
+
+One transfer or one batch's progress, in one line.
+
+| State | Shows |
+|---|---|
+| Queued | no bar, "Queued." |
+| Active | a determinate bar in `accent`, then "43 of 120 files · 2.1 GB remaining · 38 MB/s" in `mono` |
 | Paused | the bar stops and turns `border_strong`, then "Paused" and the reason, from the error table |
 | Done | no bar, the done icon, "120 files · 4.8 GB · 3 min" |
 | Failed | no bar, replaced by an ErrorBlock |
 
-Screen reader says the text line, and for active, "Transferring, 2 percent"
+The bar advances linearly. An easing curve would be a small lie about
+throughput.
+
+Where a batch came from — "Automatic · Phone to Mac" — is stated by the row
+around this component, not by this component. Origin and direction are facts
+about the batch, not about its progress.
+
+Screen reader says the text line, and for active, "Transferring, 2 percent",
 updated no more than once every 5 seconds so it does not talk over itself.
 
 Built from: the platform progress view and a label. Never a custom drawn bar.
+
+### The chunk disclosure
+
+Part of ProgressLine, not a component of its own. It appears under the line
+only where the engine holds a chunk-level fact, which today means only after
+a verify failure.
+
+| State | Shows |
+|---|---|
+| Collapsed | "Show chunks" and a count in mono: "13 of 96 verified" |
+| Expanded | one row per failed or unverified chunk: index and state. Verified chunks are summarised, never listed. |
+| Absent | when there is no chunk fact to show |
+
+Built from: `DisclosureGroup` on the Mac, an expandable `ListItem` on the
+phone. Collapsed by default, always. It is the bottom of the depth axis in
+`docs/ia.md`, and it is one interaction away so that it is never in the
+way.
 
 ## ErrorBlock
 
@@ -77,42 +173,85 @@ a paused transfer is not dangerous.
 Screen reader says the three parts in order, then "Retry, button" if present.
 
 Built from: three text views in a column, the icon, and a button. The words
-come from the error table, never from the view.
+come from the table generated from `design/errors.json`, never from the view.
+The four QR pairing errors in `docs/engine-contract.md` item 12 render through
+this component like every other.
 
 ## PairingCode
 
-The six digits, on both devices at once.
+The six digits, on both devices at once. The code method only: a scan shows
+no digits.
 
 | State | Shows |
 |---|---|
 | Showing | "481 920" in `display` type with monospaced digits, grouped three and three. Below, in `body`, the instruction names the other device: "Confirm this matches on the phone." on the Mac, "Confirm this matches on the Mac." on the phone. Confirm and Cancel controls. |
+| Showing, phone | as above, and under it the short code with the line that names it: "This phone appears on the Mac as 3F9A", and the remaining time: "Pairing stops in 1:12." |
 | Confirmed | the paired icon in `accent` for one second, then the view closes |
 | Mismatched | an ErrorBlock takes its place |
 
-Screen reader says: "Pairing code, four eight one, nine two zero" as digits,
-then the instruction, then the controls. Digits are read one at a time so they
-can be compared against the other screen.
+Confirmed is shared with the scan method, which is why it stays here rather
+than moving into either flow.
 
-Built from: one text view and two buttons. The gap between the two groups is
-`space.3`. The code is never in a text field. It is compared by eye, not typed.
+Screen reader says: "Pairing code, four eight one, nine two zero" as digits,
+then the instruction, then the controls. Digits are read one at a time so
+they can be compared against the other screen.
+
+Built from: one text view and two buttons. The gap between the two digit
+groups is `space.3`. The code is never in a text field. It is compared by
+eye, not typed.
 
 ## EmptyState
 
-One line and one action, centred. Used by Devices with no devices and by
-Transfers with no transfers.
+One line and one action, centred. Used wherever a list has nothing in it.
 
 | Where | Line | Action |
 |---|---|---|
-| Devices, Mac | "No phone paired." | Pair a phone |
+| Devices, Mac sidebar | "No phone paired." | Pair a phone |
+| Devices, Mac detail | "No phone selected." | none |
 | Devices, phone | "No Mac paired." | Pair |
 | Transfers | "No transfers." | none |
+| Access log | "No access yet." | none |
+| Files | "This folder is empty." | none |
 
 `body` type in `text_secondary`. The action is the platform's primary button.
 
 Screen reader says the line, then the action if present.
 
+## Rejected, with the reason
+
+**PairingQR**, the square code and its expiry on the Mac. One screen, one
+platform, one state. A view in the pairing sheet, not a component. The code
+itself is rendered by the platform — `CIQRCodeGenerator` on the Mac — from
+bytes the engine serialises, so there is nothing custom to build and nothing
+to draw by hand.
+
+**AutomaticSection**, job 7's switch and its three lines. One screen, one
+platform. A view. If the phone ever gains an equivalent — copying the Mac's
+Desktop on its own, which nothing asks for — it earns the place then.
+
+**SharedRootRow**, one root in the Mac's Settings. One screen. A view. The
+phone serves one root and does not choose it.
+
+**AccessLine**, the Finder mount line on the Mac. One screen, one platform,
+one state. A view in `DeviceDetail`.
+
+**FileBrowser**, a list of the other device's roots. It exists, on the Mac,
+as the Files section of `DeviceDetail` — built before this version of the
+inventory was written. It is not a component because it appears on one screen
+of one platform. It is also the one view in Ferry with a loading state, which
+is honest: a folder listing is a round trip, unlike the Devices list.
+
+It stays because it is the only way to fetch one named file before the Finder
+mount ships. It earns a place in this inventory the day the phone gains an
+equivalent, and it should be reconsidered the day the mount makes it a
+duplicate of Finder. Whether the phone ever needs one is blocked on
+`docs/manual-checks.md` task 3: whether the Files app is a usable browser for
+a DocumentsProvider-backed root.
+
 ## What is deliberately not a component
 
 A toolbar, a tab bar, a navigation bar, a sheet, a list, a button, a text
-field, a switch, a progress view. All of these are the platform's own. Using
-them unchanged is what makes the app look like it belongs on the device.
+field, a switch, a progress view, a disclosure group, a menu bar item, a
+notification, a camera preview, a QR renderer, an open panel. All of these
+are the platform's own. Using them unchanged is what makes the app look like
+it belongs on the device.
