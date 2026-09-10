@@ -21,14 +21,12 @@ use crate::{
     DeviceInfo, Direction, FerryError, PairingCandidate, PairingState, TransferState, Transport,
 };
 
-/// How long a Wi-Fi sighting still counts in `available_transports`, once
-/// nothing has reached the device since.
+/// How long a Wi-Fi success still counts in `available_transports`, once no
+/// further Wi-Fi connection has succeeded since.
 ///
-/// `discovery.rs` and the `mdns-sd` crate it wraps name no lifetime of their
-/// own for a sighting; `mdns-sd` manages its own record expiry internally
-/// and does not expose it here. This reuses the pairing timeout's value, the
-/// nearest existing "how stale is too stale" window in this engine.
-const WIFI_SIGHTING_LIFETIME_SECS: i64 = 120;
+/// This reuses the pairing timeout's value, the nearest existing "how stale
+/// is too stale" window in this engine.
+const WIFI_SUCCESS_LIFETIME_SECS: i64 = 120;
 
 /// Take a mutex without ever panicking.
 ///
@@ -104,6 +102,13 @@ pub(crate) struct DeviceLive {
     pub(crate) last_addr: Option<SocketAddr>,
     /// The local port of an `adb` forward that reached this device.
     pub(crate) usb_port: Option<u16>,
+    /// When a Wi-Fi connection to this device last succeeded.
+    ///
+    /// Set only in [`crate::engine::mark_reachable`], and only when `via` is
+    /// [`Transport::Wifi`]. `last_seen_unix_secs` is no evidence of Wi-Fi on
+    /// its own: it is also touched by a USB connection, so a cable-only
+    /// phone must not be able to claim Wi-Fi through it.
+    pub(crate) last_wifi_success_unix_secs: Option<i64>,
     /// Bytes moved with this device in the last second.
     pub(crate) speed_bytes_per_sec: Option<u64>,
     /// Switches held by connections now serving this device.
@@ -399,10 +404,16 @@ impl State {
 /// Every transport one device could currently be reached through, `Usb`
 /// first.
 ///
-/// `Usb` holds when `usb_port` is `Some`. `Wifi` holds when the device was
-/// last seen within [`WIFI_SIGHTING_LIFETIME_SECS`]. Either way,
-/// `reachable_via`, when it is `Some`, is folded in as well, so a transport
-/// this device is serving on right now is never missing from its own list.
+/// `Usb` holds when `usb_port` is `Some`: an `adb` tunnel is a cable, and
+/// nothing else opens one. `Wifi` holds when a Wi-Fi connection succeeded
+/// within [`WIFI_SUCCESS_LIFETIME_SECS`], or when `reachable_via` is `Wifi`
+/// right now. Either transport is folded in through `reachable_via` as well,
+/// so a transport this device is serving on right now is never missing from
+/// its own list.
+///
+/// `last_seen_unix_secs` is deliberately not used here: it updates on every
+/// connection regardless of transport, so it cannot tell a Wi-Fi sighting
+/// from a USB one.
 fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
     let Some(live) = live else {
         return Vec::new();
@@ -411,10 +422,10 @@ fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
     if live.usb_port.is_some() || live.reachable_via == Some(Transport::Usb) {
         transports.push(Transport::Usb);
     }
-    let seen_recently = live
-        .last_seen_unix_secs
-        .is_some_and(|seen| now.saturating_sub(seen) <= WIFI_SIGHTING_LIFETIME_SECS);
-    if seen_recently || live.reachable_via == Some(Transport::Wifi) {
+    let wifi_succeeded_recently = live
+        .last_wifi_success_unix_secs
+        .is_some_and(|seen| now.saturating_sub(seen) <= WIFI_SUCCESS_LIFETIME_SECS);
+    if wifi_succeeded_recently || live.reachable_via == Some(Transport::Wifi) {
         transports.push(Transport::Wifi);
     }
     transports
@@ -422,7 +433,7 @@ fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceLive, Transport, WIFI_SIGHTING_LIFETIME_SECS, available_transports};
+    use super::{DeviceLive, Transport, WIFI_SUCCESS_LIFETIME_SECS, available_transports};
 
     #[test]
     fn no_live_record_means_no_transport() {
@@ -442,9 +453,9 @@ mod tests {
     }
 
     #[test]
-    fn wifi_holds_within_the_lifetime_of_the_last_sighting() {
+    fn wifi_holds_within_the_lifetime_of_the_last_success() {
         let live = DeviceLive {
-            last_seen_unix_secs: Some(1_000 - WIFI_SIGHTING_LIFETIME_SECS),
+            last_wifi_success_unix_secs: Some(1_000 - WIFI_SUCCESS_LIFETIME_SECS),
             ..DeviceLive::default()
         };
         assert_eq!(
@@ -456,7 +467,7 @@ mod tests {
     #[test]
     fn wifi_does_not_hold_once_the_lifetime_has_passed() {
         let live = DeviceLive {
-            last_seen_unix_secs: Some(1_000 - WIFI_SIGHTING_LIFETIME_SECS - 1),
+            last_wifi_success_unix_secs: Some(1_000 - WIFI_SUCCESS_LIFETIME_SECS - 1),
             ..DeviceLive::default()
         };
         assert_eq!(available_transports(Some(&live), 1_000), Vec::new());
@@ -466,7 +477,7 @@ mod tests {
     fn usb_comes_before_wifi_when_both_hold() {
         let live = DeviceLive {
             usb_port: Some(1),
-            last_seen_unix_secs: Some(1_000),
+            last_wifi_success_unix_secs: Some(1_000),
             ..DeviceLive::default()
         };
         assert_eq!(
@@ -477,16 +488,35 @@ mod tests {
 
     #[test]
     fn reachable_via_is_always_in_the_list_even_past_the_wifi_lifetime() {
-        // A connection can be serving right now without `last_seen_unix_secs`
-        // having been refreshed yet. `reachable_via` must still show.
+        // A connection can be serving right now without
+        // `last_wifi_success_unix_secs` having been refreshed yet.
+        // `reachable_via` must still show.
         let live = DeviceLive {
             reachable_via: Some(Transport::Wifi),
-            last_seen_unix_secs: None,
+            last_wifi_success_unix_secs: None,
             ..DeviceLive::default()
         };
         assert_eq!(
             available_transports(Some(&live), 1_000),
             vec![Transport::Wifi]
+        );
+    }
+
+    #[test]
+    fn a_cable_only_phone_does_not_claim_wifi() {
+        // The bug this rule replaces: `last_seen_unix_secs` updates over USB
+        // too, so a device reached only by cable must not list Wi-Fi just
+        // because it was seen recently.
+        let live = DeviceLive {
+            usb_port: Some(12345),
+            reachable_via: Some(Transport::Usb),
+            last_seen_unix_secs: Some(1_000),
+            last_wifi_success_unix_secs: None,
+            ..DeviceLive::default()
+        };
+        assert_eq!(
+            available_transports(Some(&live), 1_000),
+            vec![Transport::Usb]
         );
     }
 }

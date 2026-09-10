@@ -1832,5 +1832,7 @@ pub(crate) fn mark_reachable(
     live.last_seen_unix_secs = Some(now_unix_secs());
     if via == Transport::Usb {
         live.usb_port = Some(addr.port());
+    } else {
+        live.last_wifi_success_unix_secs = Some(now_unix_secs());
     }
 }
