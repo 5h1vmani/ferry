@@ -44,7 +44,7 @@ to built in the same commit that removes its `TODO(engine N)` markers.
 
 ## Batch B: the small fields
 
-### 1. `status()` — built
+### 1. `status()`: built
 
 `set_reachable(on: bool)` has no counterpart, so no presence surface can
 state what is true.
@@ -68,7 +68,7 @@ Every field already exists in engine state (`state.rs`, `engine.rs`). This
 item deletes `EngineModel.cachedAdvertising`, the only place the Mac app
 holds a fact twice.
 
-### 9. A transfer has a start and an end — built
+### 9. A transfer has a start and an end: built
 
 ```rust
 // on TransferInfo
@@ -82,7 +82,7 @@ Both are stored in the transfer record. The record format goes to version
 2. A version 1 record still loads: its start time is the record file's
 modification time, and its end time is `None`.
 
-### 10. Pairing publishes its deadline — built
+### 10. Pairing publishes its deadline: built
 
 ```rust
 Waiting { expires_unix_secs: i64 },
@@ -94,7 +94,7 @@ One deadline, stated on every state that has one. The deadline is
 `now + PAIRING_TIMEOUT` at `start_pairing`. The engine already holds it as
 a monotonic instant (`state.rs`); the wire needs the Unix form as well.
 
-### 4. Direction — built
+### 4. Direction: built
 
 ```rust
 #[derive(uniffi::Enum)]
@@ -106,7 +106,7 @@ pub direction: Direction,
 
 Always `Pull` until item 5 lands. Stored in the record with item 9.
 
-### 8. Speed is per transfer — built
+### 8. Speed is per transfer: built
 
 ```rust
 // on TransferInfo
@@ -117,7 +117,7 @@ Measured over that transfer's own bytes across the last two seconds.
 `None` unless the state is `Active`. `DeviceInfo.speed_bytes_per_sec`
 stays as it is.
 
-### 7. Chunk counts — built
+### 7. Chunk counts: built
 
 ```rust
 // on TransferInfo
@@ -130,7 +130,7 @@ pub chunks_verified: u32,
 derived on load from what the record already holds, so nothing new is
 stored. `error.detail` already carries the failing chunk index.
 
-### 3. A device lists every transport it has — built
+### 3. A device lists every transport it has: built
 
 ```rust
 // on DeviceInfo
@@ -143,7 +143,7 @@ first. `reachable_via`, when it is `Some`, is always in the list.
 
 ## Batch C: the wire
 
-### 15. Several named shared roots — built
+### 15. Several named shared roots: built
 
 The largest change in this file, and a change to `ferry-core`'s file
 operations layer. The design's copy said the file layer was untouched.
@@ -207,7 +207,7 @@ pulls into `~/Downloads/Ferry`. The phone shares one root named
 "Internal storage" at its external storage path, writable, and its
 download folder is that path's `Download` folder.
 
-### 11. A device has a kind — built
+### 11. A device has a kind: built
 
 ```rust
 #[derive(uniffi::Enum)]
@@ -228,7 +228,7 @@ right.
 
 ## Batch D: batches
 
-### 2. A batch is not an object — open
+### 2. A batch is not an object: open
 
 `TransferInfo` is one file. Without a batch, pulling a camera folder
 produces 120 rows. Nothing in the engine correlates pulls today, and the
@@ -292,7 +292,7 @@ Without it the engine feature has no caller.
 
 ## Batch E: the access log
 
-### 13. The access log — open
+### 13. The access log: open
 
 Job 9 in `docs/jobs.md`. Logging happens at the file operations layer,
 not the transfer engine. A Finder browse or a file picker open is `list`,
@@ -364,25 +364,25 @@ worse than no log.
 These four change what Ferry is, not what it says. The screens render
 each one as honestly unavailable today.
 
-### 14. Automatic copying, job 7 — deferred
+### 14. Automatic copying, job 7: deferred
 
 `PLAN.md` phase 2, item 2. Depends on the manifest request and content
 skip in phase 2, item 1. The design's `AutoCopy` record and `auto_copy` /
 `set_auto_copy` calls stand as written in the design's copy.
 
-### 12. QR pairing — deferred
+### 12. QR pairing: deferred
 
 `PLAN.md` phase 3. A protocol change to `IK`, a camera permission on the
 phone, and four error rows. The design's `PairingOffer`,
 `PairingMethod`, `start_pairing_with`, `offer_scanned`, and the
 `Offering` and `Requested` states stand as written in the design's copy.
 
-### 5. Push — deferred
+### 5. Push: deferred
 
 `PLAN.md` phase 2, item 5. `Direction::Push` exists from item 4 so that
 nothing is renamed when push lands.
 
-### 6. Mount state — deferred
+### 6. Mount state: deferred
 
 `PLAN.md` phase 2, item 3. The choice the design left open is already
 settled by ADR 0008: the Mac side owns the WebDAV bridge, so
