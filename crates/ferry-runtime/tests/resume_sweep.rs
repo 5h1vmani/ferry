@@ -30,7 +30,7 @@
 //! - A `stat` request payload is `opcode(1) + path(4+len)`.
 //! - A `stat` response payload is one `Entry`: `name(4+len) + kind(1) +
 //!   size(8) + modified(8)`.
-//! - A `hello` payload is `name(4+len)`.
+//! - A `hello` payload is `name(4+len) + kind(1)`.
 //!
 //! `retry_wire()` is the cost paid again on every dial: one hello written by
 //! this device, one hello read back from the peer, and one `stat` request
@@ -131,7 +131,8 @@ fn frame_bytes(payload_len: u64) -> u64 {
 
 /// The wire cost of one side's `hello` frame.
 fn hello_bytes(name: &str) -> u64 {
-    frame_bytes(LEN_PREFIX + name.len() as u64)
+    // name(4+len) + kind(1)
+    frame_bytes(LEN_PREFIX + name.len() as u64 + 1)
 }
 
 /// The wire cost of one `read` request frame.
