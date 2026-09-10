@@ -24,17 +24,22 @@
 //! Phase 1 has not started. This crate holds only the types that are already
 //! decided. See `PLAN.md` and `docs/protocol.md`.
 
+pub mod adb;
 pub mod chunk;
+pub mod discovery;
 pub mod frame;
 pub mod limits;
+pub mod localfs;
 /// The reference filesystem, used by tests and by nothing that ships.
 #[cfg(any(test, feature = "testing"))]
 pub mod memfs;
 pub mod noise;
 pub mod ops;
 pub mod path;
+pub mod peers;
 pub mod rpc;
 pub mod session;
+pub mod tcp;
 pub mod transport;
 pub mod version;
 pub mod wire;
