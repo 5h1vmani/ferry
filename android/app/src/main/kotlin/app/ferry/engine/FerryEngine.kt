@@ -103,6 +103,9 @@ object FerryEngine {
             _pairing.value = state
             engine?.let { _shortCode.value = it.shortCode() }
         }
+
+        // The phone's screen for this comes with the later Kotlin design pass.
+        override fun accessLogChanged() {}
     }
 
     // Builds the engine. Does nothing on the second call, because one engine
