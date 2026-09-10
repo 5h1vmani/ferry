@@ -42,6 +42,7 @@ final class EngineModel: ObservableObject {
     /// snapshots without asking the engine twice.
     private var deviceInfos: [DeviceInfo] = []
     private var transferInfos: [TransferInfo] = []
+    private var batchInfos: [BatchInfo] = []
     private var pairingState: PairingState = .idle
     /// Which way in a person chose. A view concern, held here because the
     /// engine is told about it and the sheet may be rebuilt at any moment.
@@ -117,6 +118,7 @@ final class EngineModel: ObservableObject {
         events = nil
         deviceInfos = []
         transferInfos = []
+        batchInfos = []
         devices = []
         pairingState = .idle
         pairingMethod = nil
@@ -134,6 +136,9 @@ final class EngineModel: ObservableObject {
 
     func reloadTransfers() {
         transferInfos = engine?.transfers() ?? []
+        // `transfers_changed` covers batches too (docs/engine-contract.md,
+        // item 2), so this is where `batches()` is read back as well.
+        batchInfos = engine?.batches() ?? []
         // A transfer moving changes a device's speed, which the badge and
         // the menu bar both state.
         refreshPresence()
@@ -173,7 +178,10 @@ final class EngineModel: ObservableObject {
     /// Every transfer for one device, grouped as the Transfers section
     /// shows them.
     func groups(forDevice keyHex: String) -> [TransferGroupSnapshot] {
-        EngineAdapter.groups(transfers: transferInfos.filter { $0.deviceKeyHex == keyHex })
+        EngineAdapter.groups(
+            transfers: transferInfos.filter { $0.deviceKeyHex == keyHex },
+            batches: batchInfos.filter { $0.deviceKeyHex == keyHex }
+        )
     }
 
     /// Whether the phone's folders are mounted in Finder, and where.
@@ -314,6 +322,18 @@ final class EngineModel: ObservableObject {
                     remotePath: remotePath,
                     localName: localName
                 )
+            } catch {
+                await self?.report(error)
+            }
+        }
+    }
+
+    /// Starts copying a whole folder from a paired device into one batch.
+    func pullFolder(deviceKeyHex: String, remotePath: String) {
+        guard let engine else { return }
+        Task.detached { [weak self] in
+            do {
+                _ = try engine.pullFolder(deviceKeyHex: deviceKeyHex, remotePath: remotePath)
             } catch {
                 await self?.report(error)
             }

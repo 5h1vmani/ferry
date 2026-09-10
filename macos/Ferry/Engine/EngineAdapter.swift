@@ -6,8 +6,8 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// Five items in docs/engine-contract.md have no field in the engine yet: 2,
-// 6, 12, 13, and 14. Each one is marked `TODO(engine N)`, where N is its
+// Four items in docs/engine-contract.md have no field in the engine yet: 6,
+// 12, 13, and 14. Each one is marked `TODO(engine N)`, where N is its
 // item number, and each has a default here that is honest: a missing count
 // is absent, not zero, and a missing sentence is left out, not guessed.
 // That is the three-part rule from docs/voice.md applied to the boundary
@@ -50,13 +50,42 @@ enum EngineAdapter {
     // MARK: - Movement
 
     /// Every transfer for one device, grouped as the Transfers section
-    /// shows them, newest first.
-    ///
-    /// TODO(engine 2): the engine has no batch, so this makes one group per
-    /// transfer. When `batches()` lands, this function groups by batch id
-    /// and every view above it is unchanged.
-    static func groups(transfers: [TransferInfo]) -> [TransferGroupSnapshot] {
-        transfers.map(group)
+    /// shows them: one row per batch from `batches()`, plus one row per
+    /// transfer that names no batch, which is every transfer a single
+    /// `pull` made.
+    static func groups(transfers: [TransferInfo], batches: [BatchInfo]) -> [TransferGroupSnapshot] {
+        let batchGroups = batches.map(group)
+        let singleGroups = transfers
+            .filter { $0.batchId == nil }
+            .map(group)
+        return batchGroups + singleGroups
+    }
+
+    static func group(_ batch: BatchInfo) -> TransferGroupSnapshot {
+        TransferGroupSnapshot(
+            id: batch.id,
+            label: batch.label,
+            direction: direction(batch.direction),
+            origin: origin(batch.origin),
+            state: batch.state,
+            filesDone: batch.filesDone,
+            filesTotal: batch.filesTotal,
+            bytesDone: batch.bytesDone,
+            bytesTotal: batch.bytesTotal,
+            speedBytesPerSec: batch.speedBytesPerSec,
+            // A batch carries no single transport (docs/engine-contract.md,
+            // item 2): its files can move on different ones, so the badge
+            // that reads this states none rather than picking one.
+            transport: nil,
+            // A batch carries no single error either. Its transfers can
+            // fail for different reasons, so a failed batch's row states no
+            // words until the contract carries one.
+            error: nil,
+            chunks: nil,
+            duration: batch.endedUnixSecs.map {
+                FerryFormat.duration(seconds: $0 - batch.startedUnixSecs)
+            }
+        )
     }
 
     static func group(_ transfer: TransferInfo) -> TransferGroupSnapshot {
@@ -70,9 +99,10 @@ enum EngineAdapter {
             id: transfer.id,
             label: transfer.fileName,
             direction: direction(transfer.direction),
-            // TODO(engine 14): origin is not carried, and auto copy does
-            // not exist, so nothing is automatic yet. Every row says who
-            // asked for it by saying nothing.
+            // A transfer with no batch is always a manual, single-file
+            // pull: the only other origin, automatic under item 14, always
+            // makes a batch, so this line can never read `.automatic`, now
+            // or once item 14 lands.
             origin: .manual,
             state: transfer.state,
             filesDone: transfer.state == .done ? 1 : 0,
@@ -87,6 +117,14 @@ enum EngineAdapter {
                 FerryFormat.duration(seconds: $0 - transfer.startedUnixSecs)
             }
         )
+    }
+
+    /// "Manual" or "Automatic", from the engine's own `Origin`.
+    private static func origin(_ origin: Origin) -> TransferOrigin {
+        switch origin {
+        case .manual: return .manual
+        case .automatic: return .automatic
+        }
     }
 
     /// "Phone to Mac" for a pull, "Mac to phone" for a push.

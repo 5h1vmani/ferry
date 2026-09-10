@@ -112,9 +112,10 @@ enum TransferOrigin: Equatable {
 /// Several transfers started by one action, shown as one row: "DCIM/Camera,
 /// 120 files". A single file is a group of one and renders the same way.
 ///
-/// The engine has no batch object (docs/engine-contract.md, item 2), so today
-/// the adapter builds one group per transfer. When `batches()` lands, the
-/// adapter changes and this type does not.
+/// Built from a `BatchInfo` for a folder copy, and from one `TransferInfo`
+/// for a transfer no batch names (docs/engine-contract.md, item 2). Either
+/// way this type is the same, so nothing above the adapter has to know
+/// which one it is looking at.
 struct TransferGroupSnapshot: Equatable, Identifiable {
     let id: String
     /// "DCIM/Camera, 120 files", or one file's name.
@@ -146,8 +147,8 @@ struct TransferGroupSnapshot: Equatable, Identifiable {
         Int((fraction * 100).rounded())
     }
 
-    /// True when the group stands for exactly one file, which is every
-    /// group until item 2 lands.
+    /// True when the group stands for exactly one file: a transfer with no
+    /// batch, or a batch of one.
     var isSingleFile: Bool {
         filesTotal <= 1
     }

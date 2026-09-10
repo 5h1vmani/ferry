@@ -228,7 +228,7 @@ right.
 
 ## Batch D: batches
 
-### 2. A batch is not an object: open
+### 2. A batch is not an object: built
 
 `TransferInfo` is one file. Without a batch, pulling a camera folder
 produces 120 rows. Nothing in the engine correlates pulls today, and the

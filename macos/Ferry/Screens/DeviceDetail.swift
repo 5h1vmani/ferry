@@ -162,6 +162,12 @@ struct DeviceDetail: View {
                             remotePath: path(for: entry),
                             localName: entry.name
                         )
+                    },
+                    onCopyFolder: {
+                        model.pullFolder(
+                            deviceKeyHex: device.keyHex,
+                            remotePath: path(for: entry)
+                        )
                     }
                 )
             }
@@ -209,14 +215,19 @@ private struct EntryRow: View {
     let entry: Entry
     let onOpen: () -> Void
     let onCopy: () -> Void
+    let onCopyFolder: () -> Void
 
     var body: some View {
         switch entry.kind {
         case .directory:
-            Button(action: onOpen) {
-                Text(entry.name)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: FerrySpace.s3) {
+                Button(action: onOpen) {
+                    Text(entry.name)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                Button(S.files.copyToMac, action: onCopyFolder)
             }
+            .accessibilityElement(children: .contain)
             .accessibilityLabel(S.files.folderAccessibility(name: entry.name))
 
         case .file:

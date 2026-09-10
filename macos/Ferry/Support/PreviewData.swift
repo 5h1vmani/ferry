@@ -66,7 +66,8 @@ enum PreviewData {
             direction: .pull,
             speedBytesPerSec: 38_000_000,
             chunksTotal: 96,
-            chunksVerified: 54
+            chunksVerified: 54,
+            batchId: nil
         ),
         TransferInfo(
             id: "2",
@@ -82,7 +83,8 @@ enum PreviewData {
             direction: .pull,
             speedBytesPerSec: nil,
             chunksTotal: 38,
-            chunksVerified: 18
+            chunksVerified: 18,
+            batchId: nil
         ),
         TransferInfo(
             id: "3",
@@ -98,7 +100,8 @@ enum PreviewData {
             direction: .pull,
             speedBytesPerSec: nil,
             chunksTotal: 96,
-            chunksVerified: 96
+            chunksVerified: 96,
+            batchId: nil
         ),
         TransferInfo(
             id: "4",
@@ -114,7 +117,8 @@ enum PreviewData {
             direction: .pull,
             speedBytesPerSec: nil,
             chunksTotal: 44,
-            chunksVerified: 10
+            chunksVerified: 10,
+            batchId: nil
         ),
     ]
 
@@ -122,7 +126,7 @@ enum PreviewData {
 
     static let deviceSnapshots = EngineAdapter.devices(devices)
 
-    static let transferGroups = EngineAdapter.groups(transfers: transfers)
+    static let transferGroups = EngineAdapter.groups(transfers: transfers, batches: [])
 
     static let advertising = EngineAdapter.presence(
         status: Status(reachable: true, listenPort: 53317, adbPresent: true, mount: nil),
