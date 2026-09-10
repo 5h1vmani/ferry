@@ -167,6 +167,7 @@ fn rows_for_folder(
     leaf: &str,
     prefix: &str,
     started_unix_secs: i64,
+    chunk_size: ChunkSize,
 ) -> Result<Vec<TransferRow>, FerryError> {
     let mut rows = Vec::with_capacity(found_files.len());
     for (full_path, _size) in found_files {
@@ -200,6 +201,7 @@ fn rows_for_folder(
             speed_bytes_per_sec: None,
             // Filled in by the caller, once the batch id exists.
             batch_id: None,
+            chunk_size,
         });
     }
     Ok(rows)
@@ -704,11 +706,20 @@ impl Engine {
         }
 
         // A pull never writes into a served root, so this opens its own
-        // folder rather than reusing `self.shared.roots`.
-        std::fs::create_dir_all(&self.shared.download_dir_config)
-            .map_err(|_| bad_config("The download folder could not be made."))?;
-        let download_fs = LocalFs::open(&self.shared.download_dir_config)
-            .map_err(|_| bad_config("The download folder could not be opened."))?;
+        // folder rather than reusing `self.shared.roots`. `set_download_dir`
+        // may likewise have already opened a fresher one before `start`
+        // ever ran; that one wins, the same way a pre-`start` `set_roots`
+        // call does, just above.
+        let download_fs = if lock(&self.shared.download_fs).is_none() {
+            std::fs::create_dir_all(&self.shared.download_dir_config)
+                .map_err(|_| bad_config("The download folder could not be made."))?;
+            Some(
+                LocalFs::open(&self.shared.download_dir_config)
+                    .map_err(|_| bad_config("The download folder could not be opened."))?,
+            )
+        } else {
+            None
+        };
 
         // docs/engine-contract.md, item 13: opened at start, pruned of
         // anything past its retention window right away, and dropped at
@@ -726,7 +737,9 @@ impl Engine {
             .map_err(|_| bad_config("The network port could not be opened."))?;
         let local_addr = net.local_addr();
 
-        *lock(&self.shared.download_fs) = Some(Arc::new(download_fs));
+        if let Some(download_fs) = download_fs {
+            *lock(&self.shared.download_fs) = Some(Arc::new(download_fs));
+        }
         let net = Arc::new(net);
         *lock(&self.shared.net) = Some(Arc::clone(&net));
         {
@@ -1093,11 +1106,10 @@ impl Engine {
     /// Every transfer, as the app shows them.
     #[must_use]
     pub fn transfers(&self) -> Vec<TransferInfo> {
-        let chunk_size = *lock(&self.shared.chunk_size);
         lock(&self.shared.state)
             .transfers
             .values()
-            .map(|row| row.info(chunk_size))
+            .map(TransferRow::info)
             .collect()
     }
 
@@ -1196,6 +1208,7 @@ impl Engine {
                     direction: Direction::Pull,
                     speed_bytes_per_sec: None,
                     batch_id: None,
+                    chunk_size: *lock(&self.shared.chunk_size),
                 },
             );
             id
@@ -1284,6 +1297,7 @@ impl Engine {
             &leaf,
             &prefix,
             started_unix_secs,
+            *lock(&self.shared.chunk_size),
         )?;
 
         let batch_session =
@@ -1673,7 +1687,7 @@ fn load_saved_transfers(shared: &Arc<Shared>) {
 
 /// The row one stored record becomes.
 fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow {
-    let (source, destination, bytes_total, bytes_done, source_size, source_mtime, meta) =
+    let (source, destination, bytes_total, bytes_done, source_size, source_mtime, meta, chunk_size) =
         match record {
             Record::FirstPass(meta, pass) => (
                 pass.source.clone(),
@@ -1683,9 +1697,18 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
                 Some(pass.source_size),
                 Some(pass.source_mtime),
                 meta,
+                // `pass.chunk_size` was a valid `ChunkSize` when this record
+                // was written, since nothing else ever produces one. The
+                // fallback here is never reached in practice; it exists so
+                // a damaged record cannot panic this load.
+                ChunkSize::new(pass.chunk_size).unwrap_or_else(|_| ChunkSize::one_mebibyte()),
             ),
             // A ready record's bytes are counted again by the resume itself,
-            // which reads the partial file back and hashes it.
+            // which reads the partial file back and hashes it. Its manifest
+            // carries the exact chunk size it was built with: `set_chunk_size`
+            // after this transfer's first pass ran must not change what
+            // `chunks_total` reports for it, so this comes from the record,
+            // never from the engine's current setting.
             Record::Ready(meta, transfer) => (
                 transfer.source.clone(),
                 transfer.destination.clone(),
@@ -1694,6 +1717,7 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
                 None,
                 None,
                 meta,
+                transfer.manifest.chunk_size(),
             ),
         };
     TransferRow {
@@ -1721,6 +1745,7 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
         direction: meta.direction,
         speed_bytes_per_sec: None,
         batch_id: meta.batch_id.clone(),
+        chunk_size,
     }
 }
 

@@ -806,6 +806,64 @@ fn pull_folder_fails_cleanly_when_a_peer_names_an_entry_with_an_empty_name() {
 }
 
 // ---------------------------------------------------------------------------
+// Batch B and C audit, C4: a download folder set before start.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn set_download_dir_before_start_is_where_the_next_pull_lands() {
+    let data = tempfile::tempdir().expect("a temporary folder for engine files");
+    let shared_root = tempfile::tempdir().expect("a temporary folder for shared files");
+    // Passed to `Config`, but never used: `set_download_dir` below opens a
+    // fresher folder before `start` gets the chance to open this one.
+    let configured_download = tempfile::tempdir().expect("a temporary folder for the config");
+    let real_download = tempfile::tempdir().expect("the folder set_download_dir should open");
+    let key = generate_key().expect("a fresh key pair");
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        key.clone(),
+        data.path(),
+        shared_root.path(),
+        configured_download.path(),
+        &inbox,
+    )
+    .expect("the engine should build from a good config");
+
+    engine
+        .set_download_dir(real_download.path().to_string_lossy().into_owned())
+        .expect("set_download_dir should accept a good folder before start");
+    engine.start().expect("the engine should start");
+
+    let peer = start_peer(&key, sample_bytes(16));
+    let side = Side {
+        engine,
+        inbox,
+        key,
+        data,
+        shared: shared_root,
+        download: configured_download,
+    };
+    pair_with_peer(&side, &peer);
+
+    let id = pull_big(&side, &peer, "big.bin");
+    wait_transfer(&side, &id, "the pull to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    assert!(
+        real_download.path().join("big.bin").exists(),
+        "the pull lands in the folder set_download_dir opened before start"
+    );
+    assert!(
+        !side.download_root().join("big.bin").exists(),
+        "not in the folder Config named, which start would otherwise have opened"
+    );
+
+    side.engine.stop();
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 1: stop during a transfer.
 // ---------------------------------------------------------------------------
 

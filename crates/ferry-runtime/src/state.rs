@@ -266,13 +266,24 @@ pub(crate) struct TransferRow {
     pub(crate) speed_bytes_per_sec: Option<u64>,
     /// Which batch this transfer belongs to, if `pull_folder` created it.
     pub(crate) batch_id: Option<String>,
+    /// The chunk size this transfer's first pass used, or will use once it
+    /// runs.
+    ///
+    /// Set once at row creation to whichever chunk size the engine's own
+    /// setting names at that moment, and updated in `transfer::first_pass`
+    /// once the source's real size is known. `set_chunk_size` only decides
+    /// the next first pass, so a later change to it must not retroactively
+    /// change what `chunks_total` reports for a transfer already under way,
+    /// nor for one loaded back from a record written under an earlier
+    /// setting. See `chunk_counts`.
+    pub(crate) chunk_size: ChunkSize,
 }
 
 /// The chunk count a size implies, and how many of those chunks are
 /// verified, given how many bytes are verified in place.
 ///
 /// Nothing new is stored for this. Both numbers come from `bytes_total`,
-/// `bytes_done`, and the chunk size this run uses.
+/// `bytes_done`, and the chunk size the transfer's own row carries.
 fn chunk_counts(bytes_total: u64, bytes_done: u64, chunk_size: ChunkSize) -> (u32, u32) {
     let total = u32::try_from(bytes_total.div_ceil(chunk_size.as_u64())).unwrap_or(u32::MAX);
     let verified = if bytes_total > 0 && bytes_done >= bytes_total {
@@ -285,12 +296,9 @@ fn chunk_counts(bytes_total: u64, bytes_done: u64, chunk_size: ChunkSize) -> (u3
 
 impl TransferRow {
     /// The view of this row that crosses the boundary.
-    ///
-    /// `chunk_size` is this run's chunk size, needed to derive the chunk
-    /// counts. See [`chunk_counts`].
-    pub(crate) fn info(&self, chunk_size: ChunkSize) -> crate::TransferInfo {
+    pub(crate) fn info(&self) -> crate::TransferInfo {
         let (chunks_total, chunks_verified) =
-            chunk_counts(self.bytes_total, self.bytes_done, chunk_size);
+            chunk_counts(self.bytes_total, self.bytes_done, self.chunk_size);
         crate::TransferInfo {
             id: self.id.clone(),
             device_key_hex: self.device_key_hex.clone(),
@@ -566,14 +574,68 @@ fn available_transports(live: Option<&DeviceLive>, now: i64) -> Vec<Transport> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceLive, Transport, WIFI_SUCCESS_LIFETIME_SECS, available_transports,
+        DeviceLive, Transport, TransferRow, WIFI_SUCCESS_LIFETIME_SECS, available_transports,
         clear_gone_usb_forwards,
     };
+    use crate::{Direction, TransferState};
+    use ferry_core::chunk::ChunkSize;
+    use ferry_core::path::RemotePath;
     use std::collections::BTreeMap;
+    use std::time::Duration;
 
     #[test]
     fn no_live_record_means_no_transport() {
         assert_eq!(available_transports(None, 1_000), Vec::new());
+    }
+
+    /// A row with every field set to something plain, so a test can override
+    /// just the ones it cares about.
+    fn sample_row(chunk_size: ChunkSize, bytes_total: u64, bytes_done: u64) -> TransferRow {
+        TransferRow {
+            id: "device-1".to_owned(),
+            device_key_hex: "device".to_owned(),
+            file_name: "a.bin".to_owned(),
+            source: RemotePath::parse("a.bin").expect("a valid path"),
+            destination: RemotePath::parse("a.bin").expect("a valid path"),
+            bytes_total,
+            bytes_done,
+            state: TransferState::Paused,
+            transport: None,
+            error: None,
+            source_size: None,
+            source_mtime: None,
+            running: false,
+            attempt_after: None,
+            backoff: Duration::from_secs(1),
+            started_unix_secs: 0,
+            ended_unix_secs: None,
+            direction: Direction::Pull,
+            speed_bytes_per_sec: None,
+            batch_id: None,
+            chunk_size,
+        }
+    }
+
+    #[test]
+    fn info_uses_the_rows_own_chunk_size_not_the_engine_default() {
+        // Half a mebibyte, deliberately not the engine's own default of one
+        // mebibyte (`ChunkSize::one_mebibyte`), the way a row loaded from a
+        // record written under an earlier `set_chunk_size` setting would be.
+        let half_mebibyte = ChunkSize::new(512 * 1024).expect("a valid chunk size");
+        let row = sample_row(half_mebibyte, 2 * 1024 * 1024, 1024 * 1024);
+
+        let info = row.info();
+
+        // At the engine's 1 MiB default this would be 2 chunks total and 1
+        // verified. At the row's own 512 KiB it is twice that.
+        assert_eq!(
+            info.chunks_total, 4,
+            "2 MiB at the row's own 512 KiB chunks is 4 chunks, not 2"
+        );
+        assert_eq!(
+            info.chunks_verified, 2,
+            "1 MiB done is 2 whole 512 KiB chunks, not 1"
+        );
     }
 
     #[test]
