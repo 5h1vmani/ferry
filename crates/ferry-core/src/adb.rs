@@ -616,6 +616,9 @@ mod tests {
 
     #[test]
     fn a_child_that_prints_more_than_a_pipe_buffer_does_not_deadlock() {
+        let _lock = ENV_MUTEX
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A pipe buffer is a few tens of KiB on every platform Ferry
         // supports, so 256 KiB on stdout and 256 KiB on stderr both overflow
         // it. Before the fix, `Adb::run` only read a pipe after the child
@@ -623,7 +626,10 @@ mod tests {
         // never exit, and `devices()` would run out the full timeout.
         let binary = fake_adb(
             "pipe-buffer",
-            "yes | head -c 262144\nyes | head -c 262144 1>&2\nprintf 'AAA1\\tdevice product:foo\\n'\nexit 0\n",
+            // Absolute paths, because another test in this binary rewrites PATH for
+            // the whole process while it runs. A real header line, because the
+            // parser skips the first line and must not skip the device.
+            "printf 'List of devices attached\\n'\n/usr/bin/yes | /usr/bin/head -c 262144\n/usr/bin/yes | /usr/bin/head -c 262144 1>&2\nprintf 'AAA1\\tdevice product:foo\\n'\nexit 0\n",
         );
         // A deadlocked child hits this budget and returns Timeout, which fails the
         // assertion below. A slow but working child still returns the device.
