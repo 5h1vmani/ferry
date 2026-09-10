@@ -5,10 +5,14 @@
 // time may use a data directory: the second is refused. See the crate
 // documentation for ferry-runtime.
 //
+// Views never read an engine type. This model publishes snapshots from
+// Model/Snapshot.swift, built by Engine/EngineAdapter.swift. That keeps the
+// fifteen engine gaps in docs/engine-contract.md inside one file.
+//
 // Which thread runs what:
 //
-//   - devices() and transfers() are local reads, so they run on the main
-//     actor when a callback says something changed.
+//   - devices(), transfers(), and access_log() are local reads, so they run
+//     on the main actor when a callback says something changed.
 //   - list, pull, forget, and retry talk to the other device, so each one
 //     runs in a detached task and publishes its result back on the main
 //     actor.
@@ -18,28 +22,49 @@ import SwiftUI
 
 @MainActor
 final class EngineModel: ObservableObject {
-    /// Every paired device, newest state first read.
-    @Published private(set) var devices: [DeviceInfo] = []
-    /// Every transfer the engine holds, for every device.
-    @Published private(set) var transfers: [TransferInfo] = []
-    /// Where pairing is right now.
-    @Published private(set) var pairing: PairingState = .idle
+    /// Every paired device, as the screens show it.
+    @Published private(set) var devices: [DeviceSnapshot] = []
+    /// Where the pairing sheet is, for the method a person chose.
+    @Published private(set) var pairing: PairingScreen = .choosing
+    /// Whether this Mac advertises, and what is moving.
+    @Published private(set) var presence: PresenceSnapshot = .unknown
+    /// The folders this Mac serves.
+    @Published private(set) var roots: [SharedRootSnapshot] = []
     /// Set when the engine could not be built or started. While this is
     /// set, the window shows it instead of the devices.
     @Published private(set) var startError: ThreePartError?
     /// Set when one action failed, such as a pull that could not start.
     @Published var actionError: ThreePartError?
-    /// The folder served to paired devices, and where pulled files land.
-    @Published private(set) var sharedFolderPath: String
+    /// Where pulled files land.
+    @Published private(set) var downloadPath: String
+
+    /// The engine's own values, kept so a change notification can rebuild
+    /// snapshots without asking the engine twice.
+    private var deviceInfos: [DeviceInfo] = []
+    private var transferInfos: [TransferInfo] = []
+    private var pairingState: PairingState = .idle
+    /// Which way in a person chose. A view concern, held here because the
+    /// engine is told about it and the sheet may be rebuilt at any moment.
+    private var pairingMethod: PairingMethod?
+
+    /// What this Mac last told the engine about advertising.
+    ///
+    /// TODO(engine 1): this is a cached copy because `set_reachable` has no
+    /// getter. It is the one piece of state in the app that is not read
+    /// from its owner, it is wrong after a restart, and it is deleted the
+    /// day `status()` lands. Nothing outside this file may read it: views
+    /// read `presence`.
+    private var cachedAdvertising = true
 
     private var engine: Engine?
     private var events: EngineEvents?
 
-    private static let sharedFolderKey = "sharedFolderPath"
+    private static let downloadPathKey = "sharedFolderPath"
     private static let displayNameLimit = 64
 
     init() {
-        sharedFolderPath = EngineModel.storedSharedFolderPath()
+        downloadPath = EngineModel.storedDownloadPath()
+        roots = EngineAdapter.roots(sharedFolderPath: downloadPath)
     }
 
     // MARK: - Starting and stopping
@@ -56,10 +81,13 @@ final class EngineModel: ObservableObject {
         do {
             EngineModel.addAdbToPath()
             let dataDir = try EngineModel.makeDataDirectory()
-            try EngineModel.makeDirectory(at: sharedFolderPath)
+            try EngineModel.makeDirectory(at: downloadPath)
+            // TODO(engine 15): Config takes one root. Desktop and Downloads
+            // need `shared_roots: Vec<Root>` and a separate download_dir;
+            // until then the download folder is also the only root.
             let config = Config(
                 dataDir: dataDir,
-                sharedRoot: sharedFolderPath,
+                sharedRoot: downloadPath,
                 displayName: EngineModel.displayName(),
                 listenPort: 0,
                 key: try KeyStore.loadOrCreate()
@@ -86,50 +114,113 @@ final class EngineModel: ObservableObject {
         engine?.stop()
         engine = nil
         events = nil
+        deviceInfos = []
+        transferInfos = []
         devices = []
-        transfers = []
-        pairing = .idle
-    }
-
-    /// Serves a different folder. The engine is stopped first, because one
-    /// engine at a time may use the data directory.
-    func changeSharedFolder(to path: String) {
-        stop()
-        sharedFolderPath = path
-        UserDefaults.standard.set(path, forKey: EngineModel.sharedFolderKey)
-        start()
+        pairingState = .idle
+        pairingMethod = nil
+        pairing = .choosing
+        presence = .unknown
     }
 
     // MARK: - What the listener calls
 
     func reloadDevices() {
-        devices = engine?.devices() ?? []
+        deviceInfos = engine?.devices() ?? []
+        devices = EngineAdapter.devices(deviceInfos)
+        refreshPresence()
     }
 
     func reloadTransfers() {
-        transfers = engine?.transfers() ?? []
+        transferInfos = engine?.transfers() ?? []
+        // A transfer moving changes a device's speed, which the badge and
+        // the menu bar both state.
+        refreshPresence()
+        objectWillChange.send()
+    }
+
+    /// TODO(engine 13): `access_log_changed` does not exist yet. When it
+    /// does, EngineEvents calls this and the section reloads.
+    func reloadAccessLog() {
+        objectWillChange.send()
     }
 
     func pairingMoved(to state: PairingState) {
-        pairing = state
+        pairingState = state
+        refreshPairing()
+    }
+
+    private func refreshPresence() {
+        presence = EngineAdapter.presence(
+            cachedAdvertising: cachedAdvertising,
+            devices: deviceInfos
+        )
+    }
+
+    private func refreshPairing() {
+        pairing = EngineAdapter.pairing(pairingState, method: pairingMethod)
     }
 
     // MARK: - Reading
 
-    /// Every transfer for one device, in the order the engine holds them.
-    func transfers(for keyHex: String) -> [TransferInfo] {
-        transfers.filter { $0.deviceKeyHex == keyHex }
+    /// One device by its key, or nil once it is forgotten.
+    func device(keyHex: String) -> DeviceSnapshot? {
+        devices.first { $0.keyHex == keyHex }
     }
 
-    /// The speed the engine reports for one device, if bytes are moving.
-    func speed(forDevice keyHex: String) -> UInt64? {
-        devices.first(where: { $0.keyHex == keyHex })?.speedBytesPerSec
+    /// Every transfer for one device, grouped as the Transfers section
+    /// shows them.
+    func groups(forDevice keyHex: String) -> [TransferGroupSnapshot] {
+        EngineAdapter.groups(
+            transfers: transferInfos.filter { $0.deviceKeyHex == keyHex },
+            deviceSpeedBytesPerSec: device(keyHex: keyHex)?.speedBytesPerSec
+        )
+    }
+
+    /// Whether the phone's folders are mounted in Finder, and where.
+    func mount(forDevice keyHex: String) -> MountSnapshot {
+        EngineAdapter.mount(forDevice: keyHex)
+    }
+
+    /// Job 7's switch and its lines, for one device.
+    func autoCopy(forDevice keyHex: String) -> AutoCopySnapshot {
+        EngineAdapter.autoCopy(forDevice: keyHex, downloadDir: downloadPath)
+    }
+
+    /// The access log for one device, grouped by day, newest first.
+    func accessLog(forDevice keyHex: String) -> [AccessDaySnapshot] {
+        EngineAdapter.accessLog(forDevice: keyHex)
+    }
+
+    // MARK: - Presence
+
+    /// Turns advertising on or off. Job 5's only control.
+    func setAdvertising(_ on: Bool) {
+        cachedAdvertising = on
+        engine?.setReachable(on: on)
+        refreshPresence()
+    }
+
+    // MARK: - Automatic, job 7
+
+    /// TODO(engine 14): `set_auto_copy` does not exist, so the switch is
+    /// disabled in the view and this does nothing. It is here so that the
+    /// view's shape does not change when the engine gains it.
+    func setAutoCopy(forDevice keyHex: String, enabled: Bool) {
     }
 
     // MARK: - Pairing
 
-    func startPairing() {
+    /// Enters pairing by one method. Called when the sheet opens and again
+    /// if a person switches methods.
+    func startPairing(method: PairingMethod) {
+        pairingMethod = method
+        // TODO(engine 12): `start_pairing_with(method)` does not exist, so
+        // both methods start the same engine-side flow. The scan method
+        // then shows a placeholder code, which is why it is not the only
+        // way in.
         engine?.startPairing()
+        refreshPairing()
     }
 
     func pickCandidate(id: String) {
@@ -141,12 +232,38 @@ final class EngineModel: ObservableObject {
         }
     }
 
+    /// Answers the six digits, and — once item 12 lands — the Mac's Pair or
+    /// Refuse on a scanned request.
     func confirmPairing(accept: Bool) {
         engine?.confirmPairing(accept: accept)
     }
 
     func cancelPairing() {
+        pairingMethod = nil
         engine?.cancelPairing()
+        refreshPairing()
+    }
+
+    // MARK: - Shared folders
+
+    /// Serves a different set of folders. The engine is stopped first,
+    /// because one engine at a time may use the data directory.
+    ///
+    /// TODO(engine 15): with one root in Config, adding a folder replaces
+    /// the root rather than adding to it. The view is written against the
+    /// list, so when `set_roots` lands only this function changes.
+    func setRoots(_ paths: [String]) {
+        guard let first = paths.first else { return }
+        stop()
+        downloadPath = first
+        UserDefaults.standard.set(first, forKey: EngineModel.downloadPathKey)
+        roots = EngineAdapter.roots(sharedFolderPath: first)
+        start()
+    }
+
+    /// Where pulled files land.
+    func setDownloadPath(_ path: String) {
+        setRoots([path])
     }
 
     // MARK: - Work that talks to the other device
@@ -208,8 +325,8 @@ final class EngineModel: ObservableObject {
 
     // MARK: - Where things live
 
-    private static func storedSharedFolderPath() -> String {
-        if let stored = UserDefaults.standard.string(forKey: sharedFolderKey), !stored.isEmpty {
+    private static func storedDownloadPath() -> String {
+        if let stored = UserDefaults.standard.string(forKey: downloadPathKey), !stored.isEmpty {
             return stored
         }
         return NSHomeDirectory() + "/Downloads/Ferry"

@@ -1,11 +1,14 @@
-// The app entry point: one window, and the standard Settings scene
-// (docs/ia.md, On the Mac: "Settings: the standard Settings window,
-// Command comma").
+// The app entry point: one window, presence in the menu bar, and the
+// standard Settings scene (docs/ia.md, On the Mac).
 //
 // The engine is built and started here, once, and every screen reads it
 // through the environment. The delegate stops it on quit. Stopping is not
 // optional: the listener holds the model and the model holds the engine, so
 // dropping the app would never run the engine's own clean up.
+//
+// The menu bar scene reads the same model as the window. Two surfaces, one
+// value: presence is ambient, so it appears wherever a person already is,
+// and it can only do that honestly if neither surface owns the state.
 
 import SwiftUI
 import AppKit
@@ -24,6 +27,14 @@ struct FerryApp: App {
                     model.start()
                 }
         }
+
+        MenuBarExtra {
+            MenuBarPresence()
+                .environmentObject(model)
+        } label: {
+            MenuBarLabel(presence: model.presence)
+        }
+        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsView()

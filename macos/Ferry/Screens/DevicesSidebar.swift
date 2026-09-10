@@ -1,33 +1,47 @@
-// The sidebar on the left: one row per paired device, and "Pair a phone"
-// at the bottom (docs/ia.md, On the Mac). Empty shows EmptyState instead.
+// The sidebar on the left: one row per paired device, the presence control,
+// and "Pair a phone" (docs/ia.md, On the Mac).
+//
+// The presence control is pinned to the footer rather than filed in
+// Settings. It is a mode with a consequence, not a preference, and it is
+// the one true fact Ferry can state about itself before anything is paired
+// — so it shows in the empty state too.
 
 import SwiftUI
 
 struct DevicesSidebar: View {
-    let devices: [DeviceInfo]
+    let devices: [DeviceSnapshot]
+    let presence: PresenceSnapshot
     /// The selected device's public key.
     @Binding var selection: String?
     var onPair: () -> Void = {}
+    var onAdvertisingChange: (Bool) -> Void = { _ in }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if devices.isEmpty {
                 EmptyState(line: S.devices.noPhonePaired, actionLabel: S.devices.pairAPhone, action: onPair)
+                    .frame(maxHeight: .infinity)
             } else {
-                VStack(spacing: 0) {
-                    List(devices, selection: $selection) { device in
-                        DeviceRow(device: device)
-                            .tag(device.keyHex)
-                    }
-                    Divider()
-                    Button(action: onPair) {
-                        Label(S.devices.pairAPhone, systemImage: FerryIcon.pair)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .padding(FerrySpace.s3)
+                List(devices, selection: $selection) { device in
+                    DeviceRow(device: device)
+                        .tag(device.keyHex)
                 }
             }
+
+            Divider()
+
+            PresenceControl(presence: presence, onChange: onAdvertisingChange)
+                .padding(.horizontal, FerrySpace.s3)
+                .padding(.vertical, FerrySpace.s2)
+
+            Divider()
+
+            Button(action: onPair) {
+                Label(S.devices.pairAPhone, systemImage: FerryIcon.pair)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .padding(FerrySpace.s3)
         }
         .navigationTitle(S.devices.sidebarTitle)
     }
@@ -36,15 +50,23 @@ struct DevicesSidebar: View {
 #if DEBUG
 #Preview {
     NavigationSplitView {
-        DevicesSidebar(devices: PreviewData.devices, selection: .constant(nil))
+        DevicesSidebar(
+            devices: PreviewData.deviceSnapshots,
+            presence: PreviewData.advertising,
+            selection: .constant(nil)
+        )
     } detail: {
         EmptyState(line: S.devices.noPhoneSelected)
     }
 }
 
-#Preview("Empty") {
+#Preview("Empty, not advertising") {
     NavigationSplitView {
-        DevicesSidebar(devices: [], selection: .constant(nil))
+        DevicesSidebar(
+            devices: [],
+            presence: .unknown,
+            selection: .constant(nil)
+        )
     } detail: {
         EmptyState(line: S.devices.noPhoneSelected)
     }

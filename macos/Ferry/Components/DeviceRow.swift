@@ -1,59 +1,68 @@
 // One paired device in the Devices list (docs/components.md, DeviceRow).
-// The platform row is a row inside the sidebar List; this view is only the
-// row's content.
+//
+// Built from the platform sidebar row. The row states the device's name,
+// how it is reachable, the spare transport when there is one, and when it
+// was last seen when it is not reachable. It is one accessibility element,
+// not four, so a screen reader reads it as one sentence.
 
 import SwiftUI
 
 struct DeviceRow: View {
-    let device: DeviceInfo
-
-    private var isReachable: Bool { device.reachableVia != nil }
+    let device: DeviceSnapshot
 
     var body: some View {
-        HStack(spacing: FerrySpace.s3) {
-            Image(systemName: FerryIcon.devicePhone)
-                .foregroundStyle(isReachable ? FerryColor.text : FerryColor.textSecondary)
+        HStack(spacing: FerrySpace.s2) {
+            Image(systemName: icon)
+                .foregroundStyle(device.isReachable ? FerryColor.text : FerryColor.textSecondary)
 
-            VStack(alignment: .leading, spacing: FerrySpace.s1) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(device.name)
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.text)
+                    .lineLimit(1)
 
-                TransportBadge(state: TransportBadgeState(device: device))
+                TransportBadge(state: device.badge)
 
-                if let lastSeen = lastSeenText {
+                if let spare = device.spareTransport {
+                    Text(S.devices.spareTransport(spare))
+                        .font(FerryFont.caption)
+                        .foregroundStyle(FerryColor.textSecondary)
+                }
+
+                if let lastSeen = device.lastSeen {
                     Text(lastSeen)
                         .font(FerryFont.caption)
                         .foregroundStyle(FerryColor.textSecondary)
                 }
             }
         }
+        .frame(minHeight: 32)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    /// Only shown while the device is not reachable, which is when the
-    /// engine reports a last seen time.
-    private var lastSeenText: String? {
-        guard let seconds = device.lastSeenUnixSecs else { return nil }
-        return S.devices.lastSeen(FerryFormat.relative(unixSecs: seconds))
-    }
-
-    private var accessibilityLabel: String {
-        let badgeLabel = TransportBadge.accessibilityText(for: TransportBadgeState(device: device))
-        return S.deviceRow.accessibilityLabel(
-            name: device.name,
-            badge: badgeLabel,
-            lastSeen: lastSeenText
+        .accessibilityLabel(
+            S.deviceRow.accessibilityLabel(
+                name: device.name,
+                badge: TransportBadge.accessibilityText(for: device.badge),
+                spareTransport: device.spareTransport.map { S.devices.spareTransport($0) },
+                lastSeen: device.lastSeen
+            )
         )
+    }
+
+    private var icon: String {
+        switch device.kind {
+        case .phone: return FerryIcon.devicePhone
+        case .mac: return FerryIcon.deviceMac
+        }
     }
 }
 
 #if DEBUG
 #Preview {
     List {
-        DeviceRow(device: PreviewData.reachablePhone)
-        DeviceRow(device: PreviewData.unreachablePhone)
+        ForEach(PreviewData.deviceSnapshots) { device in
+            DeviceRow(device: device)
+        }
     }
+    .frame(width: 232)
 }
 #endif

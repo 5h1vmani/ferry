@@ -1,8 +1,9 @@
 // One window: a sidebar listing Devices, and the selected device's detail
 // on the right (docs/ia.md, On the Mac). No tabs, no toolbar clutter.
 //
-// Everything shown here comes from the engine. When the engine could not
-// start, the window shows that error instead, with a Retry control.
+// Everything shown here comes from the engine, through the snapshots the
+// model publishes. When the engine could not start, the window shows that
+// error instead, with a Retry control.
 
 import SwiftUI
 
@@ -30,9 +31,13 @@ struct ContentView: View {
 
     private var window: some View {
         NavigationSplitView {
-            DevicesSidebar(devices: model.devices, selection: $selection) {
-                isPairingPresented = true
-            }
+            DevicesSidebar(
+                devices: model.devices,
+                presence: model.presence,
+                selection: $selection,
+                onPair: { isPairingPresented = true },
+                onAdvertisingChange: { model.setAdvertising($0) }
+            )
         } detail: {
             if let device = selectedDevice {
                 DeviceDetail(device: device)
@@ -51,8 +56,8 @@ struct ContentView: View {
         }
     }
 
-    private var selectedDevice: DeviceInfo? {
+    private var selectedDevice: DeviceSnapshot? {
         guard let selection else { return nil }
-        return model.devices.first(where: { $0.keyHex == selection })
+        return model.device(keyHex: selection)
     }
 }

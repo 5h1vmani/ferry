@@ -1,0 +1,332 @@
+// The one place the engine's types are read.
+//
+// Everything the screens show is a snapshot from Model/Snapshot.swift.
+// This file turns the values UniFFI exports into those snapshots, and it is
+// the only file in the app that names DeviceInfo, TransferInfo, Entry, or
+// PairingState. A view that needed a new engine field would change this
+// file and its own body, and nothing in between.
+//
+// Fifteen facts the screens state have no field in the engine yet. Each one
+// is marked `TODO(engine N)`, where N is its item number in
+// docs/engine-contract.md, and each has a default here that is honest: a
+// missing count is absent, not zero, and a missing sentence is left out,
+// not guessed. That is the three-part rule from docs/voice.md applied to
+// the boundary rather than to prose.
+//
+//   grep -rn "TODO(engine" macos/
+//
+// is the list of what is still missing, and it shrinks as items land.
+
+import Foundation
+
+enum EngineAdapter {
+
+    // MARK: - Devices
+
+    /// One device as the sidebar and the detail pane show it.
+    static func device(_ info: DeviceInfo) -> DeviceSnapshot {
+        DeviceSnapshot(
+            keyHex: info.keyHex,
+            name: info.name,
+            // TODO(engine 11): DeviceInfo carries no kind. Every peer of
+            // this Mac is a phone, so this is correct until two Macs pair.
+            kind: .phone,
+            isReachable: info.reachableVia != nil,
+            badge: TransportBadgeState(device: info),
+            spareTransport: spareTransport(for: info),
+            lastSeen: info.lastSeenUnixSecs.map { S.devices.lastSeen(FerryFormat.relative(unixSecs: $0)) },
+            pairedDate: FerryFormat.longDate(unixSecs: info.pairedUnixSecs),
+            speedBytesPerSec: info.speedBytesPerSec
+        )
+    }
+
+    static func devices(_ infos: [DeviceInfo]) -> [DeviceSnapshot] {
+        infos.map(device)
+    }
+
+    /// A transport that is available but not carrying bytes.
+    ///
+    /// TODO(engine 3): DeviceInfo holds one `reachable_via`, so it cannot
+    /// say "USB active, Wi-Fi spare". Until `available_transports` lands
+    /// there is nothing to compare the active path against, and the line is
+    /// left out rather than assumed.
+    private static func spareTransport(for info: DeviceInfo) -> Transport? {
+        nil
+    }
+
+    // MARK: - Movement
+
+    /// Every transfer for one device, grouped as the Transfers section
+    /// shows them, newest first.
+    ///
+    /// TODO(engine 2): the engine has no batch, so this makes one group per
+    /// transfer. When `batches()` lands, this function groups by batch id
+    /// and every view above it is unchanged.
+    static func groups(
+        transfers: [TransferInfo],
+        deviceSpeedBytesPerSec: UInt64?
+    ) -> [TransferGroupSnapshot] {
+        transfers.map { group($0, deviceSpeedBytesPerSec: deviceSpeedBytesPerSec) }
+    }
+
+    static func group(
+        _ transfer: TransferInfo,
+        deviceSpeedBytesPerSec: UInt64?
+    ) -> TransferGroupSnapshot {
+        // A pause is not a failure, so its words carry no retry control:
+        // the engine resumes it on its own (docs/ia.md, Transfers).
+        let words: ThreePartError? = transfer.error.map {
+            ThreePartError($0, canRetry: transfer.state == .failed)
+        }
+
+        return TransferGroupSnapshot(
+            id: transfer.id,
+            label: transfer.fileName,
+            // TODO(engine 4): direction is not carried. Every transfer the
+            // core can run is a pull, so this is true until push lands
+            // (item 5).
+            direction: .phoneToMac,
+            // TODO(engine 14): origin is not carried, and auto copy does
+            // not exist, so nothing is automatic yet. Every row says who
+            // asked for it by saying nothing.
+            origin: .manual,
+            state: transfer.state,
+            filesDone: transfer.state == .done ? 1 : 0,
+            filesTotal: 1,
+            bytesDone: transfer.bytesDone,
+            bytesTotal: transfer.bytesTotal,
+            // TODO(engine 8): speed is per device, not per transfer, so
+            // with two active transfers to one phone this attributes the
+            // device's speed to each. The state guard keeps it off rows
+            // that are not moving.
+            speedBytesPerSec: transfer.state == .active ? deviceSpeedBytesPerSec : nil,
+            transport: transfer.transport,
+            error: words,
+            chunks: chunks(for: transfer),
+            // TODO(engine 9): no timestamps on TransferInfo, so a done row
+            // states its size and file count and not how long it took.
+            duration: nil
+        )
+    }
+
+    /// The chunk facts for one transfer, or nil when there are none.
+    ///
+    /// TODO(engine 7): `chunks_total` and `chunks_verified` are not
+    /// published. A verify failure does name its chunk in `error.detail`,
+    /// so that index is recovered and the counts are marked uncounted. The
+    /// disclosure then shows the index and no total, which is the
+    /// three-part rule again: the unknown part is left out.
+    private static func chunks(for transfer: TransferInfo) -> ChunkFacts? {
+        guard transfer.state == .failed, let error = transfer.error else { return nil }
+        guard let index = failedChunkIndex(in: error) else { return nil }
+        return ChunkFacts(verified: 0, total: 0, failedIndex: index, isCounted: false)
+    }
+
+    /// The chunk index a verify failure carries in its detail. The engine
+    /// puts a value there, never a sentence, so a detail that is a plain
+    /// number is the index.
+    private static func failedChunkIndex(in error: FerryError) -> UInt32? {
+        switch error {
+        case let .Failed(_, detail):
+            guard let detail else { return nil }
+            return UInt32(detail.trimmingCharacters(in: .whitespaces))
+        }
+    }
+
+    /// Job 7's switch and its three lines.
+    ///
+    /// TODO(engine 14): `auto_copy` does not exist. The section renders
+    /// with the switch off and disabled, which states the truth: Ferry
+    /// cannot do this yet. It does not render as off-but-available, which
+    /// would be a small lie.
+    static func autoCopy(forDevice keyHex: String, downloadDir: String) -> AutoCopySnapshot {
+        AutoCopySnapshot(
+            isEnabled: false,
+            source: "DCIM",
+            destination: downloadDir,
+            lastRun: nil,
+            isSupported: false
+        )
+    }
+
+    // MARK: - Presence
+
+    /// What the four presence surfaces show.
+    ///
+    /// TODO(engine 1): `set_reachable` has no getter, so `isAdvertising` is
+    /// the app's own copy of what it last set and `isReportedByEngine` is
+    /// false. When `status()` lands, both come from the engine and the
+    /// cached value in EngineModel is deleted.
+    static func presence(
+        cachedAdvertising: Bool,
+        devices: [DeviceInfo]
+    ) -> PresenceSnapshot {
+        // The menu bar states the fastest thing moving, because it has room
+        // for one number and that is the one a person is waiting on.
+        let moving = devices
+            .filter { ($0.speedBytesPerSec ?? 0) > 0 }
+            .max { ($0.speedBytesPerSec ?? 0) < ($1.speedBytesPerSec ?? 0) }
+
+        return PresenceSnapshot(
+            isAdvertising: cachedAdvertising,
+            activeTransport: moving?.reachableVia,
+            speedBytesPerSec: moving?.speedBytesPerSec,
+            isReportedByEngine: false
+        )
+    }
+
+    // MARK: - Access, L2
+
+    /// Whether the phone's folders are mounted in Finder, and where.
+    ///
+    /// TODO(engine 6): nothing reports mount state, and the choice of who
+    /// owns it — the engine, or this app through FSKit — is open. Until it
+    /// is made there is nothing true to say, so the Access section is
+    /// absent rather than showing a negative.
+    static func mount(forDevice keyHex: String) -> MountSnapshot {
+        .notMounted
+    }
+
+    /// The folders this Mac serves.
+    ///
+    /// TODO(engine 15): `Config.shared_root` is one path, so this reports
+    /// one root named after its last path component. When `roots()` lands,
+    /// Desktop and Downloads are two rows and this function reads them.
+    static func roots(sharedFolderPath: String) -> [SharedRootSnapshot] {
+        [
+            SharedRootSnapshot(
+                name: (sharedFolderPath as NSString).lastPathComponent,
+                path: sharedFolderPath,
+                isWritable: true
+            )
+        ]
+    }
+
+    // MARK: - Record, L5
+
+    /// The access log for one device, grouped by day, newest first.
+    ///
+    /// TODO(engine 13): the engine does not log at the file operations
+    /// layer, so there is nothing to read and the screen shows its empty
+    /// state. A log derived from transfers is deliberately not built here:
+    /// a Finder browse produces no transfer, so it would miss most of what
+    /// job 9 exists to record, and a log that is quietly incomplete is
+    /// worse than one that is honestly empty.
+    static func accessLog(forDevice keyHex: String) -> [AccessDaySnapshot] {
+        days(from: [])
+    }
+
+    /// Groups entries into days. The one place "Today" is decided, so two
+    /// views cannot disagree about where a midnight boundary falls.
+    static func days(from entries: [AccessEntrySnapshot], now: Date = Date()) -> [AccessDaySnapshot] {
+        guard !entries.isEmpty else { return [] }
+        let calendar = Calendar.current
+        // Entries arrive newest first and stay in that order inside a day.
+        var order: [String] = []
+        var byTitle: [String: [AccessEntrySnapshot]] = [:]
+        for entry in entries {
+            let title = entry.dayTitle(now: now, calendar: calendar)
+            if byTitle[title] == nil {
+                order.append(title)
+                byTitle[title] = []
+            }
+            byTitle[title]?.append(entry)
+        }
+        return order.map { AccessDaySnapshot(title: $0, entries: byTitle[$0] ?? []) }
+    }
+
+    // MARK: - Pairing, L1
+
+    /// Where the pairing sheet is, from the engine's state and the method a
+    /// person chose. One function, so the sheet switches on one value
+    /// instead of two.
+    ///
+    /// TODO(engine 12): two states are missing from `PairingState` and so
+    /// cannot be produced here. `Offering { offer }` would replace the
+    /// placeholder below, and `Requested { name, transport }` is what the
+    /// Mac answers with Pair or Refuse. Until they land, the scan method
+    /// shows a code nothing can scan, which is why `isReal` is false and
+    /// why the sheet always offers the code method as well.
+    static func pairing(_ state: PairingState, method: PairingMethod?) -> PairingScreen {
+        switch state {
+        case .idle:
+            guard let method else { return .choosing }
+            return method == .scan ? .offering(offer(expiresUnixSecs: nil)) : .waiting
+
+        case .waiting:
+            // TODO(engine 12): the engine has no Offering state, so the
+            // scan method borrows Waiting and shows a placeholder payload.
+            // When `start_pairing_with(Qr)` lands, Offering carries the
+            // real bytes and their expiry.
+            if method == .scan {
+                return .offering(offer(expiresUnixSecs: nil))
+            }
+            return .waiting
+
+        case let .found(candidates):
+            // A scan needs nothing to browse: the phone already knows which
+            // Mac it scanned. Candidates only reach the code method.
+            if method == .scan {
+                return .offering(offer(expiresUnixSecs: nil))
+            }
+            return .found(candidates.map(candidate))
+
+        case let .code(code):
+            return .code(digits: FerryFormat.pairingCode(code))
+
+        case let .confirmed(device):
+            return .confirmed(keyHex: device.keyHex)
+
+        case let .failed(error):
+            return .failed(ThreePartError(error, canRetry: true))
+        }
+    }
+
+    /// The bytes the Mac renders as a square code.
+    ///
+    /// TODO(engine 12): a placeholder until the engine serialises the real
+    /// payload. `isReal` is false so the view can say so rather than
+    /// present an unusable code as usable.
+    private static func offer(expiresUnixSecs: Int64?) -> PairingOfferSnapshot {
+        PairingOfferSnapshot(
+            payload: Data(S.pairing.placeholderPayload.utf8),
+            // TODO(engine 10): no deadline is published, so no count is
+            // shown. An unknown part is left out, not guessed.
+            expiresIn: expiresUnixSecs.map {
+                FerryFormat.countdown(seconds: $0 - Int64(Date().timeIntervalSince1970))
+            },
+            isReal: false
+        )
+    }
+
+    /// "Phone over USB" or "Phone on Wi-Fi · 3F9A" (docs/ia.md,
+    /// Pairing, the Mac, by code).
+    private static func candidate(_ candidate: PairingCandidate) -> PairingCandidateSnapshot {
+        let label: String
+        switch candidate.transport {
+        case .usb:
+            label = S.pairing.candidateUSB
+        case .wifi:
+            label = S.pairing.candidateWifi(shortCode: candidate.shortCode)
+        }
+        return PairingCandidateSnapshot(id: candidate.id, label: label)
+    }
+}
+
+// MARK: - Day titles
+
+extension AccessEntrySnapshot {
+    /// "Today", "Yesterday", or "8 September 2026". Decided here rather
+    /// than in a view, so that a row renders a title it was given and two
+    /// screens cannot disagree about where midnight falls.
+    fileprivate func dayTitle(now: Date, calendar: Calendar) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(atUnixSecs))
+        if calendar.isDateInToday(date) {
+            return S.accessLog.today
+        }
+        if calendar.isDateInYesterday(date) {
+            return S.accessLog.yesterday
+        }
+        return FerryFormat.longDate(unixSecs: atUnixSecs)
+    }
+}

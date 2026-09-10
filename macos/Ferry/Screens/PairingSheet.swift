@@ -1,9 +1,15 @@
 // A sheet over the window (docs/ia.md, On the Mac, Pairing). The engine
-// drives every state: the sheet asks it to start pairing when it opens, and
-// then shows whatever the engine reports.
+// drives every state; this sheet chooses which way in and shows whatever
+// the engine reports.
 //
-// Confirmed closes the sheet and selects the new device, which is the last
-// step of the Mac's first run.
+// Two methods, one destination. A scan is fewer steps when both devices are
+// in reach, which is when pairing happens, so it is offered first. The code
+// method is the whole of the first version's flow and is one control away.
+// Both end at Confirmed, with the same device in the same list, and every
+// screen after pairing is untouched.
+//
+// Pairing is a once-ever job, so two ways in is one screen more, not two
+// things to maintain forever.
 
 import SwiftUI
 
@@ -24,9 +30,9 @@ struct PairingSheet: View {
             Spacer(minLength: 0)
         }
         .padding(FerrySpace.s6)
-        .frame(minWidth: 460, minHeight: 380)
+        .frame(minWidth: 460, minHeight: 420)
         .onAppear {
-            model.startPairing()
+            model.startPairing(method: .scan)
         }
         .onDisappear {
             // Closing the sheet any other way, such as with the Escape key,
@@ -36,9 +42,9 @@ struct PairingSheet: View {
             }
             model.cancelPairing()
         }
-        .onChange(of: model.pairing) { _, state in
-            guard case .confirmed(let device) = state else { return }
-            selection = device.keyHex
+        .onChange(of: model.pairing) { _, screen in
+            guard case let .confirmed(keyHex) = screen else { return }
+            selection = keyHex
             Task {
                 // The paired icon shows for one second, then the sheet
                 // closes (docs/components.md, PairingCode).
@@ -51,7 +57,36 @@ struct PairingSheet: View {
     @ViewBuilder
     private var content: some View {
         switch model.pairing {
-        case .idle, .waiting:
+        case .choosing:
+            // Reached only if the engine has not moved yet. Both controls
+            // are shown rather than guessing which a person wants.
+            VStack(spacing: FerrySpace.s3) {
+                Button(S.pairing.scanTheCode) {
+                    model.startPairing(method: .scan)
+                }
+                .buttonStyle(.borderedProminent)
+                Button(S.pairing.useCodeInstead) {
+                    model.startPairing(method: .code)
+                }
+                .buttonStyle(.bordered)
+            }
+
+        case let .offering(offer):
+            PairingQRView(
+                offer: offer,
+                onUseCode: { model.startPairing(method: .code) },
+                onCancel: cancel
+            )
+
+        case let .requested(name, transport):
+            PairingRequestView(
+                name: name,
+                transport: transport,
+                onPair: { model.confirmPairing(accept: true) },
+                onRefuse: { model.confirmPairing(accept: false) }
+            )
+
+        case .waiting:
             VStack(spacing: FerrySpace.s3) {
                 Text(S.pairing.waitingHeadline)
                     .font(FerryFont.title)
@@ -60,20 +95,17 @@ struct PairingSheet: View {
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.textSecondary)
                     .multilineTextAlignment(.center)
-                Button(S.common.cancel) {
-                    model.cancelPairing()
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
+                Button(S.common.cancel, action: cancel)
+                    .buttonStyle(.bordered)
             }
 
-        case .found(let candidates):
+        case let .found(candidates):
             VStack(alignment: .leading, spacing: FerrySpace.s2) {
                 ForEach(candidates) { candidate in
                     Button {
                         model.pickCandidate(id: candidate.id)
                     } label: {
-                        Text(PairingSheet.label(for: candidate))
+                        Text(candidate.label)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .buttonStyle(.bordered)
@@ -81,35 +113,25 @@ struct PairingSheet: View {
             }
             .frame(maxWidth: 320)
 
-        case .code(let code):
+        case let .code(digits):
             PairingCode(
-                state: .showing(code: FerryFormat.pairingCode(code)),
+                state: .showing(code: digits),
                 onConfirm: { model.confirmPairing(accept: true) },
-                onCancel: {
-                    model.cancelPairing()
-                    dismiss()
-                }
+                onCancel: cancel
             )
 
         case .confirmed:
             PairingCode(state: .confirmed)
 
-        case .failed(let error):
-            PairingCode(
-                state: .mismatched(ThreePartError(error, canRetry: true)),
-                onRetry: { model.startPairing() }
-            )
+        case let .failed(error):
+            PairingCode(state: .mismatched(error), onRetry: {
+                model.startPairing(method: .scan)
+            })
         }
     }
 
-    /// "Phone over USB" or "Phone on Wi-Fi · 3F9A" (docs/ia.md, Pairing,
-    /// Found).
-    private static func label(for candidate: PairingCandidate) -> String {
-        switch candidate.transport {
-        case .usb:
-            return S.pairing.candidateUSB
-        case .wifi:
-            return S.pairing.candidateWifi(shortCode: candidate.shortCode)
-        }
+    private func cancel() {
+        model.cancelPairing()
+        dismiss()
     }
 }

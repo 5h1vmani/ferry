@@ -1,0 +1,296 @@
+// The shape the screens bind to.
+//
+// Every view in Ferry reads one of these values and nothing else. None of
+// them is a type the engine exports: the engine's own types cross the
+// UniFFI boundary and are mapped once, in Engine/EngineAdapter.swift.
+//
+// Two reasons this layer exists rather than views reading DeviceInfo and
+// TransferInfo directly.
+//
+// The first is that fifteen facts the screens state are not in the engine
+// yet (docs/engine-contract.md). Each one has a field here and a marked default
+// in the adapter, so the app builds and renders today, and closing a gap is
+// a change in one file with no view touched.
+//
+// The second is that a snapshot holds what a view needs in the form the
+// view needs it. A device's badge state, a log's day grouping, and a
+// transfer's origin line are decided once, by the adapter, and not three
+// times by three views.
+
+import Foundation
+
+// MARK: - Presence
+
+/// Whether this device advertises and accepts connections, and what that
+/// costs when it does not. Job 5's only control. L0 in docs/ia.md.
+struct PresenceSnapshot: Equatable {
+    let isAdvertising: Bool
+    /// The transport carrying bytes right now, if any, and how fast.
+    let activeTransport: Transport?
+    let speedBytesPerSec: UInt64?
+
+    /// False while the engine has no getter for reachability and this value
+    /// is the app's own copy of what it last set (docs/engine-contract.md,
+    /// item 1). A view does not read this to change what it shows: the
+    /// words are the same either way. It exists so the gap is visible in
+    /// the type rather than remembered.
+    let isReportedByEngine: Bool
+
+    static let unknown = PresenceSnapshot(
+        isAdvertising: false,
+        activeTransport: nil,
+        speedBytesPerSec: nil,
+        isReportedByEngine: false
+    )
+}
+
+// MARK: - Device
+
+/// One paired device, as the Devices list and the detail pane show it.
+struct DeviceSnapshot: Equatable, Identifiable {
+    let keyHex: String
+    let name: String
+    let kind: DeviceKind
+    let isReachable: Bool
+    let badge: TransportBadgeState
+    /// A transport that is available but not carrying bytes. Stated beside
+    /// the badge so a pulled cable is not a surprise.
+    let spareTransport: Transport?
+    /// "Last seen 2 hours ago", already formatted. Nil while reachable.
+    let lastSeen: String?
+    let pairedDate: String
+    let speedBytesPerSec: UInt64?
+
+    var id: String { keyHex }
+}
+
+/// Whether a peer is a phone or a Mac. The engine does not send this yet
+/// (docs/engine-contract.md, item 11); every peer of this Mac is a phone.
+enum DeviceKind: Equatable {
+    case phone
+    case mac
+}
+
+// MARK: - Access, L2
+
+/// Whether the phone's folders are mounted in Finder, and where. Nothing
+/// reports it yet (docs/engine-contract.md, item 6), so this is empty and the
+/// section is absent.
+struct MountSnapshot: Equatable {
+    /// "/Volumes/Pixel 3 XL" while mounted.
+    let path: String?
+
+    var isReady: Bool { path != nil }
+
+    static let notMounted = MountSnapshot(path: nil)
+}
+
+/// One folder this Mac serves, under the name a peer sees. Desktop and
+/// Downloads by default (docs/engine-contract.md, item 15).
+struct SharedRootSnapshot: Equatable, Identifiable {
+    /// "Desktop". The first segment of every path the peer asks for.
+    let name: String
+    let path: String
+    let isWritable: Bool
+
+    var id: String { path }
+}
+
+// MARK: - Movement, L3
+
+/// Which way bytes are moving. The engine does not carry this yet
+/// (docs/engine-contract.md, item 4); everything the core can do is a pull.
+enum TransferDirection: Equatable {
+    case phoneToMac
+    case macToPhone
+}
+
+/// Why a batch exists: a person asked, or Ferry decided. Job 7's fact, and
+/// the reason a row can say "Automatic" instead of leaving a person to
+/// wonder who asked for it (docs/engine-contract.md, item 14).
+enum TransferOrigin: Equatable {
+    case manual
+    case automatic
+}
+
+/// Several transfers started by one action, shown as one row: "DCIM/Camera,
+/// 120 files". A single file is a group of one and renders the same way.
+///
+/// The engine has no batch object (docs/engine-contract.md, item 2), so today
+/// the adapter builds one group per transfer. When `batches()` lands, the
+/// adapter changes and this type does not.
+struct TransferGroupSnapshot: Equatable, Identifiable {
+    let id: String
+    /// "DCIM/Camera, 120 files", or one file's name.
+    let label: String
+    let direction: TransferDirection
+    let origin: TransferOrigin
+    let state: TransferState
+    let filesDone: UInt32
+    let filesTotal: UInt32
+    let bytesDone: UInt64
+    let bytesTotal: UInt64
+    let speedBytesPerSec: UInt64?
+    let transport: Transport?
+    /// The words for a failure or a pause, already looked up.
+    let error: ThreePartError?
+    /// Present only where the engine holds a chunk-level fact.
+    let chunks: ChunkFacts?
+    /// How long a finished group took, already formatted. Nil until the
+    /// engine carries timestamps (docs/engine-contract.md, item 9).
+    let duration: String?
+
+    var fraction: Double {
+        guard bytesTotal > 0 else { return 0 }
+        return Double(bytesDone) / Double(bytesTotal)
+    }
+
+    var percent: Int {
+        Int((fraction * 100).rounded())
+    }
+
+    /// True when the group stands for exactly one file, which is every
+    /// group until item 2 lands.
+    var isSingleFile: Bool {
+        filesTotal <= 1
+    }
+}
+
+/// The bottom of the depth axis in docs/ia.md. Shown by the chunk
+/// disclosure, and only where a chunk fact exists — which today means only
+/// after a verify failure, because the counts are not published yet
+/// (docs/engine-contract.md, item 7).
+struct ChunkFacts: Equatable {
+    let verified: UInt32
+    let total: UInt32
+    /// The chunk named in the error, when one was.
+    let failedIndex: UInt32?
+    /// True when the counts are the engine's and not a placeholder.
+    let isCounted: Bool
+}
+
+/// Job 7: whether Ferry copies new photos from one device on its own, and
+/// what it last did (docs/engine-contract.md, item 14).
+struct AutoCopySnapshot: Equatable {
+    let isEnabled: Bool
+    /// The peer folder watched. "DCIM" in phase 2.
+    let source: String
+    /// Where copies land, as a path a person recognises.
+    let destination: String
+    /// "Last copied 43 files, 2 hours ago." Nil before the first run.
+    let lastRun: String?
+    /// False while the engine has no auto copy at all, so the switch is
+    /// shown disabled rather than pretending to work.
+    let isSupported: Bool
+
+    static let unsupported = AutoCopySnapshot(
+        isEnabled: false,
+        source: "DCIM",
+        destination: "",
+        lastRun: nil,
+        isSupported: false
+    )
+}
+
+// MARK: - Record, L5
+
+/// What a file operation did, in the file operations layer's own words. A
+/// log line and a protocol trace say the same word.
+enum AccessVerb: Equatable {
+    case list
+    case stat
+    case read
+    case write
+    case truncate
+    case rename
+    case mkdir
+    case delete
+}
+
+/// Who performed the operation.
+enum AccessActor: Equatable {
+    /// The peer, on this device's files.
+    case peer
+    /// This device, on the peer's files.
+    case thisDevice
+}
+
+/// One file operation, as one row of the access log. Job 9.
+struct AccessEntrySnapshot: Equatable, Identifiable {
+    let id: String
+    let actor: AccessActor
+    let verb: AccessVerb
+    /// Root-relative, beginning with the root name: "Desktop/Q3 notes.md".
+    let path: String
+    /// "48 KB", "31 entries", or nil when neither applies. Already
+    /// formatted, because two views must not round differently.
+    let amount: String?
+    /// "14:31".
+    let time: String
+    /// When it happened. Kept as the raw value, not only as `time`,
+    /// because the day grouping needs a date and a formatted clock time
+    /// cannot be grouped.
+    let atUnixSecs: Int64
+    /// How many files a rolled-up folder operation covered.
+    let files: UInt32?
+}
+
+/// One day of the access log, newest first. The adapter decides the title,
+/// so "Today" is not computed in two places.
+struct AccessDaySnapshot: Equatable, Identifiable {
+    /// "Today", "Yesterday", or "8 September 2026".
+    let title: String
+    let entries: [AccessEntrySnapshot]
+
+    var id: String { title }
+}
+
+// MARK: - Pairing, L1
+
+/// Which way in a person chose. Pairing is a once-ever job, so two ways is
+/// one screen more, not two things to maintain.
+enum PairingMethod: Equatable {
+    case scan
+    case code
+}
+
+/// What the Mac renders as a square code. The payload is opaque: the app
+/// draws the bytes and does not parse them.
+struct PairingOfferSnapshot: Equatable {
+    let payload: Data
+    /// "1:48", counted down. Nil while the engine does not publish the
+    /// deadline (docs/engine-contract.md, item 10).
+    let expiresIn: String?
+    /// False while the engine has no Offering state and this payload is a
+    /// placeholder (docs/engine-contract.md, item 12).
+    let isReal: Bool
+}
+
+/// One device the Mac could pair with, in the code method's Found state.
+struct PairingCandidateSnapshot: Equatable, Identifiable {
+    let id: String
+    /// "Phone over USB" or "Phone on Wi-Fi · 3F9A".
+    let label: String
+}
+
+/// Where the pairing sheet is. One enum for both methods, because both end
+/// in the same place and every screen after pairing is untouched.
+enum PairingScreen: Equatable {
+    /// Neither method chosen yet.
+    case choosing
+    /// Scan method: the Mac shows a code and waits.
+    case offering(PairingOfferSnapshot)
+    /// Scan method: a phone scanned it and is asking. One named question,
+    /// two answers, no digits.
+    case requested(name: String, transport: Transport)
+    /// Code method: looking for a phone.
+    case waiting
+    /// Code method: candidates to pick from.
+    case found([PairingCandidateSnapshot])
+    /// Code method: the six digits, grouped three and three. PairingCode
+    /// spells them out for VoiceOver itself, so they are not spelled here.
+    case code(digits: String)
+    /// Shared by both methods.
+    case confirmed(keyHex: String)
+    case failed(ThreePartError)
+}
