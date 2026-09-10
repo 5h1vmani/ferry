@@ -8,15 +8,43 @@
 //! test can break a transfer's link at an exact point.
 
 use std::io::{self, Read, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
-use ferry_core::localfs::LocalFs;
 use ferry_core::ops::{Entry, OpError};
 use ferry_core::path::RemotePath;
+use ferry_core::roots::Roots;
 use ferry_core::rpc::FileOps;
 
-/// The shared root, served to one connection, with an off switch.
+use crate::state::lock;
+
+/// The served roots, and the spec list [`crate::Engine::roots`] last
+/// reported.
+///
+/// Bundled together so [`crate::Engine::set_roots`] swaps both at once,
+/// under one lock: nothing ever reads a spec list that does not match the
+/// [`Roots`] behind it.
+pub(crate) struct RootsState {
+    /// What [`crate::Engine::roots`] returns.
+    pub(crate) specs: Vec<crate::Root>,
+    /// The opened roots, actually serving files.
+    pub(crate) opened: Arc<Roots>,
+}
+
+/// A handle every connection currently serving a peer shares.
+///
+/// docs/engine-contract.md, batch C, item 15, requires a root change to
+/// reach an already-connected peer on its very next operation, with no
+/// reconnect. Holding this handle rather than a snapshot of [`Roots`] is
+/// what makes that true: [`GuardedFs`] takes the lock fresh on every call,
+/// clones out whichever [`Arc<Roots>`] is behind it at that moment, and
+/// drops the lock before doing any I/O. `set_roots` takes the same lock only
+/// long enough to swap the value in. So a swap is one quick pointer
+/// replacement, never blocked behind a read or a write in flight, and the
+/// next operation on every open connection sees it at once.
+pub(crate) type RootsHandle = Arc<Mutex<Option<RootsState>>>;
+
+/// The served roots, given to one connection, with an off switch.
 ///
 /// A connection that is already serving cannot be closed from outside. The
 /// socket lives inside the encrypted stream, and this crate has no handle on
@@ -24,70 +52,64 @@ use ferry_core::rpc::FileOps;
 /// peer goes away or the idle timeout fires, but every operation on it is
 /// refused from the moment the switch goes off.
 pub(crate) struct GuardedFs {
-    inner: Arc<LocalFs>,
+    roots: RootsHandle,
     allowed: Arc<AtomicBool>,
 }
 
 impl GuardedFs {
-    /// Wrap the shared root for one connection.
-    pub(crate) fn new(inner: Arc<LocalFs>, allowed: Arc<AtomicBool>) -> Self {
-        Self { inner, allowed }
+    /// Wrap the served roots for one connection.
+    pub(crate) fn new(roots: RootsHandle, allowed: Arc<AtomicBool>) -> Self {
+        Self { roots, allowed }
     }
 
-    /// `Ok` while this connection may still act, an error once it may not.
-    fn check(&self) -> Result<(), OpError> {
-        if self.allowed.load(Ordering::SeqCst) {
-            Ok(())
-        } else {
-            Err(OpError::PermissionDenied)
+    /// The roots to use for this call, read fresh: an error once this
+    /// connection may not act, or once nothing is being served at all.
+    fn current(&self) -> Result<Arc<Roots>, OpError> {
+        if !self.allowed.load(Ordering::SeqCst) {
+            return Err(OpError::PermissionDenied);
         }
+        lock(&self.roots)
+            .as_ref()
+            .map(|state| Arc::clone(&state.opened))
+            .ok_or(OpError::PermissionDenied)
     }
 }
 
 impl FileOps for GuardedFs {
     fn list(&self, path: &RemotePath, cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
-        self.check()?;
-        self.inner.list(path, cursor)
+        self.current()?.list(path, cursor)
     }
 
     fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
-        self.check()?;
-        self.inner.stat(path)
+        self.current()?.stat(path)
     }
 
     fn read(&self, path: &RemotePath, offset: u64, length: u32) -> Result<Vec<u8>, OpError> {
-        self.check()?;
-        self.inner.read(path, offset, length)
+        self.current()?.read(path, offset, length)
     }
 
     fn write(&self, path: &RemotePath, offset: u64, bytes: &[u8]) -> Result<u32, OpError> {
-        self.check()?;
-        self.inner.write(path, offset, bytes)
+        self.current()?.write(path, offset, bytes)
     }
 
     fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), OpError> {
-        self.check()?;
-        self.inner.truncate(path, length)
+        self.current()?.truncate(path, length)
     }
 
     fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), OpError> {
-        self.check()?;
-        self.inner.rename(from, to)
+        self.current()?.rename(from, to)
     }
 
     fn set_mtime(&self, path: &RemotePath, modified_unix_secs: i64) -> Result<(), OpError> {
-        self.check()?;
-        self.inner.set_mtime(path, modified_unix_secs)
+        self.current()?.set_mtime(path, modified_unix_secs)
     }
 
     fn mkdir(&self, path: &RemotePath) -> Result<(), OpError> {
-        self.check()?;
-        self.inner.mkdir(path)
+        self.current()?.mkdir(path)
     }
 
     fn delete(&self, path: &RemotePath) -> Result<(), OpError> {
-        self.check()?;
-        self.inner.delete(path)
+        self.current()?.delete(path)
     }
 }
 

@@ -15,15 +15,17 @@ use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::ops::FileKind;
 use ferry_core::path::{PathError, RemotePath};
 use ferry_core::peers::{DeviceKind, Peer, PeerStore};
+use ferry_core::roots::{RootSpec, Roots};
 use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
 use zeroize::Zeroize;
 
 use crate::errors::{
-    bad_config, failed, from_chunk_size, from_noise, from_path, from_peer, from_rpc, from_tcp,
+    bad_config, failed, from_chunk_size, from_noise, from_path, from_peer, from_roots, from_rpc,
+    from_tcp,
 };
-use crate::guard::{GuardedFs, StopAware};
+use crate::guard::{GuardedFs, RootsHandle, RootsState, StopAware};
 use crate::notify::{Change, Notify};
 use crate::record::{Record, read_record};
 use crate::state::{
@@ -33,7 +35,7 @@ use crate::state::{
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
     Config, DeviceInfo, Direction, EngineListener, Entry, EntryKind, FerryError, KeyPair,
-    PairingCandidate, PairingState, Status, TransferInfo, TransferState, Transport,
+    PairingCandidate, PairingState, Root, Status, TransferInfo, TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -74,6 +76,20 @@ const FINISH_PAIRING_DEADLINE: Duration = Duration::from_secs(10);
 /// How often the wait for the name exchange looks at the stop flag.
 const FINISH_PAIRING_TICK: Duration = Duration::from_millis(50);
 
+// ---------------------------------------------------------------------------
+// A conversion between the boundary's record and `ferry-core`'s own.
+// ---------------------------------------------------------------------------
+
+impl From<Root> for RootSpec {
+    fn from(root: Root) -> Self {
+        Self {
+            name: root.name,
+            path: PathBuf::from(root.path),
+            writable: root.writable,
+        }
+    }
+}
+
 /// Everything the engine's threads share.
 pub(crate) struct Shared {
     /// Where change notifications go, while the engine is running.
@@ -84,8 +100,6 @@ pub(crate) struct Shared {
     pub(crate) display_name: String,
     /// Where transfer records live.
     pub(crate) transfers_dir: PathBuf,
-    /// The folder served to paired devices.
-    pub(crate) root: PathBuf,
     /// The port to bind, or zero for any free port.
     pub(crate) listen_port: u16,
     /// Everything mutable.
@@ -95,8 +109,19 @@ pub(crate) struct Shared {
     pub(crate) wake: Condvar,
     /// Set by `stop`. Every loop checks it.
     pub(crate) stopping: Arc<AtomicBool>,
-    /// The shared root, open, once `start` has run.
-    pub(crate) fs: Mutex<Option<Arc<LocalFs>>>,
+    /// The served roots, open once `new` has validated them. `stop` clears
+    /// this, the same way it used to clear the one shared root.
+    ///
+    /// This is the handle every serving connection's [`GuardedFs`] shares,
+    /// so a root change reaches every open connection on its next
+    /// operation. See [`crate::guard::RootsHandle`].
+    pub(crate) roots: RootsHandle,
+    /// Where `download_dir` lives, as given to `new`. Read once, by
+    /// `start`, which opens it.
+    pub(crate) download_dir_config: PathBuf,
+    /// The download folder, open once `start` has run. A pull writes here,
+    /// never into a served root.
+    pub(crate) download_fs: Mutex<Option<Arc<LocalFs>>>,
     /// The bound listener, once `start` has run.
     pub(crate) net: Mutex<Option<Arc<Listener>>>,
     /// The mDNS announcement, while this device is reachable.
@@ -161,9 +186,9 @@ impl Shared {
         joins.push(handle);
     }
 
-    /// The shared root, if `start` has opened it.
-    pub(crate) fn shared_fs(&self) -> Option<Arc<LocalFs>> {
-        lock(&self.fs).clone()
+    /// The download folder, if `start` has opened it.
+    pub(crate) fn download_fs(&self) -> Option<Arc<LocalFs>> {
+        lock(&self.download_fs).clone()
     }
 
     /// Where one transfer's record is stored.
@@ -362,10 +387,12 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Runtime::BadConfig` when a directory cannot be made, the
-    /// device list cannot be read, or another engine is already using the
-    /// directory, `Runtime::NameTooLong` when the display name is over 64
-    /// bytes, and a `NoiseError` code when the key is not two lots of 32
-    /// bytes.
+    /// device list cannot be read, `shared_roots` is empty, or another
+    /// engine is already using the directory; a `RootsError` code when
+    /// `shared_roots` is not empty but is otherwise refused, such as two
+    /// roots that overlap; `Runtime::NameTooLong` when the display name is
+    /// over 64 bytes; and a `NoiseError` code when the key is not two lots
+    /// of 32 bytes.
     #[uniffi::constructor]
     pub fn new(config: Config, listener: Box<dyn EngineListener>) -> Result<Arc<Self>, FerryError> {
         let mut config = config;
@@ -379,6 +406,14 @@ impl Engine {
         if config.display_name.is_empty() || config.display_name.len() > MAX_NAME_LEN {
             return Err(failed("Runtime::NameTooLong"));
         }
+
+        // Validating `Config` itself is `Runtime::BadConfig`; a root that is
+        // wrong in some other way is the core's own `RootsError` code,
+        // forwarded by `open_roots`.
+        if config.shared_roots.is_empty() {
+            return Err(bad_config("There must be at least one shared root."));
+        }
+        let roots_state = open_roots(&config.shared_roots)?;
 
         let data_dir = PathBuf::from(&config.data_dir);
         std::fs::create_dir_all(&data_dir)
@@ -405,12 +440,13 @@ impl Engine {
             key,
             display_name: config.display_name.clone(),
             transfers_dir,
-            root: PathBuf::from(&config.shared_root),
             listen_port: config.listen_port,
             state: Mutex::new(State::new(peers)),
             wake: Condvar::new(),
             stopping: Arc::new(AtomicBool::new(false)),
-            fs: Mutex::new(None),
+            roots: Arc::new(Mutex::new(Some(roots_state))),
+            download_dir_config: PathBuf::from(&config.download_dir),
+            download_fs: Mutex::new(None),
             net: Mutex::new(None),
             advertiser: Mutex::new(None),
             adb: find_adb().map(Adb::new),
@@ -440,8 +476,12 @@ impl Engine {
             return Ok(());
         }
 
-        let fs = LocalFs::open(&self.shared.root)
-            .map_err(|_| bad_config("The shared folder could not be opened."))?;
+        // A pull never writes into a served root, so this opens its own
+        // folder rather than reusing `self.shared.roots`.
+        std::fs::create_dir_all(&self.shared.download_dir_config)
+            .map_err(|_| bad_config("The download folder could not be made."))?;
+        let download_fs = LocalFs::open(&self.shared.download_dir_config)
+            .map_err(|_| bad_config("The download folder could not be opened."))?;
         let addr = SocketAddr::V4(SocketAddrV4::new(
             Ipv4Addr::UNSPECIFIED,
             self.shared.listen_port,
@@ -450,7 +490,7 @@ impl Engine {
             .map_err(|_| bad_config("The network port could not be opened."))?;
         let local_addr = net.local_addr();
 
-        *lock(&self.shared.fs) = Some(Arc::new(fs));
+        *lock(&self.shared.download_fs) = Some(Arc::new(download_fs));
         let net = Arc::new(net);
         *lock(&self.shared.net) = Some(Arc::clone(&net));
         {
@@ -500,7 +540,7 @@ impl Engine {
         self.shared.wake.notify_all();
 
         // A serving thread cannot be woken, so it is taken from instead:
-        // every switch goes off and the shared root goes away. A connection
+        // every switch goes off and the served roots go away. A connection
         // that is still open refuses everything from here on, exactly as it
         // does after `forget`.
         {
@@ -511,7 +551,8 @@ impl Engine {
                 }
             }
         }
-        *lock(&self.shared.fs) = None;
+        *lock(&self.shared.roots) = None;
+        *lock(&self.shared.download_fs) = None;
 
         // The accept loop is blocked inside `accept`. A connection to our own
         // port is the only way to bring it back, since the listener has no
@@ -585,6 +626,55 @@ impl Engine {
             adb_present: self.shared.adb.is_some(),
             mount: None,
         }
+    }
+
+    /// The roots currently served, as last set by `new` or `set_roots`.
+    #[must_use]
+    pub fn roots(&self) -> Vec<Root> {
+        lock(&self.shared.roots)
+            .as_ref()
+            .map(|state| state.specs.clone())
+            .unwrap_or_default()
+    }
+
+    /// Replace the served roots.
+    ///
+    /// Takes effect for every already-connected peer on its next operation;
+    /// nobody needs to reconnect. The app is responsible for persisting
+    /// `roots` and passing it back in `Config` at the next launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `RootsError` code when `roots` is refused: no roots at all,
+    /// an invalid or duplicate name, a path that is not an existing folder,
+    /// or two roots that overlap.
+    pub fn set_roots(&self, roots: Vec<Root>) -> Result<(), FerryError> {
+        let opened =
+            Roots::open(roots.iter().cloned().map(RootSpec::from).collect()).map_err(from_roots)?;
+        *lock(&self.shared.roots) = Some(RootsState {
+            specs: roots,
+            opened: Arc::new(opened),
+        });
+        Ok(())
+    }
+
+    /// Change where a pulled file lands.
+    ///
+    /// Creates the folder if it does not exist. The app is responsible for
+    /// persisting `path` and passing it back in `Config` at the next launch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::BadConfig` when the folder cannot be made or
+    /// opened.
+    pub fn set_download_dir(&self, path: String) -> Result<(), FerryError> {
+        let path = PathBuf::from(path);
+        std::fs::create_dir_all(&path)
+            .map_err(|_| bad_config("The download folder could not be made."))?;
+        let fs = LocalFs::open(&path)
+            .map_err(|_| bad_config("The download folder could not be opened."))?;
+        *lock(&self.shared.download_fs) = Some(Arc::new(fs));
+        Ok(())
     }
 
     /// Forget a device: remove its key and every transfer record for it.
@@ -1052,6 +1142,24 @@ pub fn generate_key() -> Result<KeyPair, FerryError> {
     Ok(KeyPair {
         private: key.private_bytes().to_vec(),
         public: key.public().as_bytes().to_vec(),
+    })
+}
+
+/// Build and validate the roots a `Config` or `set_roots` call names.
+///
+/// # Errors
+///
+/// Returns a `RootsError` code, forwarded from [`Roots::open`], for
+/// anything wrong with `roots` itself: no roots, an invalid or duplicate
+/// name, a path that is not an existing folder, or two roots that overlap.
+/// An empty `roots` from `Config` is caught before this runs, and reported
+/// as `Runtime::BadConfig` instead; see [`Engine::new`].
+fn open_roots(roots: &[Root]) -> Result<RootsState, FerryError> {
+    let specs: Vec<RootSpec> = roots.iter().cloned().map(RootSpec::from).collect();
+    let opened = Roots::open(specs).map_err(from_roots)?;
+    Ok(RootsState {
+        specs: roots.to_vec(),
+        opened: Arc::new(opened),
     })
 }
 
@@ -1628,11 +1736,13 @@ fn serve_named_stream(
     }
     notify(shared, Change::Devices);
 
-    let Some(fs) = shared.shared_fs() else {
+    if lock(&shared.roots).is_none() {
         release_serving(shared, &key_hex, allowed);
         return;
-    };
-    let guarded = GuardedFs::new(fs, Arc::clone(allowed));
+    }
+    // `GuardedFs` holds this handle, not a snapshot, so a `set_roots` call
+    // reaches this connection on its very next operation.
+    let guarded = GuardedFs::new(Arc::clone(&shared.roots), Arc::clone(allowed));
     // A connection that ends is the ordinary outcome. The error, if any, has
     // nowhere useful to go: the person did not ask for this connection.
     drop(serve(&mut stream, &guarded));

@@ -340,8 +340,8 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     let Some(plan) = plan_for(shared, id) else {
         return Outcome::Fatal(failed("Runtime::TransferNotFound"));
     };
-    let Some(fs) = shared.shared_fs() else {
-        // `stop` takes the shared root away. That is not a fault in the
+    let Some(fs) = shared.download_fs() else {
+        // `stop` takes the download folder away. That is not a fault in the
         // transfer, so it pauses rather than fails.
         if shared.stopping() {
             return Outcome::Retry(failed("Runtime::NotReachable"));

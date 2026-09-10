@@ -93,7 +93,7 @@ use ferry_core::peers::DeviceKind;
 use ferry_core::rpc::{FileOps, exchange_hello, serve};
 use ferry_core::tcp::{Listener, Pending};
 use ferry_runtime::{
-    Config, Engine, EngineListener, KeyPair, PairingState, TransferState, generate_key,
+    Config, Engine, EngineListener, KeyPair, PairingState, Root, TransferState, generate_key,
 };
 
 // ---------------------------------------------------------------------------
@@ -300,12 +300,15 @@ struct Side {
     key: KeyPair,
     #[allow(dead_code)] // Held so the folder is not deleted while used.
     data: tempfile::TempDir,
+    #[allow(dead_code)] // Held so the folder is not deleted while used.
     shared: tempfile::TempDir,
+    download: tempfile::TempDir,
 }
 
 impl Side {
-    fn shared_root(&self) -> &Path {
-        self.shared.path()
+    /// Where a pull lands. Never the same folder as the served root.
+    fn download_root(&self) -> &Path {
+        self.download.path()
     }
 }
 
@@ -313,12 +316,18 @@ impl Side {
 fn build() -> Side {
     let data = tempfile::tempdir().expect("a temporary folder for engine files");
     let shared = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
     let key = generate_key().expect("a fresh key pair");
     let inbox = Arc::new(Inbox::default());
     let engine = Engine::new(
         Config {
             data_dir: data.path().to_string_lossy().into_owned(),
-            shared_root: shared.path().to_string_lossy().into_owned(),
+            shared_roots: vec![Root {
+                name: "Root".to_owned(),
+                path: shared.path().to_string_lossy().into_owned(),
+                writable: true,
+            }],
+            download_dir: download.path().to_string_lossy().into_owned(),
             display_name: ENGINE_NAME.to_owned(),
             listen_port: 0,
             key: key.clone(),
@@ -335,6 +344,7 @@ fn build() -> Side {
         key,
         data,
         shared,
+        download,
     }
 }
 
@@ -578,7 +588,8 @@ fn timed_pull(side: &Side, peer: &Peer, local_name: &str) -> (u64, Vec<u8>) {
     let id = pull_to(side, peer, local_name);
     wait_done(side, &id);
     let used = side.engine.wire_bytes() - before;
-    let landed = std::fs::read(side.shared_root().join(local_name)).expect("the file should land");
+    let landed =
+        std::fs::read(side.download_root().join(local_name)).expect("the file should land");
     (used, landed)
 }
 

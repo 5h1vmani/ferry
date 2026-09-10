@@ -26,11 +26,17 @@
 //! Both are in `docs/manual-checks.md`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ferry_core::noise::{PublicKey, StaticKey};
+use ferry_core::path::RemotePath;
+use ferry_core::peers::DeviceKind;
+use ferry_core::rpc::{Client, exchange_hello};
+use ferry_core::tcp;
 use ferry_runtime::{
-    Config, Engine, EngineListener, KeyPair, PairingState, TransferState, generate_key,
+    Config, Engine, EngineListener, KeyPair, PairingState, Root, TransferState, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -135,23 +141,36 @@ impl EngineListener for Recorder {
 struct Side {
     engine: Arc<Engine>,
     inbox: Arc<Inbox>,
-    shared_root: std::path::PathBuf,
+    key: KeyPair,
+    /// The one root this side serves, named `"Root"`.
+    shared_root: PathBuf,
+    /// Where a pull lands. Never the same folder as `shared_root`.
+    download_root: PathBuf,
     /// Held so the folders live as long as the engine does.
     _data: tempfile::TempDir,
     _shared: tempfile::TempDir,
+    _download: tempfile::TempDir,
 }
 
+/// Build and start one engine, of the given device kind, on fresh folders.
+/// Build and start one engine on fresh folders.
 fn build(name: &str) -> Side {
     let data = tempfile::tempdir().expect("a temporary folder for engine files");
     let shared = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
     let key: KeyPair = generate_key().expect("a fresh key pair");
     let inbox = Arc::new(Inbox::default());
     let config = Config {
         data_dir: data.path().to_string_lossy().into_owned(),
-        shared_root: shared.path().to_string_lossy().into_owned(),
+        shared_roots: vec![Root {
+            name: "Root".to_owned(),
+            path: shared.path().to_string_lossy().into_owned(),
+            writable: true,
+        }],
+        download_dir: download.path().to_string_lossy().into_owned(),
         display_name: name.to_owned(),
         listen_port: 0,
-        key,
+        key: key.clone(),
     };
     let engine = Engine::new(
         config,
@@ -164,9 +183,12 @@ fn build(name: &str) -> Side {
     Side {
         engine,
         inbox,
+        key,
         shared_root: shared.path().to_path_buf(),
+        download_root: download.path().to_path_buf(),
         _data: data,
         _shared: shared,
+        _download: download,
     }
 }
 
@@ -174,6 +196,20 @@ fn build(name: &str) -> Side {
 fn loopback_addr(side: &Side) -> SocketAddr {
     let bound = side.engine.listen_addr().expect("a bound listener");
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bound.port())
+}
+
+/// A `Side`'s key, as `ferry-core` names it. For a raw connection built by
+/// hand, bypassing `Engine::list`, so a test can issue more than one
+/// operation on the very same connection.
+fn static_key(key: &KeyPair) -> StaticKey {
+    StaticKey::from_stored(&key.private, &key.public).expect("a stored key pair should load")
+}
+
+/// The public half, as `ferry-core` names it.
+fn public_key(key: &KeyPair) -> PublicKey {
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&key.public);
+    PublicKey(out)
 }
 
 /// The six digits, or a panic saying what arrived instead.
@@ -294,7 +330,8 @@ fn two_engines_pair_and_move_a_file() {
     assert_eq!(on_phone.len(), 1, "the phone lists the Mac");
     assert_eq!(on_phone[0].name, "Vamana");
 
-    // A real file, over a real socket, verified chunk by chunk.
+    // A real file, over a real socket, verified chunk by chunk. The remote
+    // path names the phone's one root, "Root".
     let bytes = sample_bytes();
     std::fs::write(phone.shared_root.join("holiday.bin"), &bytes)
         .expect("the phone's shared folder should accept a file");
@@ -303,7 +340,7 @@ fn two_engines_pair_and_move_a_file() {
         .engine
         .pull(
             on_mac[0].key_hex.clone(),
-            "holiday.bin".to_owned(),
+            "Root/holiday.bin".to_owned(),
             "holiday.bin".to_owned(),
         )
         .expect("the pull should be accepted");
@@ -317,12 +354,16 @@ fn two_engines_pair_and_move_a_file() {
             .any(|t| t.id == wanted_id && t.state == TransferState::Done)
     });
 
-    let landed = std::fs::read(mac.shared_root.join("holiday.bin"))
-        .expect("the file should be in the Mac's shared folder");
+    let landed = std::fs::read(mac.download_root.join("holiday.bin"))
+        .expect("the file should be in the Mac's download folder");
     assert_eq!(landed, bytes, "every byte must match");
+    assert!(
+        !mac.shared_root.join("holiday.bin").exists(),
+        "a pull never writes into a served root"
+    );
 
-    let leftovers: Vec<String> = std::fs::read_dir(&mac.shared_root)
-        .expect("the Mac's shared folder should be readable")
+    let leftovers: Vec<String> = std::fs::read_dir(&mac.download_root)
+        .expect("the Mac's download folder should be readable")
         .flatten()
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .filter(|name| {
@@ -405,26 +446,29 @@ fn the_mac_lists_a_folder_on_the_phone() {
     assert_eq!(on_mac.len(), 1, "the Mac lists the phone");
     let phone_key = on_mac[0].key_hex.clone();
 
-    // The empty path names the shared root itself. `Photos` stands in for
-    // the first folder a person opens inside it.
+    // `Photos` stands in for the first folder a person opens inside the
+    // phone's one root, named "Root".
     std::fs::create_dir(phone.shared_root.join("Photos"))
         .expect("the phone's shared folder should accept a new folder");
     let bytes = sample_bytes();
     std::fs::write(phone.shared_root.join("Photos/holiday.bin"), &bytes)
         .expect("the phone's shared folder should accept a file");
 
+    // The empty path lists every root, not the folder each one holds.
     let top_level = mac
         .engine
         .list(phone_key.clone(), String::new())
-        .expect("the shared root should list");
-    top_level
-        .iter()
-        .find(|entry| entry.name == "Photos")
-        .expect("the folder just made should be in the root's listing");
+        .expect("the roots should list");
+    let root_names: Vec<String> = top_level.iter().map(|entry| entry.name.clone()).collect();
+    assert_eq!(
+        root_names,
+        vec!["Root".to_owned()],
+        "list(\"\") returns the phone's root names, not what is inside them"
+    );
 
     let entries = mac
         .engine
-        .list(phone_key.clone(), "Photos".to_owned())
+        .list(phone_key.clone(), "Root/Photos".to_owned())
         .expect("the folder should list");
     let found_entry = entries
         .iter()
@@ -438,12 +482,113 @@ fn the_mac_lists_a_folder_on_the_phone() {
 
     let missing = mac
         .engine
-        .list(phone_key, "no-such-folder".to_owned())
+        .list(phone_key, "Root/no-such-folder".to_owned())
         .expect_err("a folder that does not exist cannot be listed");
     assert_eq!(code_of_error(&missing), "OpError::NotFound");
 
     mac.engine.stop();
     phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Item 15: roots reach an open connection without a reconnect.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, batch C, item 15: a root change must reach an
+/// already-connected peer on its very next operation, with no reconnect.
+/// `Engine::list` always dials fresh, so this drives one connection by hand,
+/// the same way `engine_paths.rs` does, to keep it open across the change.
+#[test]
+fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    // Only pairing itself is needed here: this test drives its own raw
+    // connection rather than `mac.engine.list`.
+    let _phone_key = pair(&mac, &phone);
+
+    let connection = tcp::connect(
+        loopback_addr(&phone),
+        &static_key(&mac.key),
+        &public_key(&phone.key),
+    )
+    .expect("a paired peer should be able to connect");
+    let mut stream = connection.stream;
+    exchange_hello(&mut stream, "Vamana", DeviceKind::Mac).expect("the name exchange should run");
+    let mut client = Client::new(stream);
+
+    let root_path = RemotePath::parse("").expect("the empty path is valid");
+    let (before, _) = client
+        .list(&root_path, 0)
+        .expect("the roots should list on the freshly opened connection");
+    assert_eq!(
+        before.into_iter().map(|e| e.name).collect::<Vec<_>>(),
+        vec!["Root".to_owned()],
+        "before the change, only the configured root is listed"
+    );
+
+    let renamed_root = tempfile::tempdir().expect("a temporary folder for the renamed root");
+    phone
+        .engine
+        .set_roots(vec![Root {
+            name: "Renamed".to_owned(),
+            path: renamed_root.path().to_string_lossy().into_owned(),
+            writable: true,
+        }])
+        .expect("set_roots should accept a fresh, valid root");
+
+    // The very next operation, on the very same connection: no reconnect.
+    let (after, _) = client
+        .list(&root_path, 0)
+        .expect("the roots should list again, on the same connection");
+    assert_eq!(
+        after.into_iter().map(|e| e.name).collect::<Vec<_>>(),
+        vec!["Renamed".to_owned()],
+        "the already-open connection sees the new root without reconnecting"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// Pair `mac` with `phone` and return the phone's key hex, as `mac` names
+/// it. Shared by tests that need two paired engines but do not otherwise
+/// exercise the pairing screens.
+fn pair(mac: &Side, phone: &Side) -> String {
+    phone.engine.set_reachable(true);
+    phone.engine.start_pairing();
+    mac.engine.start_pairing();
+
+    let phone_addr = loopback_addr(phone);
+    mac.engine.offer_candidate(phone_addr);
+
+    let found = mac
+        .inbox
+        .wait_pairing("the Mac to list a candidate", is_found);
+    let PairingState::Found { candidates, .. } = &found else {
+        panic!("expected candidates, got {found:?}");
+    };
+    let wanted = format!("wifi:{phone_addr}");
+    let chosen = candidates
+        .iter()
+        .find(|candidate| candidate.id == wanted)
+        .unwrap_or_else(|| panic!("the injected candidate {wanted} should be listed"));
+    mac.engine
+        .pick_candidate(chosen.id.clone())
+        .expect("the candidate should be pickable");
+
+    mac.inbox.wait_pairing("the Mac to show a code", is_code);
+    phone
+        .inbox
+        .wait_pairing("the phone to show a code", is_code);
+
+    mac.engine.confirm_pairing(true);
+    phone.engine.confirm_pairing(true);
+    mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
+    phone
+        .inbox
+        .wait_pairing("the phone to confirm", is_confirmed);
+
+    mac.engine.devices()[0].key_hex.clone()
 }
 
 /// The code an error carries, or a panic saying it had none.
@@ -546,12 +691,18 @@ fn status_reports_reachability_listen_port_and_adb_presence() {
 fn a_bad_config_is_refused_before_anything_starts() {
     let data = tempfile::tempdir().expect("a temporary folder");
     let shared = tempfile::tempdir().expect("a temporary folder");
+    let download = tempfile::tempdir().expect("a temporary folder");
     let inbox = Arc::new(Inbox::default());
     let make = |name: String, key: KeyPair| {
         Engine::new(
             Config {
                 data_dir: data.path().to_string_lossy().into_owned(),
-                shared_root: shared.path().to_string_lossy().into_owned(),
+                shared_roots: vec![Root {
+                    name: "Root".to_owned(),
+                    path: shared.path().to_string_lossy().into_owned(),
+                    writable: true,
+                }],
+                download_dir: download.path().to_string_lossy().into_owned(),
                 display_name: name,
                 listen_port: 0,
                 key,

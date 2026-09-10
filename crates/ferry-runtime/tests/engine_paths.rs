@@ -39,8 +39,8 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
-    Config, Direction, Engine, EngineListener, FerryError, KeyPair, PairingState, TransferState,
-    generate_key,
+    Config, Direction, Engine, EngineListener, FerryError, KeyPair, PairingState, Root,
+    TransferState, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -176,11 +176,18 @@ struct Side {
     key: KeyPair,
     data: tempfile::TempDir,
     shared: tempfile::TempDir,
+    download: tempfile::TempDir,
 }
 
 impl Side {
+    /// The one root this side serves, named `"Root"`.
     fn shared_root(&self) -> &Path {
         self.shared.path()
+    }
+
+    /// Where a pull lands. Never the same folder as `shared_root`.
+    fn download_root(&self) -> &Path {
+        self.download.path()
     }
 }
 
@@ -190,12 +197,18 @@ fn make_engine(
     key: KeyPair,
     data: &Path,
     shared: &Path,
+    download: &Path,
     inbox: &Arc<Inbox>,
 ) -> Result<Arc<Engine>, FerryError> {
     Engine::new(
         Config {
             data_dir: data.to_string_lossy().into_owned(),
-            shared_root: shared.to_string_lossy().into_owned(),
+            shared_roots: vec![Root {
+                name: "Root".to_owned(),
+                path: shared.to_string_lossy().into_owned(),
+                writable: true,
+            }],
+            download_dir: download.to_string_lossy().into_owned(),
             display_name: name.to_owned(),
             listen_port: 0,
             key,
@@ -210,10 +223,18 @@ fn make_engine(
 fn build(name: &str) -> Side {
     let data = tempfile::tempdir().expect("a temporary folder for engine files");
     let shared = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
     let key = generate_key().expect("a fresh key pair");
     let inbox = Arc::new(Inbox::default());
-    let engine = make_engine(name, key.clone(), data.path(), shared.path(), &inbox)
-        .expect("the engine should build from a good config");
+    let engine = make_engine(
+        name,
+        key.clone(),
+        data.path(),
+        shared.path(),
+        download.path(),
+        &inbox,
+    )
+    .expect("the engine should build from a good config");
     engine.start().expect("the engine should start");
     Side {
         engine,
@@ -221,6 +242,7 @@ fn build(name: &str) -> Side {
         key,
         data,
         shared,
+        download,
     }
 }
 
@@ -748,7 +770,7 @@ fn forget_refuses_a_peer_that_has_not_said_hello() {
     exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange still runs");
     let mut client = Client::new(stream);
     let asked = client.read(
-        &RemotePath::parse("anything.bin").expect("a valid path"),
+        &RemotePath::parse("Root/anything.bin").expect("a valid path"),
         0,
         16,
     );
@@ -782,7 +804,7 @@ fn stop_stops_serving_a_connected_peer() {
     let mut stream = connection.stream;
     exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange runs");
     let mut client = Client::new(stream);
-    let path = RemotePath::parse("note.txt").expect("a valid path");
+    let path = RemotePath::parse("Root/note.txt").expect("a valid path");
     let first = client.read(&path, 0, 5).expect("a paired peer may read");
     assert_eq!(first, b"hello", "the file is served while the engine runs");
 
@@ -841,6 +863,7 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
         side.key.clone(),
         side.data.path(),
         side.shared.path(),
+        side.download.path(),
         &inbox,
     )
     .expect("the engine should build on the folder it left");
@@ -894,7 +917,7 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
             .iter()
             .any(|t| t.id == wanted && t.state == TransferState::Done)
     });
-    let landed = std::fs::read(side.shared_root().join("big.bin")).expect("the file should land");
+    let landed = std::fs::read(side.download_root().join("big.bin")).expect("the file should land");
     assert_eq!(landed, sample_bytes(mib(8)), "every byte must match");
 
     let done = engine
@@ -936,6 +959,7 @@ fn a_second_engine_on_one_data_folder_is_refused() {
         side.key.clone(),
         side.data.path(),
         side.shared.path(),
+        side.download.path(),
         &inbox,
     );
     let error = second.err().expect("a second engine must be refused");
@@ -948,6 +972,7 @@ fn a_second_engine_on_one_data_folder_is_refused() {
         side.key.clone(),
         side.data.path(),
         side.shared.path(),
+        side.download.path(),
         &inbox,
     )
     .expect("the folder is free once the first engine stopped");
@@ -977,6 +1002,7 @@ fn a_record_for_a_device_that_is_not_paired_is_dropped() {
         side.key.clone(),
         side.data.path(),
         side.shared.path(),
+        side.download.path(),
         &inbox,
     )
     .expect("the engine should build");
@@ -1021,6 +1047,7 @@ fn no_callback_arrives_after_stop_returned() {
         key: _key,
         data: _data,
         shared: _shared,
+        download: _download,
     } = phone;
     engine.stop();
     drop(engine);
@@ -1304,7 +1331,7 @@ fn a_transfer_pauses_when_the_link_breaks_and_finishes_when_it_returns() {
     wait_transfer(&side, &id, "the transfer to finish", |t| {
         t.state == TransferState::Done
     });
-    let landed = std::fs::read(side.shared_root().join("big.bin")).expect("the file should land");
+    let landed = std::fs::read(side.download_root().join("big.bin")).expect("the file should land");
     assert_eq!(landed, sample_bytes(mib(4)), "every byte must match");
     side.engine.stop();
     peer.close();

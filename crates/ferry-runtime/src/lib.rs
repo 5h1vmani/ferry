@@ -195,14 +195,30 @@ pub use engine::{Engine, FERRY_PHONE_PORT, generate_key};
 
 use std::fmt;
 
+/// One named, shared folder, as the peer sees it.
+///
+/// `docs/engine-contract.md`, batch C, item 15.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Root {
+    /// What the peer sees as this root's first path segment, such as
+    /// `"Desktop"`.
+    pub name: String,
+    /// Where this root lives on disk. Must be an existing directory.
+    pub path: String,
+    /// False for a root the peer may read but not write.
+    pub writable: bool,
+}
+
 /// What the app tells the engine at construction.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct Config {
     /// Where the engine keeps its own files: paired devices and transfer
     /// records. Must exist and be private to the app.
     pub data_dir: String,
-    /// The folder served to paired devices, and where pulled files land.
-    pub shared_root: String,
+    /// The named folders served to paired devices. At least one.
+    pub shared_roots: Vec<Root>,
+    /// Where a pulled file lands. Never served to a peer by being here.
+    pub download_dir: String,
     /// The name sent in `hello`. At most 64 bytes. Defaults to the model.
     pub display_name: String,
     /// The port to listen on. Zero means any free port.

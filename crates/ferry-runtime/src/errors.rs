@@ -41,6 +41,7 @@ use ferry_core::noise::NoiseError;
 use ferry_core::ops::OpError;
 use ferry_core::path::PathError;
 use ferry_core::peers::PeerError;
+use ferry_core::roots::RootsError;
 use ferry_core::rpc::RpcError;
 use ferry_core::session::TransferError;
 use ferry_core::tcp::TcpError;
@@ -239,6 +240,18 @@ pub fn from_peer(error: &PeerError) -> FerryError {
         PeerError::TooMany => "PeerError::TooMany",
         PeerError::NameTooLong => "PeerError::NameTooLong",
         PeerError::NoRandomness => "PeerError::NoRandomness",
+    })
+}
+
+/// The code for a set of roots that could not be opened.
+#[must_use]
+pub fn from_roots(error: RootsError) -> FerryError {
+    failed(match error {
+        RootsError::RootNameInvalid => "RootsError::RootNameInvalid",
+        RootsError::RootNameTaken => "RootsError::RootNameTaken",
+        RootsError::RootNotAFolder => "RootsError::RootNotAFolder",
+        RootsError::RootOverlaps => "RootsError::RootOverlaps",
+        RootsError::NoRoots => "RootsError::NoRoots",
     })
 }
 
