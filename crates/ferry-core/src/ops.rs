@@ -39,11 +39,6 @@ const REQUEST_DELETE: u8 = 9;
 // Wire tags for `Response`. This is a separate space from the opcodes above.
 // See the module documentation for why a response must decode without the
 // request that produced it.
-const RESPONSE_LIST: u8 = 1;
-const RESPONSE_STAT: u8 = 2;
-const RESPONSE_READ: u8 = 3;
-const RESPONSE_WRITE: u8 = 4;
-const RESPONSE_OK: u8 = 5;
 
 /// What kind of filesystem object an [`Entry`] names.
 ///
@@ -186,6 +181,25 @@ pub enum Request {
 }
 
 impl Request {
+    /// The opcode that names this operation on the wire.
+    ///
+    /// The reply to a request carries no tag of its own. Its shape follows
+    /// from this opcode, so the mapping lives in one place instead of two.
+    #[must_use]
+    pub fn opcode(&self) -> u8 {
+        match self {
+            Self::List { .. } => REQUEST_LIST,
+            Self::Stat { .. } => REQUEST_STAT,
+            Self::Read { .. } => REQUEST_READ,
+            Self::Write { .. } => REQUEST_WRITE,
+            Self::Truncate { .. } => REQUEST_TRUNCATE,
+            Self::Rename { .. } => REQUEST_RENAME,
+            Self::SetMtime { .. } => REQUEST_SET_MTIME,
+            Self::Mkdir { .. } => REQUEST_MKDIR,
+            Self::Delete { .. } => REQUEST_DELETE,
+        }
+    }
+
     /// Encode this request to its wire form.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
@@ -363,6 +377,9 @@ pub enum Response {
 
 impl Response {
     /// Encode this response to its wire form.
+    ///
+    /// The bytes carry no tag. The opcode of the request already says what
+    /// shape the reply has, so repeating it would let the two disagree.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
         let mut e = Encoder::new();
@@ -371,18 +388,15 @@ impl Response {
                 entries,
                 next_cursor,
             } => {
-                e.u8(RESPONSE_LIST);
                 // Matches the fallback `Encoder::bytes` already uses for an
                 // over-long length: clamp rather than panic, since encoding
                 // has no way to report failure.
-                let count = u32::try_from(entries.len()).unwrap_or(u32::MAX);
-                e.u32(count);
+                e.u32(u32::try_from(entries.len()).unwrap_or(u32::MAX));
                 for entry in entries {
                     entry.encode(&mut e);
                 }
                 // `Encoder` has no built-in `Option`, so a one-byte presence
-                // tag stands in for it, the same way every variant here uses
-                // a tag byte to say what follows.
+                // tag stands in for it.
                 match next_cursor {
                     Some(cursor) => {
                         e.u8(1);
@@ -393,76 +407,126 @@ impl Response {
                     }
                 }
             }
-            Self::Stat { entry } => {
-                e.u8(RESPONSE_STAT);
-                entry.encode(&mut e);
-            }
+            Self::Stat { entry } => entry.encode(&mut e),
             Self::Read { bytes } => {
-                e.u8(RESPONSE_READ);
                 e.bytes(bytes);
             }
             Self::Write { written } => {
-                e.u8(RESPONSE_WRITE);
                 e.u32(*written);
             }
-            Self::Ok => {
-                e.u8(RESPONSE_OK);
-            }
+            Self::Ok => {}
         }
         e.finish()
     }
 
-    /// Decode a response from its wire form.
+    /// Decode the reply to a `list`.
     ///
     /// # Errors
     ///
-    /// Returns [`WireError::UnknownTag`] for a tag this version does not
-    /// know. Returns [`WireError::TooLong`] when a `list` page holds more
-    /// than [`limits::MAX_LIST_ENTRIES`] entries, or when the read bytes are
-    /// over [`limits::MAX_READ_LEN`]. Returns [`WireError::TrailingBytes`]
-    /// when bytes are left over after a value this long has been read.
-    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+    /// Returns [`WireError::TooLong`] when the page holds more than
+    /// [`limits::MAX_LIST_ENTRIES`] entries.
+    pub fn decode_list(bytes: &[u8]) -> Result<(Vec<Entry>, Option<u64>), WireError> {
         let mut d = Decoder::new(bytes);
-        let tag = d.u8()?;
-        let response = match tag {
-            RESPONSE_LIST => {
-                let count = d.u32()?;
-                if count > limits::MAX_LIST_ENTRIES {
-                    return Err(WireError::TooLong);
-                }
-                // `count` is now known to be at most `MAX_LIST_ENTRIES`,
-                // which fits comfortably in a `usize` on every target Ferry
-                // runs on.
-                let mut entries = Vec::with_capacity(count as usize);
-                for _ in 0..count {
-                    entries.push(Entry::decode(&mut d)?);
-                }
-                let next_cursor = match d.u8()? {
-                    0 => None,
-                    1 => Some(d.u64()?),
-                    other => return Err(WireError::UnknownTag(other)),
-                };
-                Self::List {
-                    entries,
-                    next_cursor,
-                }
-            }
-            RESPONSE_STAT => Self::Stat {
-                entry: Entry::decode(&mut d)?,
-            },
-            RESPONSE_READ => {
-                // A read response cannot rationally carry more bytes than the
-                // largest read a request may ask for, so the same cap
-                // applies here.
-                let bytes = d.bytes(limits::MAX_READ_LEN as usize)?.to_vec();
-                Self::Read { bytes }
-            }
-            RESPONSE_WRITE => Self::Write { written: d.u32()? },
-            RESPONSE_OK => Self::Ok,
+        let count = d.u32()?;
+        if count > limits::MAX_LIST_ENTRIES {
+            return Err(WireError::TooLong);
+        }
+        // The count is capped before anything is reserved.
+        let mut entries = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            entries.push(Entry::decode(&mut d)?);
+        }
+        let next_cursor = match d.u8()? {
+            0 => None,
+            1 => Some(d.u64()?),
             other => return Err(WireError::UnknownTag(other)),
         };
         d.finish()?;
-        Ok(response)
+        Ok((entries, next_cursor))
+    }
+
+    /// Decode the reply to a `stat`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::UnexpectedEnd`] when the entry is incomplete.
+    pub fn decode_stat(bytes: &[u8]) -> Result<Entry, WireError> {
+        let mut d = Decoder::new(bytes);
+        let entry = Entry::decode(&mut d)?;
+        d.finish()?;
+        Ok(entry)
+    }
+
+    /// Decode the reply to a `read`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::TooLong`] when the reply carries more than
+    /// [`limits::MAX_READ_LEN`] bytes, which no honest reply ever does.
+    pub fn decode_read(bytes: &[u8]) -> Result<Vec<u8>, WireError> {
+        let mut d = Decoder::new(bytes);
+        let out = d.bytes(limits::MAX_READ_LEN as usize)?.to_vec();
+        d.finish()?;
+        Ok(out)
+    }
+
+    /// Decode the reply to a `write`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::UnexpectedEnd`] when the count is missing.
+    pub fn decode_write(bytes: &[u8]) -> Result<u32, WireError> {
+        let mut d = Decoder::new(bytes);
+        let written = d.u32()?;
+        d.finish()?;
+        Ok(written)
+    }
+
+    /// Decode the reply to an operation that carries no data.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::TrailingBytes`] when anything at all is present.
+    /// An empty reply is the only correct answer, so bytes here mean the two
+    /// sides disagree about the format.
+    pub fn decode_ok(bytes: &[u8]) -> Result<(), WireError> {
+        Decoder::new(bytes).finish()
+    }
+
+    /// Decode a reply, given the opcode of the request it answers.
+    ///
+    /// The opcode decides the shape. A reply that does not fit that shape
+    /// fails to decode, so a peer cannot answer one question with another.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::UnknownTag`] when the opcode names no operation
+    /// this version knows, and the errors of the shape-specific decoders.
+    pub fn decode(opcode: u8, bytes: &[u8]) -> Result<Self, WireError> {
+        match opcode {
+            REQUEST_LIST => {
+                let (entries, next_cursor) = Self::decode_list(bytes)?;
+                Ok(Self::List {
+                    entries,
+                    next_cursor,
+                })
+            }
+            REQUEST_STAT => Ok(Self::Stat {
+                entry: Self::decode_stat(bytes)?,
+            }),
+            REQUEST_READ => Ok(Self::Read {
+                bytes: Self::decode_read(bytes)?,
+            }),
+            REQUEST_WRITE => Ok(Self::Write {
+                written: Self::decode_write(bytes)?,
+            }),
+            REQUEST_TRUNCATE | REQUEST_RENAME | REQUEST_SET_MTIME | REQUEST_MKDIR
+            | REQUEST_DELETE => {
+                Self::decode_ok(bytes)?;
+                Ok(Self::Ok)
+            }
+            other => Err(WireError::UnknownTag(other)),
+        }
     }
 }
 
@@ -640,24 +704,60 @@ mod tests {
         ]
     }
 
-    fn sample_responses() -> Vec<Response> {
+    fn sample_responses() -> Vec<(Request, Response)> {
         vec![
-            Response::List {
-                entries: vec![sample_entry()],
-                next_cursor: Some(3),
-            },
-            Response::List {
-                entries: Vec::new(),
-                next_cursor: None,
-            },
-            Response::Stat {
-                entry: sample_entry(),
-            },
-            Response::Read {
-                bytes: b"file contents".to_vec(),
-            },
-            Response::Write { written: 5 },
-            Response::Ok,
+            (
+                Request::List {
+                    path: path("DCIM/Camera"),
+                    cursor: 0,
+                },
+                Response::List {
+                    entries: vec![sample_entry()],
+                    next_cursor: Some(3),
+                },
+            ),
+            (
+                Request::List {
+                    path: path("DCIM/Camera"),
+                    cursor: 0,
+                },
+                Response::List {
+                    entries: Vec::new(),
+                    next_cursor: None,
+                },
+            ),
+            (
+                Request::Stat {
+                    path: path("DCIM/Camera"),
+                },
+                Response::Stat {
+                    entry: sample_entry(),
+                },
+            ),
+            (
+                Request::Read {
+                    path: path("DCIM/Camera"),
+                    offset: 0,
+                    length: 16,
+                },
+                Response::Read {
+                    bytes: b"file contents".to_vec(),
+                },
+            ),
+            (
+                Request::Write {
+                    path: path("DCIM/Camera"),
+                    offset: 0,
+                    bytes: Vec::new(),
+                },
+                Response::Write { written: 5 },
+            ),
+            (
+                Request::Mkdir {
+                    path: path("DCIM/Camera"),
+                },
+                Response::Ok,
+            ),
         ]
     }
 
@@ -686,9 +786,10 @@ mod tests {
 
     #[test]
     fn every_response_variant_survives_a_round_trip() {
-        for response in sample_responses() {
+        for (request, response) in sample_responses() {
             let encoded = response.encode();
-            assert_eq!(Response::decode(&encoded).unwrap(), response);
+            let decoded = Response::decode(request.opcode(), &encoded).unwrap();
+            assert_eq!(decoded, response);
         }
     }
 
@@ -730,7 +831,12 @@ mod tests {
             next_cursor: None,
         };
         let encoded = response.encode();
-        assert_eq!(Response::decode(&encoded), Err(WireError::TooLong));
+        let opcode = Request::List {
+            path: path("DCIM/Camera"),
+            cursor: 0,
+        }
+        .opcode();
+        assert_eq!(Response::decode(opcode, &encoded), Err(WireError::TooLong));
     }
 
     #[test]

@@ -114,10 +114,6 @@ pub enum RpcError {
     Wire(WireError),
     /// The peer refused the operation. This is a normal outcome, not a fault.
     Remote(OpError),
-    /// The peer answered a different question than the one asked.
-    ///
-    /// A well behaved peer never does this. The connection should be dropped.
-    MismatchedResponse,
     /// The peer used a request identifier that was never sent.
     MismatchedRequestId {
         /// What was sent.
@@ -135,7 +131,6 @@ impl fmt::Display for RpcError {
             Self::Frame(e) => write!(f, "frame layer failed: {e}"),
             Self::Wire(e) => write!(f, "payload did not decode: {e}"),
             Self::Remote(e) => write!(f, "the peer refused: {e}"),
-            Self::MismatchedResponse => f.write_str("the peer answered a different question"),
             Self::MismatchedRequestId { expected, got } => {
                 write!(f, "expected request {expected} but got {got}")
             }
@@ -164,29 +159,6 @@ impl From<OpError> for RpcError {
     }
 }
 
-/// True when `response` is a sensible answer to `request`.
-///
-/// A response carries its own tag, so the codec alone cannot tell whether it
-/// answers the question that was asked. Without this check a peer could answer
-/// `mkdir` with a pile of file bytes, and the caller would believe it.
-fn answers(request: &Request, response: &Response) -> bool {
-    matches!(
-        (request, response),
-        (Request::List { .. }, Response::List { .. })
-            | (Request::Stat { .. }, Response::Stat { .. })
-            | (Request::Read { .. }, Response::Read { .. })
-            | (Request::Write { .. }, Response::Write { .. })
-            | (
-                Request::Truncate { .. }
-                    | Request::Rename { .. }
-                    | Request::SetMtime { .. }
-                    | Request::Mkdir { .. }
-                    | Request::Delete { .. },
-                Response::Ok
-            )
-    )
-}
-
 /// Calls file operations on the other device.
 #[derive(Debug)]
 pub struct Client<S> {
@@ -207,14 +179,17 @@ impl<S: Read + Write> Client<S> {
         self.stream
     }
 
-    /// Send one request and wait for its answer.
+    /// Send one request and return the raw payload of its answer.
+    ///
+    /// The caller decodes that payload with the decoder for the shape it
+    /// asked for. A reply that does not fit fails to decode, so a peer cannot
+    /// answer one question with another.
     ///
     /// # Errors
     ///
     /// Returns [`RpcError::Remote`] when the peer refused the operation, which
-    /// is an ordinary outcome. Returns [`RpcError::MismatchedResponse`] when
-    /// the peer answers a different question, which is not.
-    pub fn call(&mut self, request: &Request) -> Result<Response, RpcError> {
+    /// is an ordinary outcome.
+    fn call_payload(&mut self, request: &Request) -> Result<Vec<u8>, RpcError> {
         let request_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
 
@@ -235,17 +210,22 @@ impl<S: Read + Write> Client<S> {
             });
         }
         match frame.kind {
-            FrameKind::Response => {
-                let response = Response::decode(&frame.payload)?;
-                if answers(request, &response) {
-                    Ok(response)
-                } else {
-                    Err(RpcError::MismatchedResponse)
-                }
-            }
+            FrameKind::Response => Ok(frame.payload),
             FrameKind::Error => Err(RpcError::Remote(OpError::decode(&frame.payload)?)),
             FrameKind::Request => Err(RpcError::UnexpectedFrameKind(FrameKind::Request)),
         }
+    }
+
+    /// Send one request and wait for its answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RpcError::Remote`] when the peer refused the operation, and
+    /// [`RpcError::Wire`] when the reply does not fit the shape the request
+    /// asked for.
+    pub fn call(&mut self, request: &Request) -> Result<Response, RpcError> {
+        let payload = self.call_payload(request)?;
+        Ok(Response::decode(request.opcode(), &payload)?)
     }
 
     /// List one page of a directory.
@@ -258,16 +238,11 @@ impl<S: Read + Write> Client<S> {
         path: &RemotePath,
         cursor: u64,
     ) -> Result<(Vec<Entry>, Option<u64>), RpcError> {
-        match self.call(&Request::List {
+        let payload = self.call_payload(&Request::List {
             path: path.clone(),
             cursor,
-        })? {
-            Response::List {
-                entries,
-                next_cursor,
-            } => Ok((entries, next_cursor)),
-            _ => Err(RpcError::MismatchedResponse),
-        }
+        })?;
+        Ok(Response::decode_list(&payload)?)
     }
 
     /// Describe one file or directory.
@@ -276,10 +251,8 @@ impl<S: Read + Write> Client<S> {
     ///
     /// As [`Client::call`].
     pub fn stat(&mut self, path: &RemotePath) -> Result<Entry, RpcError> {
-        match self.call(&Request::Stat { path: path.clone() })? {
-            Response::Stat { entry } => Ok(entry),
-            _ => Err(RpcError::MismatchedResponse),
-        }
+        let payload = self.call_payload(&Request::Stat { path: path.clone() })?;
+        Ok(Response::decode_stat(&payload)?)
     }
 
     /// Read a byte range.
@@ -293,14 +266,12 @@ impl<S: Read + Write> Client<S> {
         offset: u64,
         length: u32,
     ) -> Result<Vec<u8>, RpcError> {
-        match self.call(&Request::Read {
+        let payload = self.call_payload(&Request::Read {
             path: path.clone(),
             offset,
             length,
-        })? {
-            Response::Read { bytes } => Ok(bytes),
-            _ => Err(RpcError::MismatchedResponse),
-        }
+        })?;
+        Ok(Response::decode_read(&payload)?)
     }
 
     /// Write a byte range.
@@ -314,14 +285,12 @@ impl<S: Read + Write> Client<S> {
         offset: u64,
         bytes: Vec<u8>,
     ) -> Result<u32, RpcError> {
-        match self.call(&Request::Write {
+        let payload = self.call_payload(&Request::Write {
             path: path.clone(),
             offset,
             bytes,
-        })? {
-            Response::Write { written } => Ok(written),
-            _ => Err(RpcError::MismatchedResponse),
-        }
+        })?;
+        Ok(Response::decode_write(&payload)?)
     }
 
     /// Set a file's length.
@@ -330,11 +299,11 @@ impl<S: Read + Write> Client<S> {
     ///
     /// As [`Client::call`].
     pub fn truncate(&mut self, path: &RemotePath, length: u64) -> Result<(), RpcError> {
-        self.call(&Request::Truncate {
+        let payload = self.call_payload(&Request::Truncate {
             path: path.clone(),
             length,
-        })
-        .map(|_| ())
+        })?;
+        Ok(Response::decode_ok(&payload)?)
     }
 
     /// Move a file or directory.
@@ -343,11 +312,11 @@ impl<S: Read + Write> Client<S> {
     ///
     /// As [`Client::call`].
     pub fn rename(&mut self, from: &RemotePath, to: &RemotePath) -> Result<(), RpcError> {
-        self.call(&Request::Rename {
+        let payload = self.call_payload(&Request::Rename {
             from: from.clone(),
             to: to.clone(),
-        })
-        .map(|_| ())
+        })?;
+        Ok(Response::decode_ok(&payload)?)
     }
 
     /// Set a file's modified time.
@@ -360,11 +329,11 @@ impl<S: Read + Write> Client<S> {
         path: &RemotePath,
         modified_unix_secs: i64,
     ) -> Result<(), RpcError> {
-        self.call(&Request::SetMtime {
+        let payload = self.call_payload(&Request::SetMtime {
             path: path.clone(),
             modified_unix_secs,
-        })
-        .map(|_| ())
+        })?;
+        Ok(Response::decode_ok(&payload)?)
     }
 
     /// Create a directory.
@@ -373,8 +342,8 @@ impl<S: Read + Write> Client<S> {
     ///
     /// As [`Client::call`].
     pub fn mkdir(&mut self, path: &RemotePath) -> Result<(), RpcError> {
-        self.call(&Request::Mkdir { path: path.clone() })
-            .map(|_| ())
+        let payload = self.call_payload(&Request::Mkdir { path: path.clone() })?;
+        Ok(Response::decode_ok(&payload)?)
     }
 
     /// Delete a file or an empty directory.
@@ -383,8 +352,8 @@ impl<S: Read + Write> Client<S> {
     ///
     /// As [`Client::call`].
     pub fn delete(&mut self, path: &RemotePath) -> Result<(), RpcError> {
-        self.call(&Request::Delete { path: path.clone() })
-            .map(|_| ())
+        let payload = self.call_payload(&Request::Delete { path: path.clone() })?;
+        Ok(Response::decode_ok(&payload)?)
     }
 }
 
@@ -493,6 +462,7 @@ mod tests {
     use crate::ops::{FileKind, OpError, Request, Response};
     use crate::path::RemotePath;
     use crate::transport::{Endpoint, loopback};
+    use crate::wire::WireError;
 
     fn path(text: &str) -> RemotePath {
         RemotePath::parse(text).unwrap()
@@ -726,8 +696,14 @@ mod tests {
             write_frame(&mut fake_server, &reply).unwrap();
         });
 
+        // A mkdir reply carries no bytes at all. The read reply carries a
+        // length prefix, so decoding it as a mkdir reply finds bytes left
+        // over. The mismatch cannot get past the decoder.
         let result = client.call(&Request::Mkdir { path: path("DCIM") });
-        assert!(matches!(result, Err(RpcError::MismatchedResponse)));
+        assert!(matches!(
+            result,
+            Err(RpcError::Wire(WireError::TrailingBytes))
+        ));
 
         fake_server_thread.join().unwrap();
     }
