@@ -230,12 +230,13 @@ yet decided, so these are working weeks, not calendar weeks.
 | Order | Scope | Estimate | Risk |
 |---|---|---|---|
 | 0 | Spike. Done. See `docs/spike-0-findings.md`. | Done | Done |
-| 1 | Rust core, done for what runs without hardware. Then UniFFI, both apps, mDNS, the TCP transport, the adb USB transport, key storage, pairing screens, and the Android platform work. Push and pull. | 6 to 8 weeks | Medium |
-| 2 | Finder mount over a WebDAV bridge, on top of the file operations layer. | 2 to 4 weeks | Medium |
-| 3 | Optional. File Provider extension, which costs 99 dollars a year. Android Open Accessory, portfolio only. Whole-file deduplication. Hotspot fallback. | Undecided | High |
+| 1 | Rust core, the engine, both apps, mDNS, TCP, the adb USB transport, key storage, pairing. Pull only. Done and run on real devices on 10 September 2026. What remains is a UX pass and one test. See section 12. | Done | Done |
+| 2 | The runtime limits, then one-way photo import with content skip, then the Finder mount over a WebDAV bridge with thumbnail prefetch, push, delta on save, trusted networks, an access log, and the Mac in the Android file picker. | 8 to 12 weeks | Medium |
+| 3 | Optional. Per-peer root subset. QR code pairing. File Provider extension, which costs 99 dollars a year. Android Open Accessory, portfolio only. Hotspot fallback. | Undecided | High |
 
-Phase 2 is the headline feature. It is the feature in daily need, and the only
-one no free tool provides.
+Phase 2 holds the two headline features. Photo import is the job Android
+File Transfer's death took away. The Finder mount is the one no free tool
+provides. Section 12 lists phase 2 in order, with the reason for each place.
 
 The order 0 spike settled the phase 2 route. macOS mounts a WebDAV server with
 no `sudo`, no TLS, no entitlement, and no Apple Developer Program. Finder
@@ -300,14 +301,20 @@ read 10 September 2026.
    Yes. It mounts, it browses, and it fetches ranges rather than whole files.
    It is chatty, it writes `.DS_Store`, and it sends open-ended ranges. All
    three are handled on the Mac side.
-3. Can Finder's thumbnail fetches be suppressed? Still open. Two media files
-   caused ten content requests, so this matters at scale. This is an entry
-   condition for phase 2.
+3. Can Finder's thumbnail fetches be suppressed? Still open, and the plan
+   now answers it the other way: serve them. A JPEG carries its preview in
+   the first 64 KB, so the bridge prefetches that head of every image after
+   a listing, through the transfer worker pool. See section 12. To be proved
+   during the Finder mount.
 4. Does USB tethering present a usable network interface to the Mac? Answered
    on 10 September 2026. No. The phone is a Pixel 3 XL on Android 12, which
    tethers over RNDIS, and macOS has no driver for it. Phase 3 stays.
 5. Does mDNS need a `MulticastLock` on Android and a local network permission
-   on macOS 26? Confirm during phase 1.
+   on macOS 26? Answered on 10 September 2026 by the first device run. macOS
+   26 asks for local network access once, and the app declares the Bonjour
+   service and a usage description for it. The Pixel 3 XL advertised and was
+   found with no `MulticastLock` held. Another phone may filter multicast;
+   add the lock if a phone is not found.
 
 Throughput is deliberately not an open question. USB is a reliability feature,
 and the WebDAV route is already chosen. A number would change no decision now.
@@ -407,12 +414,74 @@ Done, 10 September 2026:
   the Keychain and the network prompts remember it. See
   `docs/manual-checks.md` task 3.
 
-Not done, in order:
+Not done, in order. Each item names its cost as the owner estimated it and
+the reason for its place.
 
-1. Use it for a week. The outcome metrics in `docs/jobs.md` are the
-   acceptance criteria, and only ordinary use shows whether they hold.
-2. Phase 2 work the runtime recorded as limits: a responder that tries each
-   stored key against the first KK message instead of guessing; a manifest
-   request so the first pass of a pull verifies too; a way for `stop` to
-   close a socket held inside an encrypted stream; push, from the Mac to the
-   phone.
+Before phase 2:
+
+1. A UX pass on the moments the first run found. The engine is audited and
+   run; the screens were built from the IA before anyone had used them. Daily
+   use is the only source of the next engine facts, and the UX is what stops
+   daily use. Narrow: the moments named, not a redesign.
+2. Deterministic fault injection for resume. Two engines already run in one
+   process, and the loopback transport already cuts a stream after N bytes.
+   Loop N over a whole transfer and assert that every cut resumes and
+   refetches at most one chunk. That is job 3 turned into a test, and it
+   locks the resume path before phase 2 changes touch it. Core tests only,
+   so it runs beside the UX pass. Days at most.
+3. Use it for a week. The outcome metrics in `docs/jobs.md` are the
+   acceptance criteria.
+
+Phase 2, in order:
+
+1. The runtime limits: a manifest request so the first pass of a pull
+   verifies too, and so a device can be asked "do you hold root hash X"; a
+   responder that tries each stored key against the first KK message instead
+   of guessing; a way for `stop` to close a socket held inside an encrypted
+   stream. The manifest request is the prerequisite for items 2 and 6.
+2. Content-addressed skip, then one-way photo import. Before any transfer,
+   ask whether the other side holds the root hash; a photo the Mac already
+   has is then instant. On top of that a Mac-side rule: when the phone
+   appears, pull from DCIM every file the Mac does not hold. Android's
+   MediaStore gives "new since last time" without walking the tree. Hashing
+   every photo on a 2018 phone is slow, so compare name, size, and time
+   first and hash only candidates. One way and additive, so it stays clear
+   of the two-way sync cut in section 5. Job 7 in `docs/jobs.md`. One to two
+   weeks.
+3. The Finder mount over a WebDAV bridge, as section 6 describes. Two to
+   four weeks.
+4. Thumbnail prefetch through range reads. After a listing, prefetch the
+   first 64 KB of every image through the transfer worker pool, so Finder
+   shows a folder of 500 photos in seconds. This answers open question 3 by
+   serving the requests rather than suppressing them. Days.
+5. Push, from the Mac to the phone. Finder save needs it.
+6. Chunk-level delta when Finder saves a file. The bridge receives the whole
+   file on loopback, hashes it, and sends only the chunks the phone lacks.
+   Needs items 1 and 5. Days after those.
+7. Advertise only on trusted networks. Remember the Wi-Fi name at pairing
+   time and stay silent everywhere else. Job 5 gets stronger and the phone
+   saves battery. The engine change is hours. Reading the Wi-Fi name needs
+   the location permission on Android and on macOS 14 and later, so the
+   real cost is a day and two more prompts on first run, which is why it
+   sits after the UX pass has settled the first run.
+8. An access log on the phone. The server side already sees every
+   operation. Show which Mac read or wrote what, and when. It makes a
+   compromised paired Mac visible, which section 9 lists as a risk. Days.
+9. The Mac in the Android file picker. Android's DocumentsProvider with
+   proxy file descriptors maps almost one to one onto list, stat, read at
+   offset, and write at offset. The Mac's shared folder then appears in the
+   Files app and in every app's open dialog. It is the mirror of the Finder
+   mount on the same layer, so it comes after the mount and reuses its
+   decisions. Job 8 in `docs/jobs.md`. One to two weeks.
+
+Phase 3, optional, in no order:
+
+- A per-peer root subset. Share only DCIM to one Mac and everything to
+  another. Least privilege on the existing root check. Days. No daily value
+  with one Mac, which is why it is optional.
+- QR code pairing. Show the Mac's key and address as a QR and scan it with
+  the phone camera. It is a second pairing mode beside the six digits, not a
+  change to it, and it adds the camera permission. Days.
+- The File Provider extension, Android Open Accessory, and the hotspot
+  fallback, as section 6 lists them. Whole-file deduplication is covered by
+  phase 2 item 2 and is dropped from this list.

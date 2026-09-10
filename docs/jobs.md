@@ -73,6 +73,35 @@ that maps every core error to its words.
 **Done when:** the error table has a row for every error the core can emit and
 no cell is empty. A test checks this, so it cannot drift.
 
+## Job 7: new photos reach the Mac on their own
+
+**When** I come home with new photos on the phone, **I want** them on the Mac
+without doing anything, **so that** the phone is never the only copy.
+
+Served by: phase 2 item 2 in `PLAN.md`. Before any transfer, the Mac asks
+whether it already holds the file's root hash. When the phone appears, the
+Mac pulls from DCIM every file it does not hold, using MediaStore's "new since
+last time". One way, phone to Mac, and additive. It never deletes and never
+writes back, so it is not the two-way sync listed below.
+
+**Done when:** a photo taken on the phone is in the Mac's Ferry folder within
+one minute of the phone appearing on the network, and a photo the Mac already
+holds is never copied a second time.
+
+## Job 8: the Mac's folder inside the phone's own apps
+
+**When** an app on the phone asks me to pick a file, **I want** the Mac's
+shared folder to be one of the places, **so that** I never copy a file to the
+phone first.
+
+Served by: phase 2 item 9 in `PLAN.md`. Android's DocumentsProvider with
+proxy file descriptors, over the same list, stat, read, and write operations
+the Finder mount uses.
+
+**Done when:** the Mac's shared folder appears in the Files app and in an
+app's open dialog while the Mac is reachable, and a file opens from it with
+no copy step.
+
 ## Jobs Ferry is not hired for
 
 These are stated so nobody builds for them by accident.
