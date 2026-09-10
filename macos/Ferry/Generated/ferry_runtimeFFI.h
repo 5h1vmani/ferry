@@ -264,6 +264,13 @@ typedef void (*UniffiCallbackInterfaceEngineListenerMethod2)(uint64_t, RustBuffe
     );
 
 #endif
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_ENGINE_LISTENER_METHOD3
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_ENGINE_LISTENER_METHOD3
+typedef void (*UniffiCallbackInterfaceEngineListenerMethod3)(uint64_t, void* _Nonnull, 
+        RustCallStatus *_Nonnull uniffiCallStatus
+    );
+
+#endif
 #ifndef UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_ENGINE_LISTENER
 #define UNIFFI_FFIDEF_V_TABLE_CALLBACK_INTERFACE_ENGINE_LISTENER
 typedef struct UniffiVTableCallbackInterfaceEngineListener {
@@ -272,6 +279,7 @@ typedef struct UniffiVTableCallbackInterfaceEngineListener {
     UniffiCallbackInterfaceEngineListenerMethod0 _Nonnull devicesChanged;
     UniffiCallbackInterfaceEngineListenerMethod1 _Nonnull transfersChanged;
     UniffiCallbackInterfaceEngineListenerMethod2 _Nonnull pairingChanged;
+    UniffiCallbackInterfaceEngineListenerMethod3 _Nonnull accessLogChanged;
 } UniffiVTableCallbackInterfaceEngineListener;
 
 #endif
@@ -288,6 +296,11 @@ void uniffi_ferry_runtime_fn_free_engine(uint64_t handle, RustCallStatus *_Nonnu
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_CONSTRUCTOR_ENGINE_NEW
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_CONSTRUCTOR_ENGINE_NEW
 uint64_t uniffi_ferry_runtime_fn_constructor_engine_new(RustBuffer config, uint64_t listener, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ACCESS_LOG
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ACCESS_LOG
+RustBuffer uniffi_ferry_runtime_fn_method_engine_access_log(uint64_t ptr, RustBuffer device_key_hex, uint32_t limit, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_BATCHES
@@ -679,6 +692,12 @@ uint16_t uniffi_ferry_runtime_checksum_func_phone_port(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ACCESS_LOG
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ACCESS_LOG
+uint16_t uniffi_ferry_runtime_checksum_method_engine_access_log(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_BATCHES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_BATCHES
 uint16_t uniffi_ferry_runtime_checksum_method_engine_batches(void
@@ -820,6 +839,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_enginelistener_transfers_changed(v
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINELISTENER_PAIRING_CHANGED
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINELISTENER_PAIRING_CHANGED
 uint16_t uniffi_ferry_runtime_checksum_method_enginelistener_pairing_changed(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINELISTENER_ACCESS_LOG_CHANGED
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINELISTENER_ACCESS_LOG_CHANGED
+uint16_t uniffi_ferry_runtime_checksum_method_enginelistener_access_log_changed(void
     
 );
 #endif

@@ -629,6 +629,15 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol EngineProtocol: AnyObject, Sendable {
     
     /**
+     * The access log, newest first. `None` for `device_key_hex` returns
+     * every device's. `limit` is capped at 1,000. Empty before `start` has
+     * opened the store.
+     *
+     * `docs/engine-contract.md`, batch E, item 13.
+     */
+    func accessLog(deviceKeyHex: String?, limit: UInt32)  -> [AccessEntry]
+    
+    /**
      * Every batch this engine has grouped, across every device.
      */
     func batches()  -> [BatchInfo]
@@ -946,6 +955,24 @@ public convenience init(config: Config, listener: EngineListener)throws  {
 
     
 
+    
+    /**
+     * The access log, newest first. `None` for `device_key_hex` returns
+     * every device's. `limit` is capped at 1,000. Empty before `start` has
+     * opened the store.
+     *
+     * `docs/engine-contract.md`, batch E, item 13.
+     */
+open func accessLog(deviceKeyHex: String?, limit: UInt32) -> [AccessEntry]  {
+    return try!  FfiConverterSequenceTypeAccessEntry.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_access_log(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(deviceKeyHex),
+        FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
     
     /**
      * Every batch this engine has grouped, across every device.
@@ -1361,6 +1388,149 @@ public func FfiConverterTypeEngine_lower(_ value: Engine) -> UInt64 {
 }
 
 
+
+
+/**
+ * One access log entry, as [`Engine::access_log`] returns it.
+ *
+ * `docs/engine-contract.md`, batch E, item 13.
+ */
+public struct AccessEntry: Equatable, Hashable {
+    /**
+     * `"<day>-<sequence>"`. Stable across restarts.
+     */
+    public var id: String
+    /**
+     * The paired device this entry is about, as 64 lowercase hex
+     * characters.
+     */
+    public var deviceKeyHex: String
+    /**
+     * Who performed the operation.
+     */
+    public var actor: Actor
+    /**
+     * Which kind of operation.
+     */
+    public var verb: AccessVerb
+    /**
+     * Root-relative, beginning with the root name: `"Desktop/Q3 notes.md"`.
+     */
+    public var path: String
+    /**
+     * Bytes moved, for a read or a write.
+     */
+    public var bytes: UInt64?
+    /**
+     * For a list, how many entries were returned.
+     */
+    public var entries: UInt32?
+    /**
+     * For a folder copy, how many files it covered.
+     */
+    public var files: UInt32?
+    /**
+     * When the operation this entry describes first happened.
+     */
+    public var atUnixSecs: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `"<day>-<sequence>"`. Stable across restarts.
+         */id: String, 
+        /**
+         * The paired device this entry is about, as 64 lowercase hex
+         * characters.
+         */deviceKeyHex: String, 
+        /**
+         * Who performed the operation.
+         */actor: Actor, 
+        /**
+         * Which kind of operation.
+         */verb: AccessVerb, 
+        /**
+         * Root-relative, beginning with the root name: `"Desktop/Q3 notes.md"`.
+         */path: String, 
+        /**
+         * Bytes moved, for a read or a write.
+         */bytes: UInt64?, 
+        /**
+         * For a list, how many entries were returned.
+         */entries: UInt32?, 
+        /**
+         * For a folder copy, how many files it covered.
+         */files: UInt32?, 
+        /**
+         * When the operation this entry describes first happened.
+         */atUnixSecs: Int64) {
+        self.id = id
+        self.deviceKeyHex = deviceKeyHex
+        self.actor = actor
+        self.verb = verb
+        self.path = path
+        self.bytes = bytes
+        self.entries = entries
+        self.files = files
+        self.atUnixSecs = atUnixSecs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AccessEntry: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAccessEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccessEntry {
+        return
+            try AccessEntry(
+                id: FfiConverterString.read(from: &buf), 
+                deviceKeyHex: FfiConverterString.read(from: &buf), 
+                actor: FfiConverterTypeActor.read(from: &buf), 
+                verb: FfiConverterTypeAccessVerb.read(from: &buf), 
+                path: FfiConverterString.read(from: &buf), 
+                bytes: FfiConverterOptionUInt64.read(from: &buf), 
+                entries: FfiConverterOptionUInt32.read(from: &buf), 
+                files: FfiConverterOptionUInt32.read(from: &buf), 
+                atUnixSecs: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AccessEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.deviceKeyHex, into: &buf)
+        FfiConverterTypeActor.write(value.actor, into: &buf)
+        FfiConverterTypeAccessVerb.write(value.verb, into: &buf)
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterOptionUInt64.write(value.bytes, into: &buf)
+        FfiConverterOptionUInt32.write(value.entries, into: &buf)
+        FfiConverterOptionUInt32.write(value.files, into: &buf)
+        FfiConverterInt64.write(value.atUnixSecs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccessEntry_lift(_ buf: RustBuffer) throws -> AccessEntry {
+    return try FfiConverterTypeAccessEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccessEntry_lower(_ value: AccessEntry) -> RustBuffer {
+    return FfiConverterTypeAccessEntry.lower(value)
+}
 
 
 /**
@@ -2430,6 +2600,222 @@ public func FfiConverterTypeTransferInfo_lower(_ value: TransferInfo) -> RustBuf
 
 
 /**
+ * One kind of file operation the access log records.
+ *
+ * `docs/engine-contract.md`, batch E, item 13. `set_mtime` has no member
+ * here: it is never logged, because it always follows a write that already
+ * is.
+ */
+
+public enum AccessVerb: Equatable, Hashable {
+    
+    /**
+     * A folder listing. One entry covers every page of it.
+     */
+    case list
+    /**
+     * A single file or folder's metadata.
+     */
+    case stat
+    /**
+     * Bytes read from a file.
+     */
+    case read
+    /**
+     * Bytes written to a file.
+     */
+    case write
+    /**
+     * A file shortened or extended to a given length.
+     */
+    case truncate
+    /**
+     * A file or folder renamed.
+     */
+    case rename
+    /**
+     * A folder created.
+     */
+    case mkdir
+    /**
+     * A file or folder removed.
+     */
+    case delete
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AccessVerb: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAccessVerb: FfiConverterRustBuffer {
+    typealias SwiftType = AccessVerb
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AccessVerb {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .list
+        
+        case 2: return .stat
+        
+        case 3: return .read
+        
+        case 4: return .write
+        
+        case 5: return .truncate
+        
+        case 6: return .rename
+        
+        case 7: return .mkdir
+        
+        case 8: return .delete
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AccessVerb, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .list:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .stat:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .read:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .write:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .truncate:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .rename:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .mkdir:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .delete:
+            writeInt(&buf, Int32(8))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccessVerb_lift(_ buf: RustBuffer) throws -> AccessVerb {
+    return try FfiConverterTypeAccessVerb.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAccessVerb_lower(_ value: AccessVerb) -> RustBuffer {
+    return FfiConverterTypeAccessVerb.lower(value)
+}
+
+
+
+/**
+ * Who performed an access log entry's operation.
+ *
+ * `docs/engine-contract.md`, batch E, item 13.
+ */
+
+public enum Actor: Equatable, Hashable {
+    
+    /**
+     * The peer, on this device's files.
+     */
+    case peer
+    /**
+     * This device, on the peer's files.
+     */
+    case this
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension Actor: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeActor: FfiConverterRustBuffer {
+    typealias SwiftType = Actor
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Actor {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .peer
+        
+        case 2: return .this
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: Actor, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .peer:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .this:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeActor_lift(_ buf: RustBuffer) throws -> Actor {
+    return try FfiConverterTypeActor.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeActor_lower(_ value: Actor) -> RustBuffer {
+    return FfiConverterTypeActor.lower(value)
+}
+
+
+
+/**
  * What kind of device this is, or a peer said it is in `hello`.
  *
  * `docs/engine-contract.md`, batch C, item 11.
@@ -3189,6 +3575,12 @@ public protocol EngineListener: AnyObject, Sendable {
      */
     func pairingChanged(state: PairingState) 
     
+    /**
+     * An access log entry became final. At most once every 250
+     * milliseconds. The app then calls [`Engine::access_log`].
+     */
+    func accessLogChanged() 
+    
 }
 
 
@@ -3281,6 +3673,28 @@ fileprivate struct UniffiCallbackInterfaceEngineListener {
                 makeCall: makeCall,
                 writeReturn: writeReturn
             )
+        },
+        accessLogChanged: { (
+            uniffiHandle: UInt64,
+            uniffiOutReturn: UnsafeMutableRawPointer,
+            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
+        ) in
+            let makeCall = {
+                () throws -> () in
+                guard let uniffiObj = try? FfiConverterCallbackInterfaceEngineListener.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return uniffiObj.accessLogChanged(
+                )
+            }
+
+            
+            let writeReturn = { () }
+            uniffiTraitInterfaceCall(
+                callStatus: uniffiCallStatus,
+                makeCall: makeCall,
+                writeReturn: writeReturn
+            )
         }
     )
 
@@ -3359,6 +3773,30 @@ public func FfiConverterCallbackInterfaceEngineListener_lift(_ handle: UInt64) t
 #endif
 public func FfiConverterCallbackInterfaceEngineListener_lower(_ v: EngineListener) -> UInt64 {
     return FfiConverterCallbackInterfaceEngineListener.lower(v)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
+    typealias SwiftType = UInt32?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt32.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
 }
 
 #if swift(>=5.8)
@@ -3478,6 +3916,31 @@ fileprivate struct FfiConverterOptionTypeTransport: FfiConverterRustBuffer {
         case 1: return try FfiConverterTypeTransport.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeAccessEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [AccessEntry]
+
+    public static func write(_ value: [AccessEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAccessEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AccessEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AccessEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAccessEntry.read(from: &buf))
+        }
+        return seq
     }
 }
 
@@ -3706,6 +4169,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_func_phone_port() != 57763) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_access_log() != 8085) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_batches() != 62922) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3776,6 +4242,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_enginelistener_pairing_changed() != 48516) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_enginelistener_access_log_changed() != 38946) {
         return InitializationResult.apiChecksumMismatch
     }
 

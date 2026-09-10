@@ -659,13 +659,17 @@ internal interface UniffiCallbackInterfaceEngineListenerMethod1 : com.sun.jna.Ca
 internal interface UniffiCallbackInterfaceEngineListenerMethod2 : com.sun.jna.Callback {
     fun callback(`uniffiHandle`: Long,`state`: RustBuffer.ByValue,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
 }
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "devicesChanged", "transfersChanged", "pairingChanged")
+internal interface UniffiCallbackInterfaceEngineListenerMethod3 : com.sun.jna.Callback {
+    fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,)
+}
+@Structure.FieldOrder("uniffiFree", "uniffiClone", "devicesChanged", "transfersChanged", "pairingChanged", "accessLogChanged")
 internal open class UniffiVTableCallbackInterfaceEngineListener(
     @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
     @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
     @JvmField internal var `devicesChanged`: UniffiCallbackInterfaceEngineListenerMethod0? = null,
     @JvmField internal var `transfersChanged`: UniffiCallbackInterfaceEngineListenerMethod1? = null,
     @JvmField internal var `pairingChanged`: UniffiCallbackInterfaceEngineListenerMethod2? = null,
+    @JvmField internal var `accessLogChanged`: UniffiCallbackInterfaceEngineListenerMethod3? = null,
 ) : Structure() {
     class UniffiByValue(
         `uniffiFree`: UniffiCallbackInterfaceFree? = null,
@@ -673,7 +677,8 @@ internal open class UniffiVTableCallbackInterfaceEngineListener(
         `devicesChanged`: UniffiCallbackInterfaceEngineListenerMethod0? = null,
         `transfersChanged`: UniffiCallbackInterfaceEngineListenerMethod1? = null,
         `pairingChanged`: UniffiCallbackInterfaceEngineListenerMethod2? = null,
-    ): UniffiVTableCallbackInterfaceEngineListener(`uniffiFree`,`uniffiClone`,`devicesChanged`,`transfersChanged`,`pairingChanged`,), Structure.ByValue
+        `accessLogChanged`: UniffiCallbackInterfaceEngineListenerMethod3? = null,
+    ): UniffiVTableCallbackInterfaceEngineListener(`uniffiFree`,`uniffiClone`,`devicesChanged`,`transfersChanged`,`pairingChanged`,`accessLogChanged`,), Structure.ByValue
 
    internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceEngineListener) {
         `uniffiFree` = other.`uniffiFree`
@@ -681,6 +686,7 @@ internal open class UniffiVTableCallbackInterfaceEngineListener(
         `devicesChanged` = other.`devicesChanged`
         `transfersChanged` = other.`transfersChanged`
         `pairingChanged` = other.`pairingChanged`
+        `accessLogChanged` = other.`accessLogChanged`
     }
 
 }
@@ -710,6 +716,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ferry_runtime_checksum_func_generate_key(
     ): Int
     external fun uniffi_ferry_runtime_checksum_func_phone_port(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_access_log(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_batches(
     ): Int
@@ -759,6 +767,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_enginelistener_pairing_changed(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_enginelistener_access_log_changed(
+    ): Int
     external fun ffi_ferry_runtime_uniffi_contract_version(
     ): Int
 
@@ -784,6 +794,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_constructor_engine_new(`config`: RustBuffer.ByValue,`listener`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
+    external fun uniffi_ferry_runtime_fn_method_engine_access_log(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_batches(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_cancel_pairing(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -955,6 +967,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_func_phone_port() and 0xFFFF) != 57763) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_access_log() and 0xFFFF) != 8085) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_batches() and 0xFFFF) != 62922) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1025,6 +1040,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_enginelistener_pairing_changed() and 0xFFFF) != 48516) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_enginelistener_access_log_changed() and 0xFFFF) != 38946) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -1512,6 +1530,15 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 public interface EngineInterface {
     
     /**
+     * The access log, newest first. `None` for `device_key_hex` returns
+     * every device's. `limit` is capped at 1,000. Empty before `start` has
+     * opened the store.
+     *
+     * `docs/engine-contract.md`, batch E, item 13.
+     */
+    fun `accessLog`(`deviceKeyHex`: kotlin.String?, `limit`: kotlin.UInt): List<AccessEntry>
+    
+    /**
      * Every batch this engine has grouped, across every device.
      */
     fun `batches`(): List<BatchInfo>
@@ -1879,6 +1906,28 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
             UniffiLib.uniffi_ferry_runtime_fn_clone_engine(handle, status)
         }
     }
+
+    
+    /**
+     * The access log, newest first. `None` for `device_key_hex` returns
+     * every device's. `limit` is capped at 1,000. Empty before `start` has
+     * opened the store.
+     *
+     * `docs/engine-contract.md`, batch E, item 13.
+     */override fun `accessLog`(`deviceKeyHex`: kotlin.String?, `limit`: kotlin.UInt): List<AccessEntry> {
+            return FfiConverterSequenceTypeAccessEntry.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_access_log(
+        it,
+        
+        FfiConverterOptionalString.lower(`deviceKeyHex`),
+        FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
 
     
     /**
@@ -2372,6 +2421,112 @@ public object FfiConverterTypeEngine: FfiConverter<Engine, Long> {
 
     override fun write(value: Engine, buf: ByteBuffer) {
         buf.putLong(lower(value))
+    }
+}
+
+
+
+/**
+ * One access log entry, as [`Engine::access_log`] returns it.
+ *
+ * `docs/engine-contract.md`, batch E, item 13.
+ */
+data class AccessEntry (
+    /**
+     * `"<day>-<sequence>"`. Stable across restarts.
+     */
+    var `id`: kotlin.String
+    , 
+    /**
+     * The paired device this entry is about, as 64 lowercase hex
+     * characters.
+     */
+    var `deviceKeyHex`: kotlin.String
+    , 
+    /**
+     * Who performed the operation.
+     */
+    var `actor`: Actor
+    , 
+    /**
+     * Which kind of operation.
+     */
+    var `verb`: AccessVerb
+    , 
+    /**
+     * Root-relative, beginning with the root name: `"Desktop/Q3 notes.md"`.
+     */
+    var `path`: kotlin.String
+    , 
+    /**
+     * Bytes moved, for a read or a write.
+     */
+    var `bytes`: kotlin.ULong?
+    , 
+    /**
+     * For a list, how many entries were returned.
+     */
+    var `entries`: kotlin.UInt?
+    , 
+    /**
+     * For a folder copy, how many files it covered.
+     */
+    var `files`: kotlin.UInt?
+    , 
+    /**
+     * When the operation this entry describes first happened.
+     */
+    var `atUnixSecs`: kotlin.Long
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAccessEntry: FfiConverterRustBuffer<AccessEntry> {
+    override fun read(buf: ByteBuffer): AccessEntry {
+        return AccessEntry(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterTypeActor.read(buf),
+            FfiConverterTypeAccessVerb.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalULong.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AccessEntry) = (
+            FfiConverterString.allocationSize(value.`id`) +
+            FfiConverterString.allocationSize(value.`deviceKeyHex`) +
+            FfiConverterTypeActor.allocationSize(value.`actor`) +
+            FfiConverterTypeAccessVerb.allocationSize(value.`verb`) +
+            FfiConverterString.allocationSize(value.`path`) +
+            FfiConverterOptionalULong.allocationSize(value.`bytes`) +
+            FfiConverterOptionalUInt.allocationSize(value.`entries`) +
+            FfiConverterOptionalUInt.allocationSize(value.`files`) +
+            FfiConverterLong.allocationSize(value.`atUnixSecs`)
+    )
+
+    override fun write(value: AccessEntry, buf: ByteBuffer) {
+            FfiConverterString.write(value.`id`, buf)
+            FfiConverterString.write(value.`deviceKeyHex`, buf)
+            FfiConverterTypeActor.write(value.`actor`, buf)
+            FfiConverterTypeAccessVerb.write(value.`verb`, buf)
+            FfiConverterString.write(value.`path`, buf)
+            FfiConverterOptionalULong.write(value.`bytes`, buf)
+            FfiConverterOptionalUInt.write(value.`entries`, buf)
+            FfiConverterOptionalUInt.write(value.`files`, buf)
+            FfiConverterLong.write(value.`atUnixSecs`, buf)
     }
 }
 
@@ -3152,6 +3307,122 @@ public object FfiConverterTypeTransferInfo: FfiConverterRustBuffer<TransferInfo>
 
 
 /**
+ * One kind of file operation the access log records.
+ *
+ * `docs/engine-contract.md`, batch E, item 13. `set_mtime` has no member
+ * here: it is never logged, because it always follows a write that already
+ * is.
+ */
+
+enum class AccessVerb {
+    
+    /**
+     * A folder listing. One entry covers every page of it.
+     */
+    LIST,
+    /**
+     * A single file or folder's metadata.
+     */
+    STAT,
+    /**
+     * Bytes read from a file.
+     */
+    READ,
+    /**
+     * Bytes written to a file.
+     */
+    WRITE,
+    /**
+     * A file shortened or extended to a given length.
+     */
+    TRUNCATE,
+    /**
+     * A file or folder renamed.
+     */
+    RENAME,
+    /**
+     * A folder created.
+     */
+    MKDIR,
+    /**
+     * A file or folder removed.
+     */
+    DELETE;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAccessVerb: FfiConverterRustBuffer<AccessVerb> {
+    override fun read(buf: ByteBuffer) = try {
+        AccessVerb.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: AccessVerb) = 4UL
+
+    override fun write(value: AccessVerb, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Who performed an access log entry's operation.
+ *
+ * `docs/engine-contract.md`, batch E, item 13.
+ */
+
+enum class Actor {
+    
+    /**
+     * The peer, on this device's files.
+     */
+    PEER,
+    /**
+     * This device, on the peer's files.
+     */
+    THIS;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeActor: FfiConverterRustBuffer<Actor> {
+    override fun read(buf: ByteBuffer) = try {
+        Actor.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: Actor) = 4UL
+
+    override fun write(value: Actor, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * What kind of device this is, or a peer said it is in `hello`.
  *
  * `docs/engine-contract.md`, batch C, item 11.
@@ -3757,6 +4028,12 @@ public interface EngineListener {
      */
     fun `pairingChanged`(`state`: PairingState)
     
+    /**
+     * An access log entry became final. At most once every 250
+     * milliseconds. The app then calls [`Engine::access_log`].
+     */
+    fun `accessLogChanged`()
+    
     companion object
 }
 
@@ -3798,6 +4075,17 @@ internal object uniffiCallbackInterfaceEngineListener {
             uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
         }
     }
+    internal object `accessLogChanged`: UniffiCallbackInterfaceEngineListenerMethod3 {
+        override fun callback(`uniffiHandle`: Long,`uniffiOutReturn`: Pointer,uniffiCallStatus: UniffiRustCallStatus,) {
+            val uniffiObj = FfiConverterTypeEngineListener.handleMap.get(uniffiHandle)
+            val makeCall = { ->
+                uniffiObj.`accessLogChanged`(
+                )
+            }
+            val writeReturn = { _: Unit -> Unit }
+            uniffiTraitInterfaceCall(uniffiCallStatus, makeCall, writeReturn)
+        }
+    }
 
     internal object uniffiFree: UniffiCallbackInterfaceFree {
         override fun callback(handle: Long) {
@@ -3817,6 +4105,7 @@ internal object uniffiCallbackInterfaceEngineListener {
         `devicesChanged`,
         `transfersChanged`,
         `pairingChanged`,
+        `accessLogChanged`,
     )
 
     // Registers the foreign callback with the Rust side.
@@ -3832,6 +4121,38 @@ internal object uniffiCallbackInterfaceEngineListener {
  * @suppress
  */
 public object FfiConverterTypeEngineListener: FfiConverterCallbackInterface<EngineListener>()
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalUInt: FfiConverterRustBuffer<kotlin.UInt?> {
+    override fun read(buf: ByteBuffer): kotlin.UInt? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterUInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.UInt?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterUInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.UInt?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterUInt.write(value, buf)
+        }
+    }
+}
 
 
 
@@ -3989,6 +4310,34 @@ public object FfiConverterOptionalTypeTransport: FfiConverterRustBuffer<Transpor
         } else {
             buf.put(1)
             FfiConverterTypeTransport.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeAccessEntry: FfiConverterRustBuffer<List<AccessEntry>> {
+    override fun read(buf: ByteBuffer): List<AccessEntry> {
+        val len = buf.getInt()
+        return List<AccessEntry>(len) {
+            FfiConverterTypeAccessEntry.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<AccessEntry>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeAccessEntry.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<AccessEntry>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeAccessEntry.write(it, buf)
         }
     }
 }
