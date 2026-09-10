@@ -131,13 +131,17 @@ pub(crate) struct Shared {
     pub(crate) wake: Condvar,
     /// Set by `stop`. Every loop checks it.
     pub(crate) stopping: Arc<AtomicBool>,
-    /// The served roots, open once `new` has validated them. `stop` clears
-    /// this, the same way it used to clear the one shared root.
+    /// The served roots, open once `start` or `set_roots` has opened them.
+    /// `None` before that, and again after `stop` clears it, the same way
+    /// `stop` used to clear the one shared root.
     ///
     /// This is the handle every serving connection's [`GuardedFs`] shares,
     /// so a root change reaches every open connection on its next
     /// operation. See [`crate::guard::RootsHandle`].
     pub(crate) roots: RootsHandle,
+    /// The roots as given to `new`, validated but not yet opened. `start`
+    /// opens them. `Engine::roots` falls back to this before `start` runs.
+    pub(crate) initial_roots: Vec<Root>,
     /// Where `download_dir` lives, as given to `new`. Read once, by
     /// `start`, which opens it.
     pub(crate) download_dir_config: PathBuf,
@@ -410,11 +414,16 @@ impl Engine {
     ///
     /// Returns `Runtime::BadConfig` when a directory cannot be made, the
     /// device list cannot be read, `shared_roots` is empty, or another
-    /// engine is already using the directory; a `RootsError` code when
-    /// `shared_roots` is not empty but is otherwise refused, such as two
-    /// roots that overlap; `Runtime::NameTooLong` when the display name is
-    /// over 64 bytes; and a `NoiseError` code when the key is not two lots
-    /// of 32 bytes.
+    /// engine is already using the directory; `Runtime::NameTooLong` when
+    /// the display name is over 64 bytes; and a `NoiseError` code when the
+    /// key is not two lots of 32 bytes.
+    ///
+    /// Opening `shared_roots` on disk is [`Engine::start`]'s job, not this
+    /// one's, the same as the old single shared root: a phone builds its
+    /// engine before storage permission is granted, and only `start` has to
+    /// wait for it. So a root that is wrong in some way `Config` validation
+    /// cannot see, such as two roots that overlap, is not caught here; it
+    /// surfaces as a `RootsError` code from `start`.
     #[uniffi::constructor]
     pub fn new(config: Config, listener: Box<dyn EngineListener>) -> Result<Arc<Self>, FerryError> {
         let mut config = config;
@@ -429,13 +438,12 @@ impl Engine {
             return Err(failed("Runtime::NameTooLong"));
         }
 
-        // Validating `Config` itself is `Runtime::BadConfig`; a root that is
-        // wrong in some other way is the core's own `RootsError` code,
-        // forwarded by `open_roots`.
+        // This much of `shared_roots` can be validated without touching
+        // disk, so `Config` validation catches it here. `start` opens the
+        // roots themselves.
         if config.shared_roots.is_empty() {
             return Err(bad_config("There must be at least one shared root."));
         }
-        let roots_state = open_roots(&config.shared_roots)?;
 
         let data_dir = PathBuf::from(&config.data_dir);
         std::fs::create_dir_all(&data_dir)
@@ -468,7 +476,8 @@ impl Engine {
             state: Mutex::new(State::new(peers)),
             wake: Condvar::new(),
             stopping: Arc::new(AtomicBool::new(false)),
-            roots: Arc::new(Mutex::new(Some(roots_state))),
+            roots: Arc::new(Mutex::new(None)),
+            initial_roots: config.shared_roots.clone(),
             download_dir_config: PathBuf::from(&config.download_dir),
             download_fs: Mutex::new(None),
             net: Mutex::new(None),
@@ -488,16 +497,28 @@ impl Engine {
         Ok(Arc::new(Self { shared }))
     }
 
-    /// Open the shared root, bind the listener, and start every loop.
+    /// Open the served roots and the download folder, bind the listener,
+    /// and start every loop.
     ///
     /// A machine with no `adb` is not an error. USB is simply unavailable.
     ///
     /// # Errors
     ///
-    /// Returns `Runtime::BadConfig` with a detail saying which part failed.
+    /// Returns a `RootsError` code when the roots given to `new` cannot be
+    /// opened, such as two that overlap or a path that is not an existing
+    /// folder, unless `set_roots` already opened a fresher set; and
+    /// `Runtime::BadConfig` with a detail when some other part fails to
+    /// open.
     pub fn start(&self) -> Result<(), FerryError> {
         if lock(&self.shared.state).started {
             return Ok(());
+        }
+
+        // `set_roots` may have already opened a set before `start` ever
+        // ran; that one wins, since it is the fresher of the two.
+        if lock(&self.shared.roots).is_none() {
+            let roots_state = open_roots(&self.shared.initial_roots)?;
+            *lock(&self.shared.roots) = Some(roots_state);
         }
 
         // A pull never writes into a served root, so this opens its own
@@ -653,12 +674,15 @@ impl Engine {
     }
 
     /// The roots currently served, as last set by `new` or `set_roots`.
+    ///
+    /// Before `start` has opened them, this is `Config.shared_roots` as
+    /// given to `new`, unopened and unvalidated beyond being non-empty.
     #[must_use]
     pub fn roots(&self) -> Vec<Root> {
-        lock(&self.shared.roots)
-            .as_ref()
-            .map(|state| state.specs.clone())
-            .unwrap_or_default()
+        lock(&self.shared.roots).as_ref().map_or_else(
+            || self.shared.initial_roots.clone(),
+            |state| state.specs.clone(),
+        )
     }
 
     /// Replace the served roots.
