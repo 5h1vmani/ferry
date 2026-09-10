@@ -423,14 +423,13 @@ Before phase 2:
    run; the screens were built from the IA before anyone had used them. Daily
    use is the only source of the next engine facts, and the UX is what stops
    daily use. Narrow: the moments named, not a redesign.
-2. Deterministic fault injection for resume. Two engines already run in one
-   process, and the loopback transport already cuts a stream after N bytes.
-   Loop N over a whole transfer and assert that every cut resumes and
-   refetches at most one chunk. That is job 3 turned into a test, and it
-   locks the resume path before phase 2 changes touch it. Core tests only,
-   so it runs beside the UX pass. Days at most.
+2. Deterministic fault injection for resume. Done on 10 September 2026.
+   `crates/ferry-runtime/tests/resume_sweep.rs` cuts the wire after exactly
+   N bytes and proves every cut resumes and refetches at most one chunk:
+   129 points in the ordinary suite, every byte of the transfer on demand.
 3. Use it for a week. The outcome metrics in `docs/jobs.md` are the
-   acceptance criteria.
+   acceptance criteria. Measure the pull speed over Wi-Fi and over the
+   cable once, because nothing has measured it yet.
 
 Phase 2, in order:
 
