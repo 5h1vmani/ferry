@@ -1,0 +1,274 @@
+//! The engine both apps link.
+//!
+//! `ferry-core` is a library of protocol pieces. This crate composes them into
+//! one object, [`Engine`], with one callback, [`EngineListener`], and exposes
+//! both through UniFFI so the Swift and Kotlin apps stay thin. Every decision
+//! lives on this side of the boundary. The apps show state and forward taps.
+//!
+//! # Shape of the boundary
+//!
+//! The app calls methods. The engine reports change through the listener.
+//! A change notification carries little or nothing; the app then asks again
+//! with [`Engine::devices`] or [`Engine::transfers`]. That keeps big values
+//! from crossing the boundary on every tick and keeps the callback surface
+//! small.
+//!
+//! Errors cross as [`FerryError`], whose `code` is the Rust path of the
+//! underlying variant, such as `OpError::NotFound`. The apps map a code to
+//! words through the table generated from `design/errors.json`. No English is
+//! composed on this side.
+//!
+//! Keys cross as bytes. The platform owns their storage: the Keychain on macOS
+//! and private storage on Android. The engine wipes what it is given when it
+//! is dropped.
+//!
+//! # Threads
+//!
+//! Blocking I/O with threads, per decision record 7. `start` spawns: one
+//! accept loop that hands each connection to its own thread; one discovery
+//! browser; and one thread per active transfer. `stop` joins them.
+//!
+//! # Roles
+//!
+//! One engine type serves both devices. The phone calls
+//! [`Engine::set_reachable`] to advertise and accept. The Mac calls
+//! [`Engine::start_pairing`] to browse and, once paired, [`Engine::pull`].
+//! Nothing in the type knows which device it is on.
+//!
+//! # Not yet
+//!
+//! Push, from the Mac to the phone, is not built. The core has `pull` only.
+//! Per-peer connection caps are not built. Both are recorded in `PLAN.md`.
+//!
+//! # Contract for `Engine`
+//!
+//! ```text
+//! #[derive(uniffi::Object)]
+//! pub struct Engine { .. }
+//!
+//! #[uniffi::export]
+//! impl Engine {
+//!     /// Build an engine. Does not start any thread.
+//!     #[uniffi::constructor]
+//!     pub fn new(config: Config, listener: Box<dyn EngineListener>) -> Result<Arc<Self>, FerryError>;
+//!
+//!     /// Make a fresh key pair for first run. The app stores it.
+//!     #[uniffi::constructor]  (or a free exported fn)
+//!     pub fn generate_key() -> KeyPair;
+//!
+//!     /// Bind the listener, start the accept loop, start the adb poll.
+//!     pub fn start(&self) -> Result<(), FerryError>;
+//!     /// Stop everything and join every thread. Safe to call twice.
+//!     pub fn stop(&self);
+//!
+//!     /// Phone only in practice. On: advertise over mDNS and accept KK
+//!     /// connections from paired devices. Off: stop advertising; existing
+//!     /// connections finish, new ones are refused.
+//!     pub fn set_reachable(&self, on: bool);
+//!
+//!     pub fn devices(&self) -> Vec<DeviceInfo>;
+//!     /// Forget a device: remove its key and every transfer record for it.
+//!     pub fn forget(&self, key_hex: String) -> Result<(), FerryError>;
+//!
+//!     /// Enter pairing. The Mac browses mDNS and polls adb, and reports
+//!     /// candidates through the listener. The phone accepts one XX handshake
+//!     /// and reports the code. Times out after two minutes.
+//!     pub fn start_pairing(&self);
+//!     /// Mac: dial the chosen candidate and run XX. The code is reported
+//!     /// through the listener.
+//!     pub fn pick_candidate(&self, id: String) -> Result<(), FerryError>;
+//!     /// Both sides. Accept stores the peer and sends hello. Reject drops it.
+//!     pub fn confirm_pairing(&self, accept: bool);
+//!     pub fn cancel_pairing(&self);
+//!
+//!     pub fn transfers(&self) -> Vec<TransferInfo>;
+//!     /// Fetch one file from a paired device into the shared root, under
+//!     /// `local_name`. Returns the transfer id. Runs on its own thread and
+//!     /// reports through the listener. Resumes on its own when the device
+//!     /// becomes reachable again.
+//!     pub fn pull(&self, device_key_hex: String, remote_path: String, local_name: String) -> Result<String, FerryError>;
+//!     /// Retry a failed transfer from its resume point.
+//!     pub fn retry(&self, transfer_id: String) -> Result<(), FerryError>;
+//! }
+//! ```
+//!
+//! The pairing state machine: Idle, Waiting, Found (Mac, with candidates),
+//! Code (both, with the six digits), Confirmed, Failed. Exactly one pairing at
+//! a time. The listener receives every state change.
+//!
+//! Transports: the engine tries USB first when adb shows an authorised device
+//! that has a Ferry forward, then Wi-Fi from the last known address, then
+//! mDNS. Whichever connects becomes `reachable_via`. Speed is bytes moved in
+//! the last second, updated no more than once a second.
+
+uniffi::setup_scaffolding!();
+
+use std::fmt;
+
+/// What the app tells the engine at construction.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct Config {
+    /// Where the engine keeps its own files: paired devices and transfer
+    /// records. Must exist and be private to the app.
+    pub data_dir: String,
+    /// The folder served to paired devices, and where pulled files land.
+    pub shared_root: String,
+    /// The name sent in `hello`. At most 64 bytes. Defaults to the model.
+    pub display_name: String,
+    /// The port to listen on. Zero means any free port.
+    pub listen_port: u16,
+    /// This device's long-lived key. The app loaded it from secure storage.
+    pub key: KeyPair,
+}
+
+/// A static key pair as bytes. The platform stores it; the engine uses it.
+#[derive(Clone, uniffi::Record)]
+pub struct KeyPair {
+    /// Thirty-two bytes. Never logged, never shown.
+    pub private: Vec<u8>,
+    /// Thirty-two bytes. Safe to show as a fingerprint.
+    pub public: Vec<u8>,
+}
+
+impl fmt::Debug for KeyPair {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The private half must never reach a log.
+        f.debug_struct("KeyPair").field("public", &self.public).finish_non_exhaustive()
+    }
+}
+
+/// One way a device is reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Transport {
+    /// Through the adb tunnel over a cable.
+    Usb,
+    /// Over the local network.
+    Wifi,
+}
+
+/// One paired device, as the Devices screen shows it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DeviceInfo {
+    /// The public key as 64 lowercase hex characters. This is the identity.
+    pub key_hex: String,
+    /// The name it sent in `hello`. Shown, never trusted.
+    pub name: String,
+    /// When it was paired.
+    pub paired_unix_secs: i64,
+    /// How it is reachable right now, if at all.
+    pub reachable_via: Option<Transport>,
+    /// Bytes per second moving to or from it in the last second, if any.
+    pub speed_bytes_per_sec: Option<u64>,
+    /// When it was last reachable, if it is not reachable now.
+    pub last_seen_unix_secs: Option<i64>,
+}
+
+/// Where a transfer is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum TransferState {
+    /// Waiting for a thread or for the device to be reachable.
+    Queued,
+    /// Moving bytes.
+    Active,
+    /// The link dropped. Resumes on its own when the device is reachable.
+    Paused,
+    /// Every chunk verified and the file is at its final name.
+    Done,
+    /// Stopped for a reason in `error`. A retry starts from the resume point.
+    Failed,
+}
+
+/// One transfer, as the Transfers screen shows it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TransferInfo {
+    /// Stable for the life of the transfer, across restarts.
+    pub id: String,
+    /// Which device it is with.
+    pub device_key_hex: String,
+    /// The file's name, for display.
+    pub file_name: String,
+    /// Total size in bytes.
+    pub bytes_total: u64,
+    /// Bytes verified in place.
+    pub bytes_done: u64,
+    /// Where it is.
+    pub state: TransferState,
+    /// Which transport is carrying it, while active.
+    pub transport: Option<Transport>,
+    /// Why it failed or paused, when it did.
+    pub error: Option<FerryError>,
+}
+
+/// A device that could be paired, as the Mac's pairing screen lists it.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PairingCandidate {
+    /// Opaque, for `pick_candidate`.
+    pub id: String,
+    /// How it was found.
+    pub transport: Transport,
+    /// The last four characters of its random mDNS name, or the adb serial's
+    /// last four. The phone shows the same four so a person can match them.
+    pub short_code: String,
+}
+
+/// Where pairing is.
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum PairingState {
+    /// Not pairing.
+    Idle,
+    /// Looking for a device, or on the phone, waiting for a Mac.
+    Waiting,
+    /// The Mac has candidates to pick from.
+    Found {
+        /// What can be picked.
+        candidates: Vec<PairingCandidate>,
+    },
+    /// Both screens show the code.
+    Code {
+        /// Six digits, zero padded.
+        code: String,
+    },
+    /// Both sides confirmed. The device is now in `devices()`.
+    Confirmed {
+        /// The new device.
+        device: DeviceInfo,
+    },
+    /// Pairing stopped.
+    Failed {
+        /// Why.
+        error: FerryError,
+    },
+}
+
+/// An error crossing to the app.
+///
+/// `code` is the Rust path of the underlying variant, such as
+/// `OpError::NotFound` or `TcpError::Timeout`. The app maps it to words
+/// through the table generated from `design/errors.json`. `detail` carries a
+/// value the words may need, such as a file name, and is optional.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum FerryError {
+    /// The only variant. A code and an optional detail.
+    #[error("{code}")]
+    Failed {
+        /// The Rust path of the variant, used as the lookup key.
+        code: String,
+        /// A value the message may need. Never a sentence.
+        detail: Option<String>,
+    },
+}
+
+/// How the engine tells the app something changed.
+///
+/// Every method is called from an engine thread, never from the thread the
+/// app called into. The app must hop to its main thread before touching a
+/// view.
+#[uniffi::export(callback_interface)]
+pub trait EngineListener: Send + Sync {
+    /// The device list, or a device's reachability or speed, changed.
+    fn devices_changed(&self);
+    /// A transfer was added, moved, or changed state.
+    fn transfers_changed(&self);
+    /// Pairing moved to a new state.
+    fn pairing_changed(&self, state: PairingState);
+}

@@ -1,0 +1,28 @@
+[package]
+name = "ferry-runtime"
+version = "0.0.0"
+description = "The engine both apps link. Composes ferry-core into one object with a callback, exposed through UniFFI."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "ferry_runtime"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+ferry-core = { path = "../ferry-core" }
+thiserror = "2"
+uniffi = { version = "0.32", features = ["cli"] }
+zeroize = "1"
+
+[dev-dependencies]

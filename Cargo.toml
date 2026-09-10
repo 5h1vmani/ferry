@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ferry-core"]
+members = ["crates/ferry-core", "crates/ferry-runtime"]
 exclude = ["spike"]
 
 [workspace.package]
