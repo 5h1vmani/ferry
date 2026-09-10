@@ -33,6 +33,18 @@
 //!    the cursor as a zero-based index into the sorted children.
 //! 7. Every std or `cap_std` error maps to one [`crate::ops::OpError`] variant.
 //!    The mapping lives in one function.
+//! 8. The empty path names the shared root. `list` and `stat` accept it.
+//!    `read` and `write` refuse it with
+//!    [`crate::ops::OpError::IsADirectory`]. That is the same code a real
+//!    directory gets, because the root is one. `delete` and `rename` do
+//!    accept a real directory, so their refusal is not about shape. Neither
+//!    may touch the root, as either argument, so both refuse it with
+//!    [`crate::ops::OpError::PermissionDenied`]. `mkdir` of the root refuses
+//!    with [`crate::ops::OpError::AlreadyExists`], because the root is
+//!    always already there. `truncate` needs no check of its own: opening
+//!    the root as a file already fails, the same way it does for `read` and
+//!    `write`. `set_mtime` still accepts the root, the same as any other
+//!    directory.
 //!
 //! Public shape:
 //!
@@ -166,7 +178,7 @@ impl FileOps for LocalFs {
             // whatever it points to.
             let dir_metadata = self
                 .root
-                .symlink_metadata(path.as_str())
+                .symlink_metadata(cap_std_path(path))
                 .map_err(|e| map_io(&e))?;
             match classify(&dir_metadata)? {
                 FileKind::Directory => {}
@@ -174,7 +186,11 @@ impl FileOps for LocalFs {
             }
 
             let mut entries = Vec::new();
-            for entry in self.root.read_dir(path.as_str()).map_err(|e| map_io(&e))? {
+            for entry in self
+                .root
+                .read_dir(cap_std_path(path))
+                .map_err(|e| map_io(&e))?
+            {
                 let entry = entry.map_err(|e| map_io(&e))?;
                 // One odd child must not fail the whole listing. A FIFO, a
                 // socket, a device, or a symlink is left out instead.
@@ -239,7 +255,7 @@ impl FileOps for LocalFs {
     fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
         let metadata = self
             .root
-            .symlink_metadata(path.as_str())
+            .symlink_metadata(cap_std_path(path))
             .map_err(|e| map_io(&e))?;
         let kind = classify(&metadata)?;
         Ok(Entry {
@@ -258,13 +274,22 @@ impl FileOps for LocalFs {
         if length > limits::MAX_READ_LEN {
             return Err(OpError::RangeTooLarge);
         }
+        // The root is a directory, and `read` only ever serves a file. The
+        // check below would catch this once it opened the root, but saying
+        // so here is clearer than waiting on that.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
+        }
 
         // No `symlink_metadata` call runs first. See `open_checked` for why:
         // checking what is at `path` and opening it are one step now, not
         // two, so there is no gap in between for another process to swap
         // what `path` points at.
-        let (mut file, kind) =
-            open_checked(&self.root, path.as_str(), OpenOptions::new().read(true))?;
+        let (mut file, kind) = open_checked(
+            &self.root,
+            cap_std_path(path),
+            OpenOptions::new().read(true),
+        )?;
         if kind == FileKind::Directory {
             return Err(OpError::IsADirectory);
         }
@@ -282,6 +307,11 @@ impl FileOps for LocalFs {
         if written > limits::MAX_WRITE_LEN {
             return Err(OpError::RangeTooLarge);
         }
+        // The root is a directory, and `write` only ever serves a file. Same
+        // reasoning as `read`, above.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
+        }
 
         // `create(true)` covers the case a separate check used to handle by
         // hand: a path with nothing at it yet, which `write` is allowed to
@@ -291,7 +321,7 @@ impl FileOps for LocalFs {
         // what was actually opened.
         let (mut file, kind) = open_checked(
             &self.root,
-            path.as_str(),
+            cap_std_path(path),
             OpenOptions::new().write(true).create(true),
         )?;
         if kind == FileKind::Directory {
@@ -304,7 +334,15 @@ impl FileOps for LocalFs {
     }
 
     fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), OpError> {
-        let (file, kind) = open_checked(&self.root, path.as_str(), OpenOptions::new().write(true))?;
+        // No explicit root check is needed here. `open_checked` opens the
+        // root as a directory (see `cap_std_path`), and the check just below
+        // already refuses any directory, root or not, the same way `read`
+        // and `write` refuse it up front.
+        let (file, kind) = open_checked(
+            &self.root,
+            cap_std_path(path),
+            OpenOptions::new().write(true),
+        )?;
         if kind == FileKind::Directory {
             return Err(OpError::IsADirectory);
         }
@@ -312,47 +350,91 @@ impl FileOps for LocalFs {
     }
 
     fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), OpError> {
+        // `rename` does accept a real directory, so the refusal here is not
+        // about shape the way `read` and `write`'s is. It is refused because
+        // the root itself may neither be moved away nor be overwritten by
+        // something else, so both arguments are checked before either side
+        // of the capability directory is touched.
+        if from.is_root() || to.is_root() {
+            return Err(OpError::PermissionDenied);
+        }
         let metadata = self
             .root
-            .symlink_metadata(from.as_str())
+            .symlink_metadata(cap_std_path(from))
             .map_err(|e| map_io(&e))?;
         classify(&metadata)?;
         self.root
-            .rename(from.as_str(), &self.root, to.as_str())
+            .rename(cap_std_path(from), &self.root, cap_std_path(to))
             .map_err(|e| map_io(&e))
     }
 
     fn set_mtime(&self, path: &RemotePath, modified_unix_secs: i64) -> Result<(), OpError> {
         // Unlike `read`, `write`, and `truncate`, this is allowed to land on
-        // a directory; `Request::SetMtime`'s contract covers both. A plain
-        // read-only open is enough either way: setting a file's or a
-        // directory's time depends on ownership and permission, not on how
-        // the handle was opened. `open_checked`'s `classify` call still
-        // refuses a FIFO, a socket, or a device, which is the only thing
-        // that mattered for the race this function used to have.
-        let (file, _kind) = open_checked(&self.root, path.as_str(), OpenOptions::new().read(true))?;
+        // a directory; `Request::SetMtime`'s contract covers both, and that
+        // includes the root, which is a directory like any other for this
+        // one operation. A plain read-only open is enough either way:
+        // setting a file's or a directory's time depends on ownership and
+        // permission, not on how the handle was opened. `open_checked`'s
+        // `classify` call still refuses a FIFO, a socket, or a device, which
+        // is the only thing that mattered for the race this function used to
+        // have.
+        let (file, _kind) = open_checked(
+            &self.root,
+            cap_std_path(path),
+            OpenOptions::new().read(true),
+        )?;
         file.into_std()
             .set_modified(unix_secs_to_system_time(modified_unix_secs))
             .map_err(|e| map_io(&e))
     }
 
     fn mkdir(&self, path: &RemotePath) -> Result<(), OpError> {
-        self.root.create_dir(path.as_str()).map_err(|e| map_io(&e))
+        // The root is always already there, so creating it again is refused
+        // the same way creating any other existing directory is: the target
+        // already exists.
+        if path.is_root() {
+            return Err(OpError::AlreadyExists);
+        }
+        self.root
+            .create_dir(cap_std_path(path))
+            .map_err(|e| map_io(&e))
     }
 
     fn delete(&self, path: &RemotePath) -> Result<(), OpError> {
+        // `delete` does accept a real directory, so, as with `rename`, the
+        // refusal here is not about shape. The root may never be removed,
+        // empty or not.
+        if path.is_root() {
+            return Err(OpError::PermissionDenied);
+        }
         let metadata = self
             .root
-            .symlink_metadata(path.as_str())
+            .symlink_metadata(cap_std_path(path))
             .map_err(|e| map_io(&e))?;
         match classify(&metadata)? {
-            FileKind::File => self.root.remove_file(path.as_str()).map_err(|e| map_io(&e)),
+            FileKind::File => self
+                .root
+                .remove_file(cap_std_path(path))
+                .map_err(|e| map_io(&e)),
             // `remove_dir` is a plain `rmdir`. It fails with `NotEmpty`
             // instead of taking anything down with it, because delete is not
             // recursive.
-            FileKind::Directory => self.root.remove_dir(path.as_str()).map_err(|e| map_io(&e)),
+            FileKind::Directory => self
+                .root
+                .remove_dir(cap_std_path(path))
+                .map_err(|e| map_io(&e)),
         }
     }
+}
+
+// `cap_std::fs::Dir` has no concept of "the root itself" as a path string;
+// every one of its methods takes a path relative to the capability, and an
+// empty string is not a valid one. `.` names the same directory in every
+// `cap_std` call, so the root maps to that here, and every other path is
+// unchanged. Every call into `self.root` above goes through this function,
+// so a path that reaches `cap_std` is never the bare empty string.
+fn cap_std_path(path: &RemotePath) -> &str {
+    if path.is_root() { "." } else { path.as_str() }
 }
 
 // `custom_flags` takes an `i32`, and `OFlags::bits` is a `u32`. The value is
@@ -433,9 +515,12 @@ fn classify(metadata: &Metadata) -> Result<FileKind, OpError> {
 
 // The last component of a path, for the `name` field of an `Entry`.
 // `RemotePath::components` only promises a forward `Iterator`, so the last
-// component is read directly off the string instead. A `RemotePath` always
-// has at least one component, so the fallback is never actually used; it
-// only keeps this function free of an `unwrap`.
+// component is read directly off the string instead. Every path but the root
+// has at least one component, so the fallback is never actually used for
+// those; it only keeps this function free of an `unwrap`. For the root,
+// whose string form is empty, `rsplit` on an empty string still yields one
+// empty piece, so this already returns the empty string without needing a
+// case of its own. See `Entry::name` in `crate::ops` for what that means.
 fn leaf_name(path: &RemotePath) -> String {
     path.as_str()
         .rsplit('/')
@@ -593,6 +678,35 @@ mod tests {
         let root = TempRoot::new("list-missing");
         let fs = root.fs();
         assert_eq!(fs.list(&path("nope"), 0), Err(OpError::NotFound));
+    }
+
+    #[test]
+    fn list_of_the_root_lists_the_shared_root() {
+        let root = TempRoot::new("list-root");
+        let fs = root.fs();
+        fs.mkdir(&path("DCIM")).unwrap();
+        fs.write(&path("a.txt"), 0, b"hi").unwrap();
+
+        let (entries, next_cursor) = fs.list(&path(""), 0).unwrap();
+        assert_eq!(next_cursor, None);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["DCIM", "a.txt"]);
+    }
+
+    #[test]
+    fn stat_of_the_root_answers_a_directory_entry_with_an_empty_name() {
+        let root = TempRoot::new("stat-root");
+        let fs = root.fs();
+        let entry = fs.stat(&path("")).unwrap();
+        assert_eq!(entry.name, "");
+        assert_eq!(entry.kind, FileKind::Directory);
+    }
+
+    #[test]
+    fn a_write_to_the_root_is_refused() {
+        let root = TempRoot::new("write-root");
+        let fs = root.fs();
+        assert_eq!(fs.write(&path(""), 0, b"hi"), Err(OpError::IsADirectory));
     }
 
     #[test]

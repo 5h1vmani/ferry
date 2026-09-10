@@ -727,6 +727,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_reachable(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_short_code(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_start(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_start_pairing(
@@ -786,6 +788,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_reachable(`ptr`: Long,`on`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_short_code(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_start(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_start_pairing(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -938,13 +942,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pick_candidate() and 0xFFFF) != 19467) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_pull() and 0xFFFF) != 54900) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_pull() and 0xFFFF) != 54016) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_retry() and 0xFFFF) != 46891) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_reachable() and 0xFFFF) != 6511) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_short_code() and 0xFFFF) != 63413) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_start() and 0xFFFF) != 33843) {
@@ -1510,6 +1517,8 @@ public interface EngineInterface {
      * Returns a `PathError` code when either path is refused,
      * `Runtime::NotPaired` when that device is not stored, and
      * `Runtime::NotStarted` before [`Engine::start`] has run.
+     * `PathError::Empty` is one such code: it names the shared root, which
+     * has no single file to pull.
      */
     fun `pull`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `localName`: kotlin.String): kotlin.String
     
@@ -1532,6 +1541,20 @@ public interface EngineInterface {
      * New ones are refused as soon as they are accepted.
      */
     fun `setReachable`(`on`: kotlin.Boolean)
+    
+    /**
+     * The last four characters of this device's own mDNS name, while it is
+     * reachable.
+     *
+     * The Mac computes the same four characters, with the same
+     * [`last_four`], for the `short_code` it shows next to this device in
+     * its pairing candidate list. A person with several phones in the room
+     * can compare the two and tell which one they are holding.
+     *
+     * Returns `None` before [`Engine::set_reachable`] has turned advertising
+     * on, and after it has turned it off.
+     */
+    fun `shortCode`(): kotlin.String?
     
     /**
      * Open the shared root, bind the listener, and start every loop.
@@ -1854,6 +1877,8 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
      * Returns a `PathError` code when either path is refused,
      * `Runtime::NotPaired` when that device is not stored, and
      * `Runtime::NotStarted` before [`Engine::start`] has run.
+     * `PathError::Empty` is one such code: it names the shared root, which
+     * has no single file to pull.
      */
     @Throws(FerryException::class)override fun `pull`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `localName`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
@@ -1912,6 +1937,31 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 }
     }
     
+    
+
+    
+    /**
+     * The last four characters of this device's own mDNS name, while it is
+     * reachable.
+     *
+     * The Mac computes the same four characters, with the same
+     * [`last_four`], for the `short_code` it shows next to this device in
+     * its pairing candidate list. A person with several phones in the room
+     * can compare the two and tell which one they are holding.
+     *
+     * Returns `None` before [`Engine::set_reachable`] has turned advertising
+     * on, and after it has turned it off.
+     */override fun `shortCode`(): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_short_code(
+        it,
+        _status)
+}
+    }
+    )
+    }
     
 
     

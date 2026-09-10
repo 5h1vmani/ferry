@@ -102,6 +102,37 @@ fn two_devices_pair_then_move_a_file_over_the_encrypted_channel() {
     phone.join().expect("the phone thread ended cleanly");
 }
 
+// `MemoryFs` is gated the same way as the pairing test above, and for the
+// same reason.
+#[cfg(feature = "testing")]
+#[test]
+fn the_in_memory_filesystem_lists_the_root_over_the_wire() {
+    use std::sync::Arc;
+
+    use ferry_core::memfs::MemoryFs;
+
+    let files = Arc::new(MemoryFs::new());
+    files.insert_dir("DCIM");
+    files.insert_file("DCIM/a.jpg", b"a".to_vec());
+
+    let (client_link, mut server_link) = loopback();
+    let server = std::thread::spawn(move || {
+        serve(&mut server_link, files.as_ref()).expect("served until the peer left");
+    });
+
+    let root = RemotePath::parse("").expect("the empty string is the shared root");
+    let mut client = Client::new(client_link);
+    let (entries, next_cursor) = client.list(&root, 0).expect("the root should list");
+    assert!(
+        entries.iter().any(|entry| entry.name == "DCIM"),
+        "the folder made above should be in the root's listing"
+    );
+    assert_eq!(next_cursor, None);
+
+    drop(client);
+    server.join().expect("the server thread ended cleanly");
+}
+
 /// A directory under the system temp directory, unique to one process, that
 /// removes itself when it is dropped, including when a test panics.
 struct TempDir {
@@ -196,4 +227,28 @@ fn two_devices_move_a_file_between_two_real_directories() {
 
     drop(client);
     phone.join().expect("the phone thread ended cleanly");
+}
+
+#[test]
+fn the_on_disk_filesystem_lists_the_root_over_the_wire() {
+    let root_dir = TempDir::new("wire-root");
+    std::fs::create_dir(root_dir.path.join("DCIM")).unwrap();
+    let files = LocalFs::open(&root_dir.path).expect("root opened");
+
+    let (client_link, mut server_link) = loopback();
+    let server = std::thread::spawn(move || {
+        serve(&mut server_link, &files).expect("served until the peer left");
+    });
+
+    let root = RemotePath::parse("").expect("the empty string is the shared root");
+    let mut client = Client::new(client_link);
+    let (entries, next_cursor) = client.list(&root, 0).expect("the root should list");
+    assert!(
+        entries.iter().any(|entry| entry.name == "DCIM"),
+        "the folder made above should be in the root's listing"
+    );
+    assert_eq!(next_cursor, None);
+
+    drop(client);
+    server.join().expect("the server thread ended cleanly");
 }

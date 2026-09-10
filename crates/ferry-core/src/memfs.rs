@@ -12,9 +12,15 @@
 //! cost of an `O(n)` scan on `list` and `delete`. That trade is fine here,
 //! because this type only needs to be easy to read, not fast.
 //!
-//! The empty root path has no entry in the map, because [`RemotePath`] cannot
-//! represent it. A path with no `/` is a top-level entry, and its parent is
-//! the root, which always exists.
+//! The empty root path has no entry in the map. It always exists and is
+//! always a directory, so `list` and `stat` special-case it instead of
+//! looking it up. A path with no `/` is a top-level entry, and its parent is
+//! the root.
+//!
+//! The root follows the same rules [`crate::localfs::LocalFs`] does. `list`
+//! and `stat` accept it. `set_mtime` accepts it too, as a no-op. Every other
+//! operation refuses it, with the same [`OpError`] localfs answers with. This
+//! is the reference filesystem, so the two must agree.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
@@ -179,40 +185,61 @@ fn entry_for(name: &str, node: &Node) -> Entry {
 impl FileOps for MemoryFs {
     fn list(&self, path: &RemotePath, cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
         let nodes = self.lock();
-        match nodes.get(path.as_str()) {
-            None => Err(OpError::NotFound),
-            Some(Node::File { .. }) => Err(OpError::NotADirectory),
-            Some(Node::Directory { .. }) => {
-                // Every child's key starts with the parent's key, so a
-                // `BTreeMap` already yields them in name order. No separate
-                // sort is needed.
-                let children: Vec<(&str, &Node)> = nodes
-                    .iter()
-                    .filter(|(key, _)| parent_of(key) == Some(path.as_str()))
-                    .map(|(key, node)| (name_of(key), node))
-                    .collect();
-
-                let page = usize::try_from(limits::MAX_LIST_ENTRIES).unwrap_or(usize::MAX);
-                let start = usize::try_from(cursor)
-                    .unwrap_or(usize::MAX)
-                    .min(children.len());
-                let end = start.saturating_add(page).min(children.len());
-
-                let entries = children[start..end]
-                    .iter()
-                    .map(|(name, node)| entry_for(name, node))
-                    .collect();
-                let next_cursor = if end < children.len() {
-                    Some(u64::try_from(end).unwrap_or(u64::MAX))
-                } else {
-                    None
-                };
-                Ok((entries, next_cursor))
+        // The root always exists and is always a directory. Every other path
+        // needs its own entry in the map to be listed.
+        if !path.is_root() {
+            match nodes.get(path.as_str()) {
+                None => return Err(OpError::NotFound),
+                Some(Node::File { .. }) => return Err(OpError::NotADirectory),
+                Some(Node::Directory { .. }) => {}
             }
         }
+
+        // Every child's key starts with the parent's key, so a `BTreeMap`
+        // already yields them in name order. No separate sort is needed.
+        // `parent_of` returns `None` for a top-level key, which is exactly
+        // what the root's children share as a parent.
+        let wanted_parent = if path.is_root() {
+            None
+        } else {
+            Some(path.as_str())
+        };
+        let children: Vec<(&str, &Node)> = nodes
+            .iter()
+            .filter(|(key, _)| parent_of(key) == wanted_parent)
+            .map(|(key, node)| (name_of(key), node))
+            .collect();
+
+        let page = usize::try_from(limits::MAX_LIST_ENTRIES).unwrap_or(usize::MAX);
+        let start = usize::try_from(cursor)
+            .unwrap_or(usize::MAX)
+            .min(children.len());
+        let end = start.saturating_add(page).min(children.len());
+
+        let entries = children[start..end]
+            .iter()
+            .map(|(name, node)| entry_for(name, node))
+            .collect();
+        let next_cursor = if end < children.len() {
+            Some(u64::try_from(end).unwrap_or(u64::MAX))
+        } else {
+            None
+        };
+        Ok((entries, next_cursor))
     }
 
     fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
+        // The root has no node of its own in the map (see the module
+        // documentation), so it is answered directly instead of looked up.
+        // Its name is the empty string; see `Entry::name` in `crate::ops`.
+        if path.is_root() {
+            return Ok(Entry {
+                name: String::new(),
+                kind: FileKind::Directory,
+                size: 0,
+                modified_unix_secs: 0,
+            });
+        }
         let nodes = self.lock();
         let node = nodes.get(path.as_str()).ok_or(OpError::NotFound)?;
         Ok(entry_for(name_of(path.as_str()), node))
@@ -221,6 +248,10 @@ impl FileOps for MemoryFs {
     fn read(&self, path: &RemotePath, offset: u64, length: u32) -> Result<Vec<u8>, OpError> {
         if length > limits::MAX_READ_LEN {
             return Err(OpError::RangeTooLarge);
+        }
+        // The root is a directory, and `read` only ever serves a file.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
         }
         let nodes = self.lock();
         match nodes.get(path.as_str()) {
@@ -242,6 +273,12 @@ impl FileOps for MemoryFs {
         let written = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
         if written > limits::MAX_WRITE_LEN {
             return Err(OpError::RangeTooLarge);
+        }
+        // The root is a directory, and `write` only ever serves a file. This
+        // also keeps `write` from inserting a bogus file node at the empty
+        // key below.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
         }
         let mut nodes = self.lock();
         let node = nodes
@@ -268,6 +305,10 @@ impl FileOps for MemoryFs {
     }
 
     fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), OpError> {
+        // The root is a directory, and `truncate` only ever shortens a file.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
+        }
         let mut nodes = self.lock();
         match nodes.get_mut(path.as_str()) {
             None => Err(OpError::NotFound),
@@ -281,6 +322,13 @@ impl FileOps for MemoryFs {
     }
 
     fn rename(&self, from: &RemotePath, to: &RemotePath) -> Result<(), OpError> {
+        // `rename` does accept a real directory, so this is not the same
+        // refusal as `read`, `write`, or `truncate`. The root may neither be
+        // moved away nor be overwritten by something else, so both arguments
+        // are checked before either is used.
+        if from.is_root() || to.is_root() {
+            return Err(OpError::PermissionDenied);
+        }
         let mut nodes = self.lock();
         if !nodes.contains_key(from.as_str()) {
             return Err(OpError::NotFound);
@@ -322,6 +370,13 @@ impl FileOps for MemoryFs {
     }
 
     fn set_mtime(&self, path: &RemotePath, modified_unix_secs: i64) -> Result<(), OpError> {
+        // Unlike `read`, `write`, and `truncate`, this is allowed to land on
+        // a directory, root included, matching `LocalFs`. The root has no
+        // node of its own to store a time on, so this is a no-op success
+        // rather than a lookup.
+        if path.is_root() {
+            return Ok(());
+        }
         let mut nodes = self.lock();
         match nodes.get_mut(path.as_str()) {
             None => Err(OpError::NotFound),
@@ -341,6 +396,11 @@ impl FileOps for MemoryFs {
     }
 
     fn mkdir(&self, path: &RemotePath) -> Result<(), OpError> {
+        // The root is always already there, so creating it again is refused
+        // the same way creating any other existing directory is.
+        if path.is_root() {
+            return Err(OpError::AlreadyExists);
+        }
         let mut nodes = self.lock();
         if nodes.contains_key(path.as_str()) {
             return Err(OpError::AlreadyExists);
@@ -362,6 +422,12 @@ impl FileOps for MemoryFs {
     }
 
     fn delete(&self, path: &RemotePath) -> Result<(), OpError> {
+        // `delete` does accept a real directory, so, as with `rename`, this
+        // is not a shape refusal. The root may never be removed, empty or
+        // not.
+        if path.is_root() {
+            return Err(OpError::PermissionDenied);
+        }
         let mut nodes = self.lock();
         match nodes.get(path.as_str()) {
             None => Err(OpError::NotFound),
@@ -438,9 +504,36 @@ mod tests {
     }
 
     #[test]
+    fn list_of_the_root_lists_the_shared_root() {
+        let fs = MemoryFs::new();
+        fs.insert_dir("DCIM");
+        fs.insert_file("a.jpg", b"a".to_vec());
+        fs.insert_file("DCIM/deep.jpg", b"deep".to_vec());
+
+        let (entries, next_cursor) = fs.list(&path(""), 0).unwrap();
+        assert_eq!(next_cursor, None);
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["DCIM", "a.jpg"]);
+    }
+
+    #[test]
     fn stat_on_a_missing_path_is_not_found() {
         let fs = MemoryFs::new();
         assert_eq!(fs.stat(&path("nope")), Err(OpError::NotFound));
+    }
+
+    #[test]
+    fn stat_of_the_root_answers_a_directory_entry_with_an_empty_name() {
+        let fs = MemoryFs::new();
+        let entry = fs.stat(&path("")).unwrap();
+        assert_eq!(entry.name, "");
+        assert_eq!(entry.kind, FileKind::Directory);
+    }
+
+    #[test]
+    fn a_write_to_the_root_is_refused() {
+        let fs = MemoryFs::new();
+        assert_eq!(fs.write(&path(""), 0, b"hi"), Err(OpError::IsADirectory));
     }
 
     #[test]

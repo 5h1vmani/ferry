@@ -7,6 +7,14 @@
 //! A [`RemotePath`] is a path that has passed those checks. The type exists so
 //! that the rest of the core cannot forget to run them.
 //!
+//! # The shared root
+//!
+//! The empty string names the shared root itself. [`RemotePath::parse`]
+//! accepts it and builds a path with no components at all. Call
+//! [`RemotePath::is_root`] to tell that path apart from every other one.
+//! Most operations still refuse the root. Each layer that does says so where
+//! it checks.
+//!
 //! # What this module does not do
 //!
 //! These checks are lexical. They read the text of the path and nothing else.
@@ -29,7 +37,15 @@ use std::fmt;
 /// The reason a path was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PathError {
-    /// The path had no components, or was an empty string.
+    /// The path named the shared root, and the operation that checked it
+    /// does not accept the root.
+    ///
+    /// [`RemotePath::parse`] no longer returns this. The empty string parses
+    /// as the root, since [`RemotePath::is_root`] is how a caller tells the
+    /// root apart from every other path. This variant now fires only where a
+    /// caller reads that flag itself and refuses to go on, such as
+    /// `Transfer::new` in `crate::session` refusing a root source or
+    /// destination.
     #[error("path is empty")]
     Empty,
     /// The path started with `/`. Remote paths are always relative to a root.
@@ -55,7 +71,9 @@ pub enum PathError {
 /// A relative path whose text is safe to join onto a shared root.
 ///
 /// Build one with [`RemotePath::parse`]. The stored form uses `/` as the
-/// separator and holds no empty, `.`, or `..` components.
+/// separator and holds no empty, `.`, or `..` components, except for the one
+/// path that has no components at all: the shared root. Test for that case
+/// with [`RemotePath::is_root`].
 ///
 /// This is a lexical guarantee only. It does not make the path safe to open.
 /// See the module documentation for what the filesystem layer must still do.
@@ -72,9 +90,16 @@ impl RemotePath {
 
     /// Check a path from the wire and normalise its separators.
     ///
+    /// The empty string is accepted and names the shared root. Every other
+    /// input still runs through the same checks as before: no leading `/`, no
+    /// `.` or `..` component, no NUL byte, no backslash, and no more than
+    /// [`RemotePath::MAX_LEN`] bytes.
+    ///
     /// # Errors
     ///
-    /// Returns the first rule the input broke. See [`PathError`].
+    /// Returns the first rule the input broke. See [`PathError`]. Note that
+    /// [`PathError::Empty`] is never returned here; see its own
+    /// documentation for where it still applies.
     pub fn parse(input: &str) -> Result<Self, PathError> {
         if input.len() > Self::MAX_LEN {
             return Err(PathError::TooLong);
@@ -88,6 +113,9 @@ impl RemotePath {
         if input.starts_with('/') {
             return Err(PathError::Absolute);
         }
+        if input.is_empty() {
+            return Ok(Self(String::new()));
+        }
 
         let mut parts = Vec::new();
         for part in input.split('/') {
@@ -99,22 +127,26 @@ impl RemotePath {
             }
         }
 
-        if parts.is_empty() {
-            return Err(PathError::Empty);
-        }
-
         Ok(Self(parts.join("/")))
     }
 
-    /// The path as a string, with `/` separators and no leading slash.
+    /// The path as a string, with `/` separators and no leading slash. The
+    /// root's string form is the empty string.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// The path components, in order.
+    /// True when this path names the shared root itself, rather than
+    /// anything inside it.
+    #[must_use]
+    pub fn is_root(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The path components, in order. Empty for the root.
     pub fn components(&self) -> impl Iterator<Item = &str> {
-        self.0.split('/')
+        self.0.split('/').filter(|part| !part.is_empty())
     }
 }
 
@@ -169,9 +201,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_paths() {
-        // The empty string is the only input that reaches this rule.
-        assert_eq!(RemotePath::parse(""), Err(PathError::Empty));
+    fn the_empty_string_parses_as_the_root() {
+        let root = RemotePath::parse("").unwrap();
+        assert_eq!(root.as_str(), "");
+        assert!(root.is_root());
+        assert_eq!(root.components().count(), 0);
+    }
+
+    #[test]
+    fn a_path_with_real_components_is_not_the_root() {
+        let path = RemotePath::parse("DCIM").unwrap();
+        assert!(!path.is_root());
     }
 
     #[test]

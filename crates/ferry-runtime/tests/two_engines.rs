@@ -368,14 +368,22 @@ fn the_mac_lists_a_folder_on_the_phone() {
     assert_eq!(on_mac.len(), 1, "the Mac lists the phone");
     let phone_key = on_mac[0].key_hex.clone();
 
-    // A remote path always names at least one component, so the shared
-    // root itself has no path of its own. `Photos` stands in for the first
-    // folder a person opens.
+    // The empty path names the shared root itself. `Photos` stands in for
+    // the first folder a person opens inside it.
     std::fs::create_dir(phone.shared_root.join("Photos"))
         .expect("the phone's shared folder should accept a new folder");
     let bytes = sample_bytes();
     std::fs::write(phone.shared_root.join("Photos/holiday.bin"), &bytes)
         .expect("the phone's shared folder should accept a file");
+
+    let top_level = mac
+        .engine
+        .list(phone_key.clone(), String::new())
+        .expect("the shared root should list");
+    top_level
+        .iter()
+        .find(|entry| entry.name == "Photos")
+        .expect("the folder just made should be in the root's listing");
 
     let entries = mac
         .engine
@@ -429,6 +437,12 @@ fn the_engine_refuses_what_it_should_and_says_why() {
         .expect_err("a path that climbs out of the root is refused");
     assert_eq!(code_of_error(&bad_path), "PathError::ParentComponent");
 
+    let root_source = side
+        .engine
+        .pull("00".repeat(32), String::new(), "a.bin".to_owned())
+        .expect_err("the shared root has no single file to pull");
+    assert_eq!(code_of_error(&root_source), "PathError::Empty");
+
     let unpaired = side
         .engine
         .pull("00".repeat(32), "a.bin".to_owned(), "a.bin".to_owned())
@@ -436,6 +450,27 @@ fn the_engine_refuses_what_it_should_and_says_why() {
     assert_eq!(code_of_error(&unpaired), "Runtime::NotPaired");
 
     side.engine.stop();
+}
+
+#[test]
+fn a_reachable_engine_has_a_four_character_short_code() {
+    let phone = build("Pixel 3 XL");
+
+    phone.engine.set_reachable(true);
+    let code = phone
+        .engine
+        .short_code()
+        .expect("a reachable engine should show its own short code");
+    assert_eq!(code.chars().count(), 4);
+
+    phone.engine.set_reachable(false);
+    assert_eq!(
+        phone.engine.short_code(),
+        None,
+        "an unreachable engine shows no short code"
+    );
+
+    phone.engine.stop();
 }
 
 #[test]

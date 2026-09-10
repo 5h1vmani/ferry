@@ -335,6 +335,11 @@ void uniffi_ferry_runtime_fn_method_engine_retry(uint64_t ptr, RustBuffer transf
 void uniffi_ferry_runtime_fn_method_engine_set_reachable(uint64_t ptr, int8_t on, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SHORT_CODE
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SHORT_CODE
+RustBuffer uniffi_ferry_runtime_fn_method_engine_short_code(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_START
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_START
 void uniffi_ferry_runtime_fn_method_engine_start(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -683,6 +688,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_retry(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_REACHABLE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_REACHABLE
 uint16_t uniffi_ferry_runtime_checksum_method_engine_set_reachable(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SHORT_CODE
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SHORT_CODE
+uint16_t uniffi_ferry_runtime_checksum_method_engine_short_code(void
     
 );
 #endif

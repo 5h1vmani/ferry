@@ -12,7 +12,7 @@ use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::ops::FileKind;
-use ferry_core::path::RemotePath;
+use ferry_core::path::{PathError, RemotePath};
 use ferry_core::peers::{Peer, PeerStore};
 use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
@@ -516,6 +516,23 @@ impl Engine {
         notify(&self.shared, Change::Devices);
     }
 
+    /// The last four characters of this device's own mDNS name, while it is
+    /// reachable.
+    ///
+    /// The Mac computes the same four characters, with the same
+    /// [`last_four`], for the `short_code` it shows next to this device in
+    /// its pairing candidate list. A person with several phones in the room
+    /// can compare the two and tell which one they are holding.
+    ///
+    /// Returns `None` before [`Engine::set_reachable`] has turned advertising
+    /// on, and after it has turned it off.
+    #[must_use]
+    pub fn short_code(&self) -> Option<String> {
+        lock(&self.shared.advertiser)
+            .as_ref()
+            .map(|advertiser| last_four(advertiser.instance_name()))
+    }
+
     /// Every paired device, with what is known about it right now.
     #[must_use]
     pub fn devices(&self) -> Vec<DeviceInfo> {
@@ -690,6 +707,8 @@ impl Engine {
     /// Returns a `PathError` code when either path is refused,
     /// `Runtime::NotPaired` when that device is not stored, and
     /// `Runtime::NotStarted` before [`Engine::start`] has run.
+    /// `PathError::Empty` is one such code: it names the shared root, which
+    /// has no single file to pull.
     pub fn pull(
         &self,
         device_key_hex: String,
@@ -697,7 +716,15 @@ impl Engine {
         local_name: String,
     ) -> Result<String, FerryError> {
         let source = RemotePath::parse(&remote_path).map_err(from_path)?;
+        if source.is_root() {
+            return Err(from_path(PathError::Empty));
+        }
         let destination = RemotePath::parse(&local_name).map_err(from_path)?;
+        // Refused here and not only where the transfer is built, because
+        // the first pass fetches the whole file before that point.
+        if destination.is_root() {
+            return Err(from_path(PathError::Empty));
+        }
         let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
 
         let id = {

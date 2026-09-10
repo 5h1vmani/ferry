@@ -149,12 +149,18 @@ impl Transfer {
     ///
     /// # Errors
     ///
-    /// Returns [`TransferError::NoRandomness`] when no identifier can be made.
+    /// Returns [`TransferError::NoRandomness`] when no identifier can be
+    /// made, and [`TransferError::BadPath`] when the source or the
+    /// destination is the shared root. A transfer always moves one named
+    /// file. The root has no file of its own to move.
     pub fn new(
         manifest: Manifest,
         source: RemotePath,
         destination: RemotePath,
     ) -> Result<Self, TransferError> {
+        if source.is_root() || destination.is_root() {
+            return Err(PathError::Empty.into());
+        }
         Ok(Self {
             id: SessionId::generate()?,
             manifest,
@@ -425,7 +431,7 @@ mod tests {
     use super::{Transfer, TransferError, pull, read_range, resume_point};
     use crate::chunk::{ChunkSize, manifest_from_bytes};
     use crate::memfs::MemoryFs;
-    use crate::path::RemotePath;
+    use crate::path::{PathError, RemotePath};
     use crate::rpc::{Client, serve};
     use crate::transport::{Endpoint, loopback};
     use std::sync::Arc;
@@ -618,6 +624,34 @@ mod tests {
         let b = transfer_for(&bytes);
         assert_ne!(a.id, b.id);
         assert_ne!(a.temporary_path().unwrap(), b.temporary_path().unwrap());
+    }
+
+    #[test]
+    fn a_transfer_cannot_use_the_root_as_its_source() {
+        let manifest = manifest_from_bytes(&data(10), ChunkSize::new(1024).unwrap());
+        let error = Transfer::new(
+            manifest,
+            RemotePath::parse("").unwrap(),
+            RemotePath::parse(DESTINATION).unwrap(),
+        );
+        assert!(matches!(
+            error,
+            Err(TransferError::BadPath(PathError::Empty))
+        ));
+    }
+
+    #[test]
+    fn a_transfer_cannot_use_the_root_as_its_destination() {
+        let manifest = manifest_from_bytes(&data(10), ChunkSize::new(1024).unwrap());
+        let error = Transfer::new(
+            manifest,
+            RemotePath::parse(SOURCE).unwrap(),
+            RemotePath::parse("").unwrap(),
+        );
+        assert!(matches!(
+            error,
+            Err(TransferError::BadPath(PathError::Empty))
+        ));
     }
 
     #[test]

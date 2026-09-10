@@ -69,6 +69,10 @@ impl FileKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     /// The entry's name within its parent directory. Never a full path.
+    ///
+    /// The shared root has no parent to be named within, so a `stat` of the
+    /// empty path (see `crate::path::RemotePath::is_root`) carries the empty
+    /// string here instead.
     pub name: String,
     /// Whether the entry is a file or a directory.
     pub kind: FileKind,

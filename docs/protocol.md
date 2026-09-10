@@ -317,6 +317,9 @@ A receiver rejects any path that is absolute, that holds a `.` or `..`
 component, that holds a NUL byte or a backslash, or that is longer than 1024
 bytes.
 
+The empty path names the shared root itself. It may be listed and stat'ed.
+Every other operation on it is refused.
+
 Those checks are lexical. They are not enough on their own. A symlink inside
 the root that points outside it passes all of them. So does a FIFO, which would
 block the serving thread forever, and so does a device file.

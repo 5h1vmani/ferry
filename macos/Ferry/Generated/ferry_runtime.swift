@@ -690,6 +690,8 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * Returns a `PathError` code when either path is refused,
      * `Runtime::NotPaired` when that device is not stored, and
      * `Runtime::NotStarted` before [`Engine::start`] has run.
+     * `PathError::Empty` is one such code: it names the shared root, which
+     * has no single file to pull.
      */
     func pull(deviceKeyHex: String, remotePath: String, localName: String) throws  -> String
     
@@ -712,6 +714,20 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * New ones are refused as soon as they are accepted.
      */
     func setReachable(on: Bool) 
+    
+    /**
+     * The last four characters of this device's own mDNS name, while it is
+     * reachable.
+     *
+     * The Mac computes the same four characters, with the same
+     * [`last_four`], for the `short_code` it shows next to this device in
+     * its pairing candidate list. A person with several phones in the room
+     * can compare the two and tell which one they are holding.
+     *
+     * Returns `None` before [`Engine::set_reachable`] has turned advertising
+     * on, and after it has turned it off.
+     */
+    func shortCode()  -> String?
     
     /**
      * Open the shared root, bind the listener, and start every loop.
@@ -956,6 +972,8 @@ open func pickCandidate(id: String)throws   {try rustCallWithError(FfiConverterT
      * Returns a `PathError` code when either path is refused,
      * `Runtime::NotPaired` when that device is not stored, and
      * `Runtime::NotStarted` before [`Engine::start`] has run.
+     * `PathError::Empty` is one such code: it names the shared root, which
+     * has no single file to pull.
      */
 open func pull(deviceKeyHex: String, remotePath: String, localName: String)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
@@ -1001,6 +1019,27 @@ open func setReachable(on: Bool)  {try! rustCall() {
         FfiConverterBool.lower(on),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * The last four characters of this device's own mDNS name, while it is
+     * reachable.
+     *
+     * The Mac computes the same four characters, with the same
+     * [`last_four`], for the `short_code` it shows next to this device in
+     * its pairing candidate list. A person with several phones in the room
+     * can compare the two and tell which one they are holding.
+     *
+     * Returns `None` before [`Engine::set_reachable`] has turned advertising
+     * on, and after it has turned it off.
+     */
+open func shortCode() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_short_code(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -2647,13 +2686,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 19467) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_pull() != 54900) {
+    if (uniffi_ferry_runtime_checksum_method_engine_pull() != 54016) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_set_reachable() != 6511) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_short_code() != 63413) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_start() != 33843) {
