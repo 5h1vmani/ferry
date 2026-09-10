@@ -448,6 +448,8 @@ fn merge_range(
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::{
         ChunkSize, ChunkSizeError, Manifest, ManifestBuilder, ManifestError, manifest_from_bytes,
     };
@@ -609,5 +611,70 @@ mod tests {
             Manifest::decode(&encoded),
             Err(ManifestError::Wire(_))
         ));
+    }
+
+    // Property tests below. This is the module that guards the whole
+    // integrity design, so it gets the most generated coverage in the crate.
+
+    /// The exact bytes of one chunk, sliced straight out of the whole file.
+    fn chunk_slice<'a>(bytes: &'a [u8], manifest: &Manifest, index: usize) -> &'a [u8] {
+        let (start, len) = manifest.chunk_range(index).unwrap();
+        let start = usize::try_from(start).unwrap();
+        let len = usize::try_from(len).unwrap();
+        &bytes[start..start + len]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn the_merged_root_always_equals_a_plain_blake3_hash(
+            len in 0usize..300_000,
+            chunk_size in (10u32..=16).prop_map(|shift| ChunkSize::new(1u32 << shift).unwrap()),
+        ) {
+            // This is the claim the whole integrity design rests on, checked
+            // over many lengths and chunk sizes instead of the fixed list
+            // above.
+            let bytes = data(len);
+            let manifest = manifest_from_bytes(&bytes, chunk_size);
+            prop_assert_eq!(manifest.root(), blake3::hash(&bytes));
+        }
+
+        #[test]
+        fn every_chunk_verifies_only_against_its_own_slice(
+            len in 0usize..300_000,
+            chunk_size in (10u32..=16).prop_map(|shift| ChunkSize::new(1u32 << shift).unwrap()),
+        ) {
+            let bytes = data(len);
+            let manifest = manifest_from_bytes(&bytes, chunk_size);
+
+            for index in 0..manifest.chunk_count() {
+                let slice = chunk_slice(&bytes, &manifest, index);
+                prop_assert!(manifest.verify_chunk(index, slice));
+            }
+
+            // A chunk's chaining value is tied to its offset, so it must not
+            // verify against a different chunk's bytes. A file with fewer
+            // than two chunks has no second slice to try this with.
+            if manifest.chunk_count() >= 2 {
+                let first = chunk_slice(&bytes, &manifest, 0);
+                let second = chunk_slice(&bytes, &manifest, 1);
+                if first != second {
+                    prop_assert!(!manifest.verify_chunk(0, second));
+                    prop_assert!(!manifest.verify_chunk(1, first));
+                }
+            }
+        }
+
+        #[test]
+        fn a_manifest_always_survives_encode_then_decode(
+            len in 0usize..300_000,
+            chunk_size in (10u32..=16).prop_map(|shift| ChunkSize::new(1u32 << shift).unwrap()),
+        ) {
+            let bytes = data(len);
+            let manifest = manifest_from_bytes(&bytes, chunk_size);
+            let restored = Manifest::decode(&manifest.encode()).unwrap();
+            prop_assert_eq!(restored, manifest);
+        }
     }
 }

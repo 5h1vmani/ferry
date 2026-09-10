@@ -239,6 +239,8 @@ impl<'a> Decoder<'a> {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::{Decoder, Encoder, WireError};
 
     #[test]
@@ -314,5 +316,174 @@ mod tests {
         let mut d = Decoder::new(&encoded);
         assert_eq!(d.u8().unwrap(), 1);
         assert_eq!(d.finish(), Err(WireError::TrailingBytes));
+    }
+
+    // Property tests below. The fixed tests above cover the documented
+    // behaviour; these check it holds over generated values too.
+
+    /// Text built from arbitrary Unicode characters, capped by character
+    /// count. Four bytes per character is the worst case, so the encoded
+    /// form never grows past four times `max_chars` bytes.
+    fn arbitrary_text(max_chars: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..max_chars)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    /// A byte string plus a truncation point that always removes at least
+    /// one byte from its encoded form, so decoding it can only fail.
+    fn bytes_and_a_truncation_point() -> impl Strategy<Value = (Vec<u8>, usize)> {
+        proptest::collection::vec(any::<u8>(), 0..256).prop_flat_map(|payload| {
+            let full_len = 4 + payload.len();
+            (Just(payload), 0..full_len)
+        })
+    }
+
+    /// The text version of `bytes_and_a_truncation_point`.
+    fn text_and_a_truncation_point() -> impl Strategy<Value = (String, usize)> {
+        arbitrary_text(64).prop_flat_map(|text| {
+            let full_len = 4 + text.len();
+            (Just(text), 0..full_len)
+        })
+    }
+
+    /// One value from the small set the mixed-sequence property below
+    /// encodes. A single generated list can then mix several wire types in
+    /// one buffer, in a chosen order.
+    #[derive(Debug)]
+    enum TaggedValue {
+        U8(u8),
+        U16(u16),
+        U32(u32),
+        Bytes(Vec<u8>),
+        Text(String),
+    }
+
+    fn tagged_value() -> impl Strategy<Value = TaggedValue> {
+        prop_oneof![
+            any::<u8>().prop_map(TaggedValue::U8),
+            any::<u16>().prop_map(TaggedValue::U16),
+            any::<u32>().prop_map(TaggedValue::U32),
+            proptest::collection::vec(any::<u8>(), 0..256).prop_map(TaggedValue::Bytes),
+            arbitrary_text(64).prop_map(TaggedValue::Text),
+        ]
+    }
+
+    proptest! {
+        #[test]
+        fn every_primitive_survives_a_generated_round_trip(
+            byte in any::<u8>(),
+            short in any::<u16>(),
+            word in any::<u32>(),
+            quad in any::<u64>(),
+            blob in proptest::collection::vec(any::<u8>(), 0..4096),
+            text in arbitrary_text(256),
+        ) {
+            let encoded = { let mut e = Encoder::new(); e.u8(byte); e.finish() };
+            let mut d = Decoder::new(&encoded);
+            prop_assert_eq!(d.u8().unwrap(), byte);
+            prop_assert!(d.finish().is_ok());
+
+            let encoded = { let mut e = Encoder::new(); e.u16(short); e.finish() };
+            let mut d = Decoder::new(&encoded);
+            prop_assert_eq!(d.u16().unwrap(), short);
+            prop_assert!(d.finish().is_ok());
+
+            let encoded = { let mut e = Encoder::new(); e.u32(word); e.finish() };
+            let mut d = Decoder::new(&encoded);
+            prop_assert_eq!(d.u32().unwrap(), word);
+            prop_assert!(d.finish().is_ok());
+
+            let encoded = { let mut e = Encoder::new(); e.u64(quad); e.finish() };
+            let mut d = Decoder::new(&encoded);
+            prop_assert_eq!(d.u64().unwrap(), quad);
+            prop_assert!(d.finish().is_ok());
+
+            let encoded = { let mut e = Encoder::new(); e.bytes(&blob); e.finish() };
+            let mut d = Decoder::new(&encoded);
+            prop_assert_eq!(d.bytes(4096).unwrap(), blob.as_slice());
+            prop_assert!(d.finish().is_ok());
+
+            let encoded = { let mut e = Encoder::new(); e.text(&text); e.finish() };
+            let mut d = Decoder::new(&encoded);
+            prop_assert_eq!(d.text(1024).unwrap(), text.as_str());
+            prop_assert!(d.finish().is_ok());
+        }
+
+        #[test]
+        fn a_mixed_sequence_of_values_round_trips_in_order(
+            values in proptest::collection::vec(tagged_value(), 0..16)
+        ) {
+            let mut e = Encoder::new();
+            for value in &values {
+                match value {
+                    TaggedValue::U8(v) => { e.u8(0).u8(*v); }
+                    TaggedValue::U16(v) => { e.u8(1).u16(*v); }
+                    TaggedValue::U32(v) => { e.u8(2).u32(*v); }
+                    TaggedValue::Bytes(v) => { e.u8(3).bytes(v); }
+                    TaggedValue::Text(v) => { e.u8(4).text(v); }
+                }
+            }
+            let encoded = e.finish();
+
+            let mut d = Decoder::new(&encoded);
+            for value in &values {
+                let tag = d.u8().unwrap();
+                match (tag, value) {
+                    (0, TaggedValue::U8(expected)) => prop_assert_eq!(d.u8().unwrap(), *expected),
+                    (1, TaggedValue::U16(expected)) => prop_assert_eq!(d.u16().unwrap(), *expected),
+                    (2, TaggedValue::U32(expected)) => prop_assert_eq!(d.u32().unwrap(), *expected),
+                    (3, TaggedValue::Bytes(expected)) => {
+                        prop_assert_eq!(d.bytes(4096).unwrap(), expected.as_slice());
+                    }
+                    (4, TaggedValue::Text(expected)) => {
+                        prop_assert_eq!(d.text(1024).unwrap(), expected.as_str());
+                    }
+                    _ => prop_assert!(false, "the tag byte did not match the value that wrote it"),
+                }
+            }
+            prop_assert!(d.finish().is_ok());
+        }
+
+        #[test]
+        fn truncating_an_encoded_u32_is_always_rejected(value in any::<u32>(), cut in 0..4_usize) {
+            // Four bytes are always written for a u32. Cutting to fewer than
+            // four must fail instead of reading past the end.
+            let encoded = { let mut e = Encoder::new(); e.u32(value); e.finish() };
+            prop_assert_eq!(Decoder::new(&encoded[..cut]).u32(), Err(WireError::UnexpectedEnd));
+        }
+
+        #[test]
+        fn truncating_an_encoded_byte_string_is_always_rejected(
+            (payload, cut) in bytes_and_a_truncation_point()
+        ) {
+            let encoded = { let mut e = Encoder::new(); e.bytes(&payload); e.finish() };
+            prop_assert_eq!(
+                Decoder::new(&encoded[..cut]).bytes(4096),
+                Err(WireError::UnexpectedEnd)
+            );
+        }
+
+        #[test]
+        fn truncating_an_encoded_text_value_is_always_rejected(
+            (text, cut) in text_and_a_truncation_point()
+        ) {
+            let encoded = { let mut e = Encoder::new(); e.text(&text); e.finish() };
+            prop_assert_eq!(
+                Decoder::new(&encoded[..cut]).text(1024),
+                Err(WireError::UnexpectedEnd)
+            );
+        }
+
+        #[test]
+        fn a_byte_string_longer_than_the_limit_is_always_too_long(
+            max in 0usize..512,
+            extra in 1usize..=512,
+        ) {
+            // The limit is checked before any bytes are read, so it must fire
+            // for every length over it, not only for one hand-picked case.
+            let payload = vec![0u8; max + extra];
+            let encoded = { let mut e = Encoder::new(); e.bytes(&payload); e.finish() };
+            prop_assert_eq!(Decoder::new(&encoded).bytes(max), Err(WireError::TooLong));
+        }
     }
 }

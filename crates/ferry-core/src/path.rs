@@ -136,6 +136,8 @@ impl fmt::Display for RemotePath {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::{PathError, RemotePath};
 
     #[test]
@@ -251,6 +253,93 @@ mod tests {
                     "unsafe component survived: {candidate}"
                 );
             }
+        }
+    }
+
+    // Property tests. `RemotePath::parse` is the only gate between a peer's
+    // text and the filesystem, so these check it against generated
+    // adversarial input, not only the fixed cases above.
+
+    /// Segments built only from characters that cannot trigger a rejection on
+    /// their own. Inserting `..` among them isolates the one rule a test
+    /// cares about.
+    fn safe_segment() -> impl Strategy<Value = String> {
+        "[a-zA-Z0-9_]{1,8}"
+    }
+
+    /// A path built from safe segments, with a `..` component spliced in at
+    /// an arbitrary position among them.
+    fn path_with_a_parent_component_inserted() -> impl Strategy<Value = String> {
+        (proptest::collection::vec(safe_segment(), 0..5), 0..=5_usize).prop_map(
+            |(mut segments, at)| {
+                let at = at.min(segments.len());
+                segments.insert(at, "..".to_owned());
+                segments.join("/")
+            },
+        )
+    }
+
+    /// A mix of fully arbitrary text and text biased toward looking like a
+    /// path. The properties below run over both, so a case can be pure noise
+    /// or something close to a real path.
+    fn arbitrary_or_path_like_string() -> impl Strategy<Value = String> {
+        prop_oneof![".*", "[a-zA-Z0-9._/\\\\-]{0,64}"]
+    }
+
+    proptest! {
+        #[test]
+        fn never_lets_an_accepted_path_hold_an_unsafe_component(
+            input in arbitrary_or_path_like_string()
+        ) {
+            // This is the core invariant the module exists to keep. No
+            // component may equal `..` or `.` or be empty, whatever text a
+            // peer sends.
+            if let Ok(path) = RemotePath::parse(&input) {
+                prop_assert!(
+                    path.components().all(|c| c != ".." && c != "." && !c.is_empty())
+                );
+                prop_assert!(!path.as_str().starts_with('/'));
+                prop_assert!(!path.as_str().contains('\0'));
+                prop_assert!(!path.as_str().contains('\\'));
+                prop_assert!(path.as_str().len() <= RemotePath::MAX_LEN);
+            }
+        }
+
+        #[test]
+        fn never_lets_an_accepted_path_escape_a_joined_root(
+            input in arbitrary_or_path_like_string()
+        ) {
+            // A path that parsing accepts gets joined onto the shared root
+            // later. If that join could ever land outside the root, the
+            // parser's checks would not be enough to contain a peer.
+            if let Ok(path) = RemotePath::parse(&input) {
+                let root = std::path::Path::new("/root");
+                let joined = root.join(path.as_str());
+                prop_assert!(joined.starts_with(root));
+            }
+        }
+
+        #[test]
+        fn reaches_a_fixed_point_so_parsing_twice_is_a_no_op(
+            input in arbitrary_or_path_like_string()
+        ) {
+            // A normaliser that has not reached a fixed point in one pass
+            // could still hide a `..` behind a second rewrite. Parsing an
+            // already-accepted path again must return the same path.
+            if let Ok(path) = RemotePath::parse(&input) {
+                let reparsed = RemotePath::parse(path.as_str()).unwrap();
+                prop_assert_eq!(reparsed, path);
+            }
+        }
+
+        #[test]
+        fn always_rejects_a_dot_dot_component_at_any_position(
+            input in path_with_a_parent_component_inserted()
+        ) {
+            // The fixed tests above only try `..` at the start or in the
+            // middle of one short path. This tries every position in
+            // otherwise-safe paths, so no position can slip through.
+            prop_assert_eq!(RemotePath::parse(&input), Err(PathError::ParentComponent));
         }
     }
 }
