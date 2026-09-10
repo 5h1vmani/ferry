@@ -1,0 +1,445 @@
+{
+  "_about": "Every error Ferry can show, in three parts: what stopped, why, what to do. Keys are the Rust path of the variant, or Runtime:: for the engine's own. {detail} is filled by the engine. A test in ferry-core checks every variant has a row and no cell is empty. Words follow docs/voice.md.",
+  "errors": {
+    "AdbError::Failed": {
+      "stopped": "USB is unavailable.",
+      "why": "adb reported an error.",
+      "todo": "Unplug and replug the cable. Check that USB debugging is on."
+    },
+    "AdbError::Io": {
+      "stopped": "USB is unavailable.",
+      "why": "adb could not be run.",
+      "todo": "Reinstall Android platform tools."
+    },
+    "AdbError::NotFound": {
+      "stopped": "USB is unavailable.",
+      "why": "adb was not found on this Mac.",
+      "todo": "Install Android platform tools, or use Wi-Fi."
+    },
+    "AdbError::RelativeBinary": {
+      "stopped": "USB is unavailable.",
+      "why": "adb was found by a relative path, which Ferry refuses.",
+      "todo": "Install Android platform tools in the standard place."
+    },
+    "AdbError::Timeout": {
+      "stopped": "USB is unavailable.",
+      "why": "adb did not answer in ten seconds.",
+      "todo": "Unplug and replug the cable."
+    },
+    "AdbError::Unparseable": {
+      "stopped": "USB is unavailable.",
+      "why": "adb answered in a form Ferry does not understand.",
+      "todo": "Update Android platform tools."
+    },
+    "ChunkSizeError::NotPowerOfTwo": {
+      "stopped": "Ferry has a fault.",
+      "why": "The chunk size is not one BLAKE3 accepts.",
+      "todo": "Report this. Nothing you did caused it."
+    },
+    "ChunkSizeError::TooLarge": {
+      "stopped": "Ferry has a fault.",
+      "why": "The chunk size is not one BLAKE3 accepts.",
+      "todo": "Report this. Nothing you did caused it."
+    },
+    "ChunkSizeError::TooSmall": {
+      "stopped": "Ferry has a fault.",
+      "why": "The chunk size is not one BLAKE3 accepts.",
+      "todo": "Report this. Nothing you did caused it."
+    },
+    "DiscoveryError::Mdns": {
+      "stopped": "Wi-Fi discovery is unavailable.",
+      "why": "The network refused multicast.",
+      "todo": "Use the cable, or a different network."
+    },
+    "DiscoveryError::NoRandomness": {
+      "stopped": "Wi-Fi discovery is unavailable.",
+      "why": "This device gave no random data.",
+      "todo": "Restart Ferry."
+    },
+    "FrameError::Io": {
+      "stopped": "The connection failed.",
+      "why": "The network dropped it.",
+      "todo": "It reconnects on its own when the device is reachable."
+    },
+    "FrameError::PayloadTooLarge": {
+      "stopped": "The connection failed.",
+      "why": "The device sent a message larger than Ferry accepts.",
+      "todo": "Update Ferry on both devices."
+    },
+    "FrameError::UnknownKind": {
+      "stopped": "The connection failed.",
+      "why": "The device sent a message this version does not know.",
+      "todo": "Update Ferry on both devices."
+    },
+    "FrameError::Wire": {
+      "stopped": "The connection failed.",
+      "why": "A message could not be decoded.",
+      "todo": "Update Ferry on both devices."
+    },
+    "ManifestError::BadChunkSize": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record is damaged.",
+      "todo": "Start it again. It begins from zero."
+    },
+    "ManifestError::RootMismatch": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record was changed by something else.",
+      "todo": "Start it again. It begins from zero."
+    },
+    "ManifestError::TooManyChunks": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record is damaged.",
+      "todo": "Start it again. It begins from zero."
+    },
+    "ManifestError::Wire": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record is damaged.",
+      "todo": "Start it again. It begins from zero."
+    },
+    "ManifestError::WrongChunkCount": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record is damaged.",
+      "todo": "Start it again. It begins from zero."
+    },
+    "NoiseError::BadHandshakePayload": {
+      "stopped": "Pairing stopped.",
+      "why": "The other device sent a malformed handshake.",
+      "todo": "Try again. If it repeats, update Ferry on both devices."
+    },
+    "NoiseError::BadKeyLength": {
+      "stopped": "The stored key is unusable.",
+      "why": "It is not the size Ferry expects.",
+      "todo": "Forget every device and pair again. The key is made fresh."
+    },
+    "NoiseError::BadPattern": {
+      "stopped": "Ferry has a fault.",
+      "why": "An internal setting is wrong.",
+      "todo": "Report this. Nothing you did caused it."
+    },
+    "NoiseError::CommitmentMismatch": {
+      "stopped": "Pairing stopped.",
+      "why": "The other device changed its identity during pairing. This can mean someone on the network interfered.",
+      "todo": "Do not confirm. Try again on a network you trust, or over the cable."
+    },
+    "NoiseError::Crypto": {
+      "stopped": "The connection was refused.",
+      "why": "The handshake failed.",
+      "todo": "If this keeps happening, forget the device and pair again."
+    },
+    "NoiseError::HandshakeMessageTooLarge": {
+      "stopped": "The connection was refused.",
+      "why": "The other end sent a handshake larger than Ferry accepts.",
+      "todo": "Check that the other end is Ferry."
+    },
+    "NoiseError::Io": {
+      "stopped": "The connection failed.",
+      "why": "The network dropped it.",
+      "todo": "It reconnects on its own when the device is reachable."
+    },
+    "NoiseError::MissingPeerKey": {
+      "stopped": "Pairing stopped.",
+      "why": "The other device sent no key.",
+      "todo": "Try again."
+    },
+    "OpError::AlreadyExists": {
+      "stopped": "The folder was not created.",
+      "why": "Something with that name already exists.",
+      "todo": "Choose another name."
+    },
+    "OpError::Internal": {
+      "stopped": "The operation failed.",
+      "why": "The device reported an error it could not explain.",
+      "todo": "Try again. If it happens again, restart Ferry on that device."
+    },
+    "OpError::InvalidPath": {
+      "stopped": "The path was refused.",
+      "why": "It holds characters Ferry does not accept.",
+      "todo": "Rename the file with a plain name."
+    },
+    "OpError::IsADirectory": {
+      "stopped": "The file could not be read.",
+      "why": "That path is a folder, not a file.",
+      "todo": "Choose a file."
+    },
+    "OpError::NotADirectory": {
+      "stopped": "The folder could not be opened.",
+      "why": "That path is a file, not a folder.",
+      "todo": "Choose a folder."
+    },
+    "OpError::NotEmpty": {
+      "stopped": "The folder was not deleted.",
+      "why": "It still holds files.",
+      "todo": "Delete the files inside it first."
+    },
+    "OpError::NotFound": {
+      "stopped": "The file was not found.",
+      "why": "It is no longer at that path.",
+      "todo": "Refresh and try again."
+    },
+    "OpError::PermissionDenied": {
+      "stopped": "The file could not be accessed.",
+      "why": "The device refused access to it.",
+      "todo": "Check the shared folder setting on that device."
+    },
+    "OpError::RangeTooLarge": {
+      "stopped": "The request was refused.",
+      "why": "It asked for more than one message may carry.",
+      "todo": "Update Ferry on both devices."
+    },
+    "OpError::Unsupported": {
+      "stopped": "The item was skipped.",
+      "why": "It is not a regular file or a folder.",
+      "todo": "Nothing to do. Ferry serves files and folders only."
+    },
+    "PathError::Absolute": {
+      "stopped": "The path was refused.",
+      "why": "It starts with a slash.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PathError::Backslash": {
+      "stopped": "The path was refused.",
+      "why": "It holds a backslash.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PathError::CurrentComponent": {
+      "stopped": "The path was refused.",
+      "why": "It holds a dot component.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PathError::Empty": {
+      "stopped": "The path was refused.",
+      "why": "It is empty.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PathError::NulByte": {
+      "stopped": "The path was refused.",
+      "why": "It holds a NUL character.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PathError::ParentComponent": {
+      "stopped": "The path was refused.",
+      "why": "It tries to go up a folder.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PathError::TooLong": {
+      "stopped": "The path was refused.",
+      "why": "It is longer than 1024 bytes.",
+      "todo": "Rename the file with a plain name."
+    },
+    "PeerError::BadKey": {
+      "stopped": "The device list could not be read.",
+      "why": "It holds a key of the wrong size.",
+      "todo": "Forget every device and pair again."
+    },
+    "PeerError::Io": {
+      "stopped": "The device list could not be saved.",
+      "why": "This device refused to write the file.",
+      "todo": "Check free space."
+    },
+    "PeerError::NameTooLong": {
+      "stopped": "The name was refused.",
+      "why": "It is longer than 256 bytes.",
+      "todo": "Choose a shorter name."
+    },
+    "PeerError::NoRandomness": {
+      "stopped": "The device list could not be saved.",
+      "why": "This device gave no random data.",
+      "todo": "Restart Ferry."
+    },
+    "PeerError::TooMany": {
+      "stopped": "The device was not added.",
+      "why": "Ferry holds at most 64 paired devices.",
+      "todo": "Forget one you no longer use."
+    },
+    "PeerError::UnknownFormat": {
+      "stopped": "The device list could not be read.",
+      "why": "It was written by a different version.",
+      "todo": "Forget every device and pair again."
+    },
+    "PeerError::Wire": {
+      "stopped": "The device list could not be read.",
+      "why": "Its file is damaged.",
+      "todo": "Forget every device and pair again."
+    },
+    "RpcError::Frame": {
+      "stopped": "The connection failed.",
+      "why": "The network dropped it.",
+      "todo": "It reconnects on its own when the device is reachable."
+    },
+    "RpcError::MismatchedRequestId": {
+      "stopped": "The connection failed.",
+      "why": "The device answered the wrong request.",
+      "todo": "It reconnects on its own. If it repeats, update Ferry on both devices."
+    },
+    "RpcError::Remote": {
+      "stopped": "The device refused the request.",
+      "why": "Ferry does not know why.",
+      "todo": "Try again."
+    },
+    "RpcError::UnexpectedFrameKind": {
+      "stopped": "The connection failed.",
+      "why": "The device sent a message out of order.",
+      "todo": "It reconnects on its own. If it repeats, update Ferry on both devices."
+    },
+    "RpcError::Wire": {
+      "stopped": "The connection failed.",
+      "why": "A message could not be decoded.",
+      "todo": "Update Ferry on both devices."
+    },
+    "Runtime::AllFilesAccess": {
+      "stopped": "Ferry cannot read the shared folders.",
+      "why": "All files access is not granted.",
+      "todo": "Grant all files access in Settings."
+    },
+    "Runtime::BadConfig": {
+      "stopped": "Ferry could not start.",
+      "why": "{detail}",
+      "todo": "Check the settings."
+    },
+    "Runtime::NameTooLong": {
+      "stopped": "The name was refused.",
+      "why": "It is longer than 64 bytes.",
+      "todo": "Choose a shorter name."
+    },
+    "Runtime::NoCandidate": {
+      "stopped": "Nothing was picked.",
+      "why": "That candidate is no longer present.",
+      "todo": "Pick another."
+    },
+    "Runtime::NotPaired": {
+      "stopped": "The device is not paired.",
+      "why": "Its key is not in this device's list.",
+      "todo": "Pair it first."
+    },
+    "Runtime::NotReachable": {
+      "stopped": "The device is not reachable.",
+      "why": "It is not on the network and not on the cable.",
+      "todo": "Bring it onto the same Wi-Fi, or plug it in."
+    },
+    "Runtime::NotStarted": {
+      "stopped": "Ferry is not running.",
+      "why": "The engine was not started.",
+      "todo": "Restart Ferry."
+    },
+    "Runtime::PairingBusy": {
+      "stopped": "Pairing did not start.",
+      "why": "Another pairing is in progress.",
+      "todo": "Finish or cancel it first."
+    },
+    "Runtime::PairingTimeout": {
+      "stopped": "Pairing stopped.",
+      "why": "No device appeared within two minutes.",
+      "todo": "Turn pairing on for the other device and try again."
+    },
+    "Runtime::TransferNotFound": {
+      "stopped": "The transfer was not found.",
+      "why": "It is no longer in the list.",
+      "todo": "Nothing to do."
+    },
+    "TcpError::Io": {
+      "stopped": "The connection failed.",
+      "why": "The network dropped it.",
+      "todo": "It reconnects on its own when the device is reachable."
+    },
+    "TcpError::Noise": {
+      "stopped": "The connection was refused.",
+      "why": "The device did not prove it is the one paired.",
+      "todo": "If this keeps happening, forget the device and pair again."
+    },
+    "TcpError::Timeout": {
+      "stopped": "The connection timed out.",
+      "why": "The device did not answer in time.",
+      "todo": "Check that Ferry is open and reachable on it."
+    },
+    "TcpError::TooManyPending": {
+      "stopped": "The connection was refused.",
+      "why": "Too many devices are connecting at once.",
+      "todo": "Wait a moment and try again."
+    },
+    "TcpError::Version": {
+      "stopped": "The connection was refused.",
+      "why": "The two devices run versions that cannot talk.",
+      "todo": "Update Ferry on both devices."
+    },
+    "TransferError::BadPath": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record holds a bad path.",
+      "todo": "Start it again."
+    },
+    "TransferError::ChunkFailedVerification": {
+      "stopped": "The transfer stopped.",
+      "why": "Part of the file did not match. The file changed on the other device during the transfer.",
+      "todo": "Start it again."
+    },
+    "TransferError::Local": {
+      "stopped": "The transfer stopped.",
+      "why": "This device could not write the file.",
+      "todo": "Check free space and the shared folder."
+    },
+    "TransferError::NoRandomness": {
+      "stopped": "The transfer could not start.",
+      "why": "This device gave no random data.",
+      "todo": "Restart Ferry."
+    },
+    "TransferError::Record": {
+      "stopped": "The transfer could not resume.",
+      "why": "Its saved record is damaged.",
+      "todo": "Start it again. It begins from zero."
+    },
+    "TransferError::Rpc": {
+      "stopped": "The transfer stopped.",
+      "why": "The connection failed.",
+      "todo": "It continues on its own when the device is reachable."
+    },
+    "TransferError::ShortRead": {
+      "stopped": "The transfer stopped.",
+      "why": "The other device sent less of the file than it said it holds. The file changed during the transfer.",
+      "todo": "Start it again."
+    },
+    "VersionError::Io": {
+      "stopped": "The connection failed.",
+      "why": "The network dropped it.",
+      "todo": "It reconnects on its own when the device is reachable."
+    },
+    "VersionError::NoSharedVersion": {
+      "stopped": "The connection was refused.",
+      "why": "The two devices run versions that cannot talk.",
+      "todo": "Update Ferry on both devices."
+    },
+    "VersionError::NotFerry": {
+      "stopped": "The connection was refused.",
+      "why": "The other end is not Ferry.",
+      "todo": "Check the address."
+    },
+    "WireError::InvalidPath": {
+      "stopped": "A message could not be decoded.",
+      "why": "It held a path Ferry refuses.",
+      "todo": "Update Ferry on both devices."
+    },
+    "WireError::NotUtf8": {
+      "stopped": "A message could not be decoded.",
+      "why": "Text in it was not valid.",
+      "todo": "Update Ferry on both devices."
+    },
+    "WireError::TooLong": {
+      "stopped": "A message could not be decoded.",
+      "why": "A field in it was too long.",
+      "todo": "Update Ferry on both devices."
+    },
+    "WireError::TrailingBytes": {
+      "stopped": "A message could not be decoded.",
+      "why": "It had extra bytes.",
+      "todo": "Update Ferry on both devices."
+    },
+    "WireError::UnexpectedEnd": {
+      "stopped": "A message could not be decoded.",
+      "why": "It ended early.",
+      "todo": "Update Ferry on both devices."
+    },
+    "WireError::UnknownTag": {
+      "stopped": "A message could not be decoded.",
+      "why": "It used a tag this version does not know.",
+      "todo": "Update Ferry on both devices."
+    }
+  }
+}
