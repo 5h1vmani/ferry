@@ -111,9 +111,7 @@ impl JsonReader {
             match ch {
                 '"' => break,
                 '\\' => {
-                    let escaped = self
-                        .bump()
-                        .expect("errors.json: an escape ran off the end");
+                    let escaped = self.bump().expect("errors.json: an escape ran off the end");
                     match escaped {
                         '"' => out.push('"'),
                         '\\' => out.push('\\'),
@@ -125,8 +123,7 @@ impl JsonReader {
                             let mut code = String::new();
                             for _ in 0..4 {
                                 code.push(
-                                    self.bump()
-                                        .expect("errors.json: a short unicode escape"),
+                                    self.bump().expect("errors.json: a short unicode escape"),
                                 );
                             }
                             let value = u32::from_str_radix(&code, 16)
@@ -184,8 +181,8 @@ impl JsonReader {
 /// words.
 fn read_errors_json() -> BTreeMap<String, Words> {
     let path = errors_json_path();
-    let content =
-        fs::read_to_string(&path).unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
+    let content = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("could not read {}: {e}", path.display()));
     let mut reader = JsonReader::new(&content);
     let root = reader.parse_object();
 

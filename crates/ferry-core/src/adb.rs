@@ -625,16 +625,12 @@ mod tests {
             "pipe-buffer",
             "yes | head -c 262144\nyes | head -c 262144 1>&2\nprintf 'AAA1\\tdevice product:foo\\n'\nexit 0\n",
         );
-        let adb = Adb::new(binary);
-
-        let start = Instant::now();
+        // A deadlocked child hits this budget and returns Timeout, which fails the
+        // assertion below. A slow but working child still returns the device.
+        // Asserting the outcome instead of the clock keeps a loaded machine from
+        // failing a test the code passes.
+        let adb = Adb::with_timeout(binary, Duration::from_secs(8));
         let serials = adb.devices().expect("the fake adb should succeed");
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "devices() took {elapsed:?}; the pipes were not drained while adb ran"
-        );
         assert_eq!(serials, vec!["AAA1".to_string()]);
     }
 
