@@ -166,9 +166,10 @@ enum PreviewData {
         isReal: false
     )
 
-    /// Access log entries the engine cannot produce yet
-    /// (docs/engine-contract.md, item 13). Both directions, and one rolled-up
-    /// folder operation, so the row's four shapes can all be seen.
+    /// Access log entries for previews and screenshots, shaped like what
+    /// `engine.accessLog(deviceKeyHex:limit:)` returns (docs/engine-contract.md,
+    /// item 13). Both directions, and one rolled-up folder operation, so the
+    /// row's four shapes can all be seen.
     static let accessEntries: [AccessEntrySnapshot] = [
         AccessEntrySnapshot(
             id: "a1",

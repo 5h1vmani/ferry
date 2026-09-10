@@ -40,4 +40,11 @@ final class EngineEvents: EngineListener {
             model.pairingMoved(to: state)
         }
     }
+
+    func accessLogChanged() {
+        let model = self.model
+        Task { @MainActor in
+            model.reloadAccessLog()
+        }
+    }
 }

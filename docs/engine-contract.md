@@ -311,7 +311,7 @@ with no reason and no retry.
 
 ## Batch E: the access log
 
-### 13. The access log: open
+### 13. The access log: built
 
 Job 9 in `docs/jobs.md`. Logging happens at the file operations layer,
 not the transfer engine. A Finder browse or a file picker open is `list`,

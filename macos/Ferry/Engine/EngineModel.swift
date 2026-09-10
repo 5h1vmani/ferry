@@ -145,8 +145,11 @@ final class EngineModel: ObservableObject {
         objectWillChange.send()
     }
 
-    /// TODO(engine 13): `access_log_changed` does not exist yet. When it
-    /// does, EngineEvents calls this and the section reloads.
+    /// `EngineEvents.accessLogChanged` calls this at most once every 250
+    /// milliseconds. Nothing is cached here, the way `mount(forDevice:)` and
+    /// `autoCopy(forDevice:)` cache nothing: `accessLog(forDevice:)` reads
+    /// the engine fresh on every call, so this only has to ask the section
+    /// to render again.
     func reloadAccessLog() {
         objectWillChange.send()
     }
@@ -194,9 +197,12 @@ final class EngineModel: ObservableObject {
         EngineAdapter.autoCopy(forDevice: keyHex, downloadDir: downloadPath)
     }
 
-    /// The access log for one device, grouped by day, newest first.
+    /// The access log for one device, grouped by day, newest first. Capped
+    /// at the engine's own 1,000 entry limit, which the day grouping never
+    /// needs more than for one device's own history.
     func accessLog(forDevice keyHex: String) -> [AccessDaySnapshot] {
-        EngineAdapter.accessLog(forDevice: keyHex)
+        let entries = engine?.accessLog(deviceKeyHex: keyHex, limit: 1000) ?? []
+        return EngineAdapter.accessLog(entries)
     }
 
     // MARK: - Presence

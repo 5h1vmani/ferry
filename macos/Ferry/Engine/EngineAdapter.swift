@@ -6,8 +6,8 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// Four items in docs/engine-contract.md have no field in the engine yet: 6,
-// 12, 13, and 14. Each one is marked `TODO(engine N)`, where N is its
+// Three items in docs/engine-contract.md have no field in the engine yet: 6,
+// 12, and 14. Each one is marked `TODO(engine N)`, where N is its
 // item number, and each has a default here that is honest: a missing count
 // is absent, not zero, and a missing sentence is left out, not guessed.
 // That is the three-part rule from docs/voice.md applied to the boundary
@@ -215,16 +215,44 @@ enum EngineAdapter {
 
     // MARK: - Record, L5
 
-    /// The access log for one device, grouped by day, newest first.
-    ///
-    /// TODO(engine 13): the engine does not log at the file operations
-    /// layer, so there is nothing to read and the screen shows its empty
-    /// state. A log derived from transfers is deliberately not built here:
-    /// a Finder browse produces no transfer, so it would miss most of what
-    /// job 9 exists to record, and a log that is quietly incomplete is
-    /// worse than one that is honestly empty.
-    static func accessLog(forDevice keyHex: String) -> [AccessDaySnapshot] {
-        days(from: [])
+    /// One access log entry, as one row of the log.
+    static func accessEntry(_ entry: AccessEntry) -> AccessEntrySnapshot {
+        AccessEntrySnapshot(
+            id: entry.id,
+            actor: accessActor(entry.actor),
+            verb: entry.verb,
+            path: entry.path,
+            amount: amount(forEntry: entry),
+            time: FerryFormat.timeOfDay(unixSecs: entry.atUnixSecs),
+            atUnixSecs: entry.atUnixSecs,
+            files: entry.files
+        )
+    }
+
+    /// "Pixel 3 XL" or "This Mac", from the engine's own `Actor`.
+    private static func accessActor(_ actor: Actor) -> AccessActor {
+        switch actor {
+        case .peer: return .peer
+        case .this: return .thisDevice
+        }
+    }
+
+    /// "48 KB" for a read or a write, "31 entries" for a listing, nil for
+    /// every other verb.
+    private static func amount(forEntry entry: AccessEntry) -> String? {
+        if let bytes = entry.bytes {
+            return FerryFormat.bytes(bytes)
+        }
+        if let entries = entry.entries {
+            return S.accessLog.entries(Int(entries))
+        }
+        return nil
+    }
+
+    /// The access log for one device, grouped by day, newest first. `entries`
+    /// is already that one device's own, from `engine.accessLog(deviceKeyHex:limit:)`.
+    static func accessLog(_ entries: [AccessEntry]) -> [AccessDaySnapshot] {
+        days(from: entries.map(accessEntry))
     }
 
     /// Groups entries into days. The one place "Today" is decided, so two

@@ -190,19 +190,6 @@ struct AutoCopySnapshot: Equatable {
 
 // MARK: - Record, L5
 
-/// What a file operation did, in the file operations layer's own words. A
-/// log line and a protocol trace say the same word.
-enum AccessVerb: Equatable {
-    case list
-    case stat
-    case read
-    case write
-    case truncate
-    case rename
-    case mkdir
-    case delete
-}
-
 /// Who performed the operation.
 enum AccessActor: Equatable {
     /// The peer, on this device's files.
@@ -212,6 +199,11 @@ enum AccessActor: Equatable {
 }
 
 /// One file operation, as one row of the access log. Job 9.
+///
+/// `verb` is the engine's own `AccessVerb`, used directly rather than
+/// mirrored here: its eight cases are already the file operations layer's
+/// own words, so a second, identically shaped type would only be a second
+/// name for the same fact.
 struct AccessEntrySnapshot: Equatable, Identifiable {
     let id: String
     let actor: AccessActor
