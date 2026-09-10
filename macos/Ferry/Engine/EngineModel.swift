@@ -163,10 +163,7 @@ final class EngineModel: ObservableObject {
     /// Every transfer for one device, grouped as the Transfers section
     /// shows them.
     func groups(forDevice keyHex: String) -> [TransferGroupSnapshot] {
-        EngineAdapter.groups(
-            transfers: transferInfos.filter { $0.deviceKeyHex == keyHex },
-            deviceSpeedBytesPerSec: device(keyHex: keyHex)?.speedBytesPerSec
-        )
+        EngineAdapter.groups(transfers: transferInfos.filter { $0.deviceKeyHex == keyHex })
     }
 
     /// Whether the phone's folders are mounted in Finder, and where.

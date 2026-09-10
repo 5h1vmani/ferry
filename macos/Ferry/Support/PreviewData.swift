@@ -114,10 +114,7 @@ enum PreviewData {
 
     static let deviceSnapshots = EngineAdapter.devices(devices)
 
-    static let transferGroups = EngineAdapter.groups(
-        transfers: transfers,
-        deviceSpeedBytesPerSec: 38_000_000
-    )
+    static let transferGroups = EngineAdapter.groups(transfers: transfers)
 
     static let advertising = EngineAdapter.presence(
         status: Status(reachable: true, listenPort: 53317, adbPresent: true, mount: nil),

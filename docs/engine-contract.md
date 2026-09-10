@@ -106,7 +106,7 @@ pub direction: Direction,
 
 Always `Pull` until item 5 lands. Stored in the record with item 9.
 
-### 8. Speed is per transfer — open
+### 8. Speed is per transfer — built
 
 ```rust
 // on TransferInfo

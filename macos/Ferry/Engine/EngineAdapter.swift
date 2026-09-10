@@ -62,17 +62,11 @@ enum EngineAdapter {
     /// TODO(engine 2): the engine has no batch, so this makes one group per
     /// transfer. When `batches()` lands, this function groups by batch id
     /// and every view above it is unchanged.
-    static func groups(
-        transfers: [TransferInfo],
-        deviceSpeedBytesPerSec: UInt64?
-    ) -> [TransferGroupSnapshot] {
-        transfers.map { group($0, deviceSpeedBytesPerSec: deviceSpeedBytesPerSec) }
+    static func groups(transfers: [TransferInfo]) -> [TransferGroupSnapshot] {
+        transfers.map(group)
     }
 
-    static func group(
-        _ transfer: TransferInfo,
-        deviceSpeedBytesPerSec: UInt64?
-    ) -> TransferGroupSnapshot {
+    static func group(_ transfer: TransferInfo) -> TransferGroupSnapshot {
         // A pause is not a failure, so its words carry no retry control:
         // the engine resumes it on its own (docs/ia.md, Transfers).
         let words: ThreePartError? = transfer.error.map {
@@ -92,11 +86,7 @@ enum EngineAdapter {
             filesTotal: 1,
             bytesDone: transfer.bytesDone,
             bytesTotal: transfer.bytesTotal,
-            // TODO(engine 8): speed is per device, not per transfer, so
-            // with two active transfers to one phone this attributes the
-            // device's speed to each. The state guard keeps it off rows
-            // that are not moving.
-            speedBytesPerSec: transfer.state == .active ? deviceSpeedBytesPerSec : nil,
+            speedBytesPerSec: transfer.speedBytesPerSec,
             transport: transfer.transport,
             error: words,
             chunks: chunks(for: transfer),
