@@ -11,11 +11,12 @@
 //!
 //! # Root rules
 //!
-//! A root's name is 1 to 64 bytes of UTF-8, holds no control character and
-//! no `/`, and is not `.` or `..`. Names are unique ignoring case. A root's
-//! path must be an existing directory. There is at least one root. Two
-//! roots may point at the same folder; nothing here checks for that, and
-//! nothing needs to.
+//! A root's name is 1 to 64 bytes of UTF-8, holds no control character, no
+//! `/`, and no `\`, and is not `.` or `..`. Names are unique ignoring case.
+//! A root's path must be an existing directory. There is at least one root.
+//! No two roots may share a folder or nest one inside another, once
+//! symlinks are resolved: a read-only root nested inside a writable one
+//! could otherwise be written through the other name.
 //!
 //! # Protocol behaviour
 //!
@@ -67,6 +68,10 @@ pub enum RootsError {
     /// A root's path is not an existing directory.
     #[error("a root's path is not an existing folder")]
     RootNotAFolder,
+    /// Two roots resolve to the same folder, or one sits inside the other,
+    /// once symlinks are resolved.
+    #[error("two roots overlap on disk")]
+    RootOverlaps,
     /// `Roots::open` was given no roots at all.
     #[error("there are no roots")]
     NoRoots,
@@ -100,13 +105,19 @@ impl Roots {
     /// Returns [`RootsError::NoRoots`] when `specs` is empty,
     /// [`RootsError::RootNameInvalid`] when a name breaks the rules on
     /// [`RootSpec::name`], [`RootsError::RootNameTaken`] when two names
-    /// collide ignoring case, and [`RootsError::RootNotAFolder`] when a
-    /// path is not an existing directory.
+    /// collide ignoring case, [`RootsError::RootNotAFolder`] when a path is
+    /// not an existing directory, and [`RootsError::RootOverlaps`] when two
+    /// roots resolve to the same folder or one nests inside another.
     pub fn open(specs: Vec<RootSpec>) -> Result<Self, RootsError> {
         if specs.is_empty() {
             return Err(RootsError::NoRoots);
         }
         let mut by_name = HashMap::with_capacity(specs.len());
+        // The canonical (symlink-resolved) path of every root opened so
+        // far, checked against each new one below. Two different strings
+        // can still name the same folder, so only the resolved form is
+        // safe to compare.
+        let mut canonical_paths: Vec<PathBuf> = Vec::with_capacity(specs.len());
         for spec in specs {
             validate_root_name(&spec.name)?;
             // Unicode case folding, not just ASCII: a name is unique
@@ -116,6 +127,21 @@ impl Roots {
                 return Err(RootsError::RootNameTaken);
             }
             let fs = LocalFs::open(&spec.path).map_err(|_| RootsError::RootNotAFolder)?;
+
+            // Resolve symlinks first, the same real folder `LocalFs::open`
+            // just opened above. Comparing the raw configured text would
+            // miss two paths that reach the same folder through a
+            // symlink. `Path::starts_with` compares whole components, not
+            // characters, so `/a/b` does not match `/a/bc`; checking both
+            // directions also catches the two paths being equal.
+            let canonical =
+                std::fs::canonicalize(&spec.path).map_err(|_| RootsError::RootNotAFolder)?;
+            for existing in &canonical_paths {
+                if canonical.starts_with(existing) || existing.starts_with(&canonical) {
+                    return Err(RootsError::RootOverlaps);
+                }
+            }
+
             by_name.insert(
                 key,
                 RootEntry {
@@ -124,6 +150,7 @@ impl Roots {
                     fs,
                 },
             );
+            canonical_paths.push(canonical);
         }
         Ok(Self { by_name })
     }
@@ -309,14 +336,18 @@ impl FileOps for Roots {
     }
 }
 
-// A name is 1 to 64 bytes of UTF-8, holds no control character and no `/`,
-// and is not `.` or `..`. See `docs/engine-contract.md`, batch C, item 15.
+// A name is 1 to 64 bytes of UTF-8, holds no control character, no `/`, and
+// no `\`, and is not `.` or `..`. See `docs/engine-contract.md`, batch C,
+// item 15. The backslash is refused for the same reason `RemotePath::parse`
+// refuses one in `path.rs`: a root named with one could never be addressed,
+// since its name is the path's first segment.
 fn validate_root_name(name: &str) -> Result<(), RootsError> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && name != "."
         && name != ".."
         && !name.contains('/')
+        && !name.contains('\\')
         && !name.chars().any(char::is_control);
     if ok {
         Ok(())
@@ -517,6 +548,18 @@ mod tests {
     }
 
     #[test]
+    fn a_name_with_a_backslash_is_refused() {
+        // `RemotePath::parse` in `path.rs` refuses a backslash, so a root
+        // named with one could never be addressed as the first segment of
+        // a path.
+        let dir = TempDir::new("name-backslash");
+        assert_eq!(
+            Roots::open(vec![spec("a\\b", &dir, true)]).unwrap_err(),
+            RootsError::RootNameInvalid
+        );
+    }
+
+    #[test]
     fn a_name_with_a_control_character_is_refused() {
         let dir = TempDir::new("name-control");
         assert_eq!(
@@ -554,13 +597,65 @@ mod tests {
     }
 
     #[test]
-    fn two_roots_on_one_folder_both_work() {
-        let dir = TempDir::new("overlap");
-        std::fs::write(dir.path.join("a.txt"), b"hi").unwrap();
-        let roots =
-            Roots::open(vec![spec("First", &dir, true), spec("Second", &dir, true)]).unwrap();
+    fn two_roots_on_the_same_folder_are_refused() {
+        let dir = TempDir::new("overlap-same");
+        assert_eq!(
+            Roots::open(vec![spec("First", &dir, true), spec("Second", &dir, true)]).unwrap_err(),
+            RootsError::RootOverlaps
+        );
+    }
+
+    #[test]
+    fn a_root_nested_inside_another_is_refused_outer_first() {
+        let parent = TempDir::new("overlap-nested-outer-first");
+        let child = parent.path.join("Sub");
+        std::fs::create_dir(&child).unwrap();
+        let outer = RootSpec {
+            name: "Outer".to_string(),
+            path: parent.path.clone(),
+            writable: true,
+        };
+        let inner = RootSpec {
+            name: "Inner".to_string(),
+            path: child,
+            writable: true,
+        };
+        assert_eq!(
+            Roots::open(vec![outer, inner]).unwrap_err(),
+            RootsError::RootOverlaps
+        );
+    }
+
+    #[test]
+    fn a_root_nested_inside_another_is_refused_inner_first() {
+        let parent = TempDir::new("overlap-nested-inner-first");
+        let child = parent.path.join("Sub");
+        std::fs::create_dir(&child).unwrap();
+        let outer = RootSpec {
+            name: "Outer".to_string(),
+            path: parent.path.clone(),
+            writable: true,
+        };
+        let inner = RootSpec {
+            name: "Inner".to_string(),
+            path: child,
+            writable: true,
+        };
+        // Same two folders as above, given in the opposite order. The
+        // overlap check must catch nesting whichever root is opened first.
+        assert_eq!(
+            Roots::open(vec![inner, outer]).unwrap_err(),
+            RootsError::RootOverlaps
+        );
+    }
+
+    #[test]
+    fn sibling_folders_are_allowed() {
+        let a = TempDir::new("sibling-a");
+        let b = TempDir::new("sibling-b");
+        std::fs::write(a.path.join("a.txt"), b"hi").unwrap();
+        let roots = Roots::open(vec![spec("First", &a, true), spec("Second", &b, true)]).unwrap();
         assert_eq!(roots.read(&path("First/a.txt"), 0, 2).unwrap(), b"hi");
-        assert_eq!(roots.read(&path("Second/a.txt"), 0, 2).unwrap(), b"hi");
     }
 
     #[test]

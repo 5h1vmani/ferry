@@ -281,6 +281,11 @@
       "why": "A folder's path is not an existing directory.",
       "todo": "Choose a folder that exists."
     },
+    "RootsError::RootOverlaps": {
+      "stopped": "The shared folders were not set.",
+      "why": "Two folders are the same, or one is inside the other.",
+      "todo": "Choose folders that do not overlap."
+    },
     "RpcError::BadName": {
       "stopped": "The name was refused.",
       "why": "It is empty, longer than 64 bytes, or holds a control character.",
