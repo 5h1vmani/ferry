@@ -989,9 +989,13 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     let side = build("Vamana");
     let peer = start_peer(&side.key, sample_bytes(mib(8)));
     // The first two chunks arrive at once. Everything after them crawls, so
-    // the test can stop the engine inside the third chunk.
+    // the test can stop the engine inside the third chunk. The same crawl
+    // continues through the resume below: four reads at this cap, each
+    // paused this long, take about three seconds for the first resumed
+    // chunk, comfortably past the two second window item 8's speed is
+    // measured over.
     peer.fs.cap_reads(256 * 1024);
-    peer.fs.slow_down(2 * MIB, Duration::from_millis(500));
+    peer.fs.slow_down(2 * MIB, Duration::from_millis(750));
     pair_with_peer(&side, &peer);
 
     let id = pull_big(&side, &peer, "big.bin");
@@ -1016,7 +1020,8 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     side.engine.stop();
 
     // A new engine on the same folders, as if the app had been restarted.
-    peer.fs.speed_up();
+    // The link stays slow a little longer: item 8's speed is checked below,
+    // right after the resume starts, while it is still measurable.
     let inbox = Arc::new(Inbox::default());
     let engine = make_engine(
         "Vamana",
@@ -1069,6 +1074,35 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     // The peer is reachable again, so the transfer finishes on its own.
     engine.offer_candidate(peer.addr);
     engine.start().expect("the engine should start");
+
+    // C2: the resume starts from 2 MiB already verified. The link is still
+    // the slow one set up above, so the first newly moved chunk takes about
+    // three seconds, long enough for a speed to be reported. Before the fix
+    // the window started at zero bytes, so this first speed would count the
+    // 2 MiB baseline as if it had just moved, several times faster than the
+    // link this test allows. It is checked here, before `speed_up` below
+    // lets the rest of the file arrive at once.
+    let watching = Arc::clone(&engine);
+    let wanted = id.clone();
+    poll_until("a speed for the resumed transfer to appear", move || {
+        watching
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted && t.speed_bytes_per_sec.is_some())
+    });
+    let resumed_speed = engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .and_then(|t| t.speed_bytes_per_sec)
+        .expect("checked by the poll above");
+    assert!(
+        resumed_speed < 500_000,
+        "the resumed transfer's first speed should reflect only new bytes, not the \
+         2 MiB baseline too; got {resumed_speed} bytes/sec"
+    );
+
+    peer.fs.speed_up();
     let watching = Arc::clone(&engine);
     let wanted = id.clone();
     poll_until("the transfer to finish", move || {

@@ -900,6 +900,14 @@ struct Reporter<'a> {
     /// measured over, and the bytes done at that moment.
     speed_window_start: Instant,
     bytes_at_speed_window_start: u64,
+    /// `bytes_at_last_report` and `bytes_at_speed_window_start` are not
+    /// known until [`Reporter::moved`] is first called: a resumed transfer's
+    /// first `bytes_done` already counts bytes a previous attempt verified,
+    /// and `verify_and_land`'s first call counts bytes just reverified
+    /// locally, not bytes this attempt moved over the wire. Seeding both
+    /// marks at zero would count all of that as freshly moved. `false` until
+    /// that first call seeds them from the `bytes_done` it sees.
+    seeded: bool,
 }
 
 impl<'a> Reporter<'a> {
@@ -914,11 +922,17 @@ impl<'a> Reporter<'a> {
             bytes_at_last_report: 0,
             speed_window_start: now,
             bytes_at_speed_window_start: 0,
+            seeded: false,
         }
     }
 
     /// Note that the transfer has reached `bytes_done` of `total`.
     fn moved(&mut self, bytes_done: u64, total: u64) {
+        if !self.seeded {
+            self.bytes_at_last_report = bytes_done;
+            self.bytes_at_speed_window_start = bytes_done;
+            self.seeded = true;
+        }
         let elapsed = self.last_report.elapsed();
         let due = elapsed >= REPORT_EVERY;
         let speed = if due {
