@@ -104,17 +104,16 @@ enum EngineAdapter {
         }
     }
 
-    /// The chunk facts for one transfer, or nil when there are none.
-    ///
-    /// TODO(engine 7): `chunks_total` and `chunks_verified` are not
-    /// published. A verify failure does name its chunk in `error.detail`,
-    /// so that index is recovered and the counts are marked uncounted. The
-    /// disclosure then shows the index and no total, which is the
-    /// three-part rule again: the unknown part is left out.
+    /// The chunk facts for one transfer, or nil when the size is not known
+    /// yet. A verify failure also names its chunk in `error.detail`.
     private static func chunks(for transfer: TransferInfo) -> ChunkFacts? {
-        guard transfer.state == .failed, let error = transfer.error else { return nil }
-        guard let index = failedChunkIndex(in: error) else { return nil }
-        return ChunkFacts(verified: 0, total: 0, failedIndex: index, isCounted: false)
+        guard transfer.chunksTotal > 0 else { return nil }
+        return ChunkFacts(
+            verified: transfer.chunksVerified,
+            total: transfer.chunksTotal,
+            failedIndex: transfer.error.flatMap(failedChunkIndex(in:)),
+            isCounted: true
+        )
     }
 
     /// The chunk index a verify failure carries in its detail. The engine

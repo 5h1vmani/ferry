@@ -117,7 +117,7 @@ Measured over that transfer's own bytes across the last two seconds.
 `None` unless the state is `Active`. `DeviceInfo.speed_bytes_per_sec`
 stays as it is.
 
-### 7. Chunk counts — open
+### 7. Chunk counts — built
 
 ```rust
 // on TransferInfo
