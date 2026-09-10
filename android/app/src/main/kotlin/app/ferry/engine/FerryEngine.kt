@@ -12,11 +12,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import uniffi.ferry_runtime.Config
 import uniffi.ferry_runtime.DeviceInfo
+import uniffi.ferry_runtime.DeviceKind
 import uniffi.ferry_runtime.Engine
 import uniffi.ferry_runtime.EngineListener
 import uniffi.ferry_runtime.FerryException
 import uniffi.ferry_runtime.KeyPair
 import uniffi.ferry_runtime.PairingState
+import uniffi.ferry_runtime.Root
 import uniffi.ferry_runtime.TransferInfo
 import uniffi.ferry_runtime.generateKey
 import uniffi.ferry_runtime.phonePort
@@ -116,14 +118,23 @@ object FerryEngine {
         val dataDir = File(context.filesDir, DATA_DIR_NAME)
         dataDir.mkdirs()
         try {
+            val externalStorage = Environment.getExternalStorageDirectory()
             val config = Config(
                 dataDir = dataDir.absolutePath,
-                sharedRoot = Environment.getExternalStorageDirectory().absolutePath,
+                sharedRoots = listOf(
+                    Root(
+                        name = "Internal storage",
+                        path = externalStorage.absolutePath,
+                        writable = true,
+                    ),
+                ),
+                downloadDir = File(externalStorage, "Download").absolutePath,
                 displayName = Build.MODEL,
                 // The port the Mac reaches through an adb forward. It comes from
                 // the engine, so the number lives once.
                 listenPort = phonePort(),
                 key = loadOrCreateKey(context),
+                kind = DeviceKind.PHONE,
             )
             engine = Engine(config, listener)
             _error.value = null
