@@ -88,3 +88,36 @@ python3 scripts/gen_tokens.py --check
 The script uses only the Python standard library, so it needs no setup
 beyond Python 3. Given the same two JSON files, it always writes the same
 bytes.
+
+## Errors
+
+`errors.json` is the single source of truth for every error Ferry can show.
+Each row holds three parts, in order: what stopped, why, what to do. Words
+follow `docs/voice.md`.
+
+### The generator
+
+`scripts/gen_errors.py` reads `errors.json` and writes two files:
+
+- `macos/Ferry/Generated/Errors.swift`
+- `android/app/src/main/kotlin/app/ferry/Errors.kt`
+
+Both files carry a comment at the top saying they are generated and must
+not be hand-edited. To change an error's words, change `errors.json`, then
+run:
+
+```sh
+python3 scripts/gen_errors.py
+```
+
+Run it with `--check` to verify the two generated files already match what
+the script would write, without changing them. It exits 1 and names the
+file if either one is out of date:
+
+```sh
+python3 scripts/gen_errors.py --check
+```
+
+A test in `ferry-core`, `errors_have_words`, checks that every error
+variant in `ferry-core` and every `Runtime::` code in `ferry-runtime` has a
+row, and that no row breaks `docs/voice.md`.
