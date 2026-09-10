@@ -24,6 +24,9 @@ use crate::limits;
 use crate::wire::WireError;
 
 /// What a frame is for.
+///
+/// A `Hello` frame always carries a request identifier of 0, since it is not
+/// an answer to anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum FrameKind {
@@ -33,6 +36,9 @@ pub enum FrameKind {
     Response = 2,
     /// A failed answer to a request with the same identifier.
     Error = 3,
+    /// A display name, sent once by each side right after the handshake.
+    /// See `docs/protocol.md` section 5.
+    Hello = 4,
 }
 
 impl FrameKind {
@@ -47,6 +53,7 @@ impl FrameKind {
             1 => Ok(Self::Request),
             2 => Ok(Self::Response),
             3 => Ok(Self::Error),
+            4 => Ok(Self::Hello),
             other => Err(FrameError::UnknownKind(other)),
         }
     }
@@ -212,6 +219,11 @@ mod tests {
             read_frame(&mut buffer.as_slice()),
             Err(FrameError::PayloadTooLarge(_))
         ));
+    }
+
+    #[test]
+    fn kind_4_decodes_to_hello() {
+        assert_eq!(FrameKind::from_byte(4).unwrap(), FrameKind::Hello);
     }
 
     #[test]

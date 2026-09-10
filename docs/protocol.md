@@ -152,6 +152,20 @@ at 65535 bytes, and the authentication tag takes 16 of those, so one message
 carries at most 65519 bytes of plaintext. The encrypted stream splits longer
 writes and joins them again, so the framing layer above never sees that cap.
 
+### Hello
+
+The first frame after a handshake, in both directions, is a hello. Each side
+sends its own hello before it reads the peer's, so neither side waits on the
+other. The name is shown on the other device and never trusted. Identity is
+proven by the handshake's keys, not by this exchange. A peer that sends
+anything else first is disconnected.
+
+| Field | Size | Meaning |
+|---|---|---|
+| `kind` | 1 byte | Always 4. |
+| `request_id` | 4 bytes | Always 0. |
+| payload | 1 to 64 bytes | One text field: the display name, with no control character. |
+
 ## 6. Framing
 
 Designed and implemented. See `crates/ferry-core/src/frame.rs`.

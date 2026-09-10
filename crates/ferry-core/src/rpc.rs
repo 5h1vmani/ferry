@@ -3,6 +3,11 @@
 //! [`FileOps`] is what a device offers. [`Client`] calls it across a stream.
 //! [`serve`] answers those calls.
 //!
+//! Both sides call [`exchange_hello`] once, right after the Noise handshake
+//! finishes and before `serve` or [`Client`] touch the stream. It carries
+//! each side's display name across the encrypted channel, since the mDNS
+//! name is random and an adb serial is a number, and neither is a name.
+//!
 //! The protocol is symmetric, so either device can hold either role. One
 //! connection currently carries one client and one server. Running both
 //! directions at once needs multiplexing, which is not built yet.
@@ -17,7 +22,7 @@ use std::io::{self, Read, Write};
 use crate::frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
 use crate::ops::{Entry, OpError, Request, Response};
 use crate::path::RemotePath;
-use crate::wire::WireError;
+use crate::wire::{Decoder, Encoder, WireError};
 
 /// The file operations one device offers to the other.
 ///
@@ -125,8 +130,79 @@ pub enum RpcError {
         got: u32,
     },
     /// The peer sent a response where a request belonged, or the reverse.
+    ///
+    /// Also returned by [`exchange_hello`] when the first frame after the
+    /// handshake is not a hello, including when the peer sends nothing that
+    /// looks like one at all.
     #[error("unexpected frame kind {0:?}")]
     UnexpectedFrameKind(FrameKind),
+    /// A name was empty, over [`MAX_NAME_LEN`] bytes, or held a control
+    /// character.
+    #[error("name failed validation")]
+    BadName,
+}
+
+/// The longest a display name may be, in bytes.
+///
+/// A name is checked against this on both send and receive in
+/// [`exchange_hello`]. It is also the limit passed to [`Decoder::text`] when
+/// reading the peer's name, so an oversized name is refused during decoding
+/// rather than after.
+pub const MAX_NAME_LEN: usize = 64;
+
+/// Exchange display names with the peer.
+///
+/// Both sides call this once, immediately after the Noise handshake
+/// finishes, and before `serve` or [`Client`] touch the stream. Each side
+/// writes its own hello first, then reads the peer's, so neither side waits
+/// on the other before sending its own.
+///
+/// The name is shown to the person on the other device and is never trusted
+/// for anything. Identity is proven by the handshake's static keys, not by
+/// this exchange. See `docs/protocol.md` section 5.
+///
+/// # Errors
+///
+/// Returns [`RpcError::BadName`] when `my_name`, or the name the peer sends
+/// back, is empty, over [`MAX_NAME_LEN`] bytes, or holds a control
+/// character. Returns [`RpcError::UnexpectedFrameKind`] when the first frame
+/// from the peer is not a hello with a request identifier of 0.
+pub fn exchange_hello(stream: &mut (impl Read + Write), my_name: &str) -> Result<String, RpcError> {
+    validate_name(my_name)?;
+    let mut encoder = Encoder::new();
+    encoder.text(my_name);
+    write_frame(
+        stream,
+        &Frame {
+            kind: FrameKind::Hello,
+            request_id: 0,
+            payload: encoder.finish(),
+        },
+    )?;
+
+    let frame = read_frame(stream)?;
+    if frame.kind != FrameKind::Hello || frame.request_id != 0 {
+        return Err(RpcError::UnexpectedFrameKind(frame.kind));
+    }
+
+    let mut decoder = Decoder::new(&frame.payload);
+    let name = decoder.text(MAX_NAME_LEN)?.to_string();
+    decoder.finish()?;
+    validate_name(&name)?;
+    Ok(name)
+}
+
+/// A name is 1 to 64 bytes of UTF-8 and holds no control character, meaning
+/// anything below `U+0020` or `U+007F`. Those are unprintable and have no
+/// place in a name someone reads on a screen.
+fn validate_name(name: &str) -> Result<(), RpcError> {
+    let right_length = !name.is_empty() && name.len() <= MAX_NAME_LEN;
+    let no_control = !name.chars().any(|c| c.is_ascii_control());
+    if right_length && no_control {
+        Ok(())
+    } else {
+        Err(RpcError::BadName)
+    }
 }
 
 /// Calls file operations on the other device.
@@ -182,7 +258,8 @@ impl<S: Read + Write> Client<S> {
         match frame.kind {
             FrameKind::Response => Ok(frame.payload),
             FrameKind::Error => Err(RpcError::Remote(OpError::decode(&frame.payload)?)),
-            FrameKind::Request => Err(RpcError::UnexpectedFrameKind(FrameKind::Request)),
+            // A request or a hello can never be a sensible answer to a call.
+            FrameKind::Request | FrameKind::Hello => Err(RpcError::UnexpectedFrameKind(frame.kind)),
         }
     }
 
@@ -424,15 +501,16 @@ pub fn serve(stream: &mut (impl Read + Write), ops: &dyn FileOps) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
+    use std::io::ErrorKind;
     use std::thread;
 
-    use super::{Client, RpcError, serve};
-    use crate::frame::{Frame, FrameKind, read_frame, write_frame};
+    use super::{Client, RpcError, exchange_hello, serve};
+    use crate::frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
     use crate::memfs::MemoryFs;
     use crate::ops::{FileKind, OpError, Request, Response};
     use crate::path::RemotePath;
     use crate::transport::{Endpoint, loopback};
-    use crate::wire::WireError;
+    use crate::wire::{Encoder, WireError};
 
     fn path(text: &str) -> RemotePath {
         RemotePath::parse(text).unwrap()
@@ -676,5 +754,101 @@ mod tests {
         ));
 
         fake_server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn hello_carries_each_name_to_the_other_side() {
+        let (mut pixel_side, mut vamana_side) = loopback();
+        let pixel_thread = thread::spawn(move || exchange_hello(&mut pixel_side, "Pixel 3 XL"));
+
+        let vamana_hears = exchange_hello(&mut vamana_side, "Vamana").unwrap();
+        let pixel_hears = pixel_thread.join().unwrap().unwrap();
+
+        assert_eq!(pixel_hears, "Vamana");
+        assert_eq!(vamana_hears, "Pixel 3 XL");
+    }
+
+    #[test]
+    fn a_name_over_64_bytes_is_refused_on_send() {
+        let (mut sender, mut receiver) = loopback();
+        let too_long = "a".repeat(65);
+
+        assert!(matches!(
+            exchange_hello(&mut sender, &too_long),
+            Err(RpcError::BadName)
+        ));
+
+        // Nothing was written, so once the sender is gone the receiver sees
+        // end of file rather than a frame.
+        drop(sender);
+        match read_frame(&mut receiver) {
+            Err(FrameError::Io(e)) => assert_eq!(e.kind(), ErrorKind::UnexpectedEof),
+            other => panic!("expected end of file, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_name_over_64_bytes_is_refused_on_receive() {
+        let (mut sender, mut receiver) = loopback();
+        let mut encoder = Encoder::new();
+        encoder.text(&"a".repeat(65));
+        let oversized_payload = encoder.finish();
+        write_frame(
+            &mut sender,
+            &Frame {
+                kind: FrameKind::Hello,
+                request_id: 0,
+                payload: oversized_payload,
+            },
+        )
+        .unwrap();
+
+        // The oversized name never reaches the sender's own name check: the
+        // decoder's length cap catches it first, so this is the error that
+        // comes back, not `RpcError::BadName`.
+        assert!(matches!(
+            exchange_hello(&mut receiver, "Pixel 3 XL"),
+            Err(RpcError::Wire(WireError::TooLong))
+        ));
+    }
+
+    #[test]
+    fn a_name_with_a_control_character_is_refused() {
+        let (mut sender, _receiver) = loopback();
+        assert!(matches!(
+            exchange_hello(&mut sender, "Pixel\u{0007}"),
+            Err(RpcError::BadName)
+        ));
+    }
+
+    #[test]
+    fn a_request_where_a_hello_belongs_is_refused() {
+        let (mut sender, mut receiver) = loopback();
+        write_frame(
+            &mut sender,
+            &Frame {
+                kind: FrameKind::Request,
+                request_id: 1,
+                payload: Request::Stat {
+                    path: path("a.txt"),
+                }
+                .encode(),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            exchange_hello(&mut receiver, "Pixel 3 XL"),
+            Err(RpcError::UnexpectedFrameKind(FrameKind::Request))
+        ));
+    }
+
+    #[test]
+    fn an_empty_name_is_refused() {
+        let (mut sender, _receiver) = loopback();
+        assert!(matches!(
+            exchange_hello(&mut sender, ""),
+            Err(RpcError::BadName)
+        ));
     }
 }
