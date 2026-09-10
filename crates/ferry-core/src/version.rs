@@ -23,10 +23,10 @@ use std::io::{self, Read, Write};
 pub const MAGIC: [u8; 5] = *b"FERRY";
 
 /// The oldest protocol version this build can speak.
-pub const VERSION_MIN: u16 = 1;
+pub const VERSION_MIN: u16 = 2;
 
 /// The newest protocol version this build can speak.
-pub const VERSION_MAX: u16 = 1;
+pub const VERSION_MAX: u16 = 2;
 
 /// Which side of the connection this is.
 ///

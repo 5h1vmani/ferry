@@ -561,7 +561,7 @@ mod tests {
     use std::io::{self, Read, Write};
     use std::sync::{Arc, Mutex};
 
-    const PROLOGUE: &[u8] = b"FERRY\x00\x01FERRY\x00\x01";
+    const PROLOGUE: &[u8] = b"FERRY\x00\x02FERRY\x00\x02";
 
     fn pair_over_loopback() -> (Paired, Paired) {
         let (a, b) = loopback();
@@ -747,9 +747,9 @@ mod tests {
         let (key_a, public_a, key_b, public_b) = stored_pair();
         let (ea, eb) = loopback();
         let server = std::thread::spawn(move || {
-            connect_as_responder(eb, &key_b, &public_a, b"FERRY\x00\x01FERRY\x00\x01").map(|_| ())
+            connect_as_responder(eb, &key_b, &public_a, b"FERRY\x00\x02FERRY\x00\x02").map(|_| ())
         });
-        let attempt = connect_as_initiator(ea, &key_a, &public_b, b"FERRY\x00\x01FERRY\x00\x00");
+        let attempt = connect_as_initiator(ea, &key_a, &public_b, b"FERRY\x00\x02FERRY\x00\x00");
         let server = server.join().unwrap();
         assert!(
             attempt.is_err() || server.is_err(),

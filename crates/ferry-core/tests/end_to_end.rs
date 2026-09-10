@@ -24,7 +24,7 @@ use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, serve};
 use ferry_core::session::{Transfer, pull};
 use ferry_core::transport::loopback;
-use ferry_core::version::{Role, negotiate};
+use ferry_core::version::{Role, VERSION_MAX, negotiate};
 
 const SOURCE: &str = "DCIM/Camera/VID_0001.mp4";
 const DESTINATION: &str = "Movies/VID_0001.mp4";
@@ -68,7 +68,7 @@ fn two_devices_pair_then_move_a_file_over_the_encrypted_channel() {
     });
 
     let agreed = negotiate(&mut mac_link, Role::Initiator).expect("version agreed");
-    assert_eq!(agreed.version, 1);
+    assert_eq!(agreed.version, VERSION_MAX);
 
     let key = StaticKey::generate().expect("key made");
     let paired = pair_as_initiator(mac_link, &key, &agreed.prologue).expect("pairing finished");
@@ -192,7 +192,7 @@ fn two_devices_move_a_file_between_two_real_directories() {
     });
 
     let agreed = negotiate(&mut mac_link, Role::Initiator).expect("version agreed");
-    assert_eq!(agreed.version, 1);
+    assert_eq!(agreed.version, VERSION_MAX);
 
     let key = StaticKey::generate().expect("key made");
     let paired = pair_as_initiator(mac_link, &key, &agreed.prologue).expect("pairing finished");
