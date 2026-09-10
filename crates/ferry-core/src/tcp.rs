@@ -10,10 +10,24 @@
 //! Two limits from `docs/protocol.md` section 7 that were "designed but not
 //! built" become real here, and their constants return to `crate::limits`:
 //!
-//! - `HANDSHAKE_TIMEOUT_SECS = 10`. Set as the socket read and write timeout
-//!   until the handshake completes, then cleared.
+//! - `HANDSHAKE_TIMEOUT_SECS = 10`. One deadline for the whole handshake,
+//!   meaning the version exchange and the Noise messages that follow it,
+//!   however many reads or writes that takes. A plain socket timeout only
+//!   bounds one read call, not a loop of them, so a private `DeadlineStream`
+//!   enforces this instead.
 //! - `MAX_PENDING_HANDSHAKES = 8`. A counter of accepted connections that have
 //!   not finished a handshake. The ninth is closed at once.
+//!
+//! `Listener::accept` does only the TCP accept and the slot reservation. It
+//! reads nothing, so a silent peer cannot make it wait, and cannot delay the
+//! connections queued behind it. The version exchange and the Noise
+//! handshake both happen later, inside `Pending::pair` or `Pending::connect`,
+//! under the one deadline described above.
+//!
+//! After a handshake finishes, the read timeout is set to `IDLE_TIMEOUT_SECS`
+//! instead of being cleared, so a peer that goes silent after pairing does
+//! not hold its thread forever. The write timeout is cleared, since a write
+//! only blocks when the peer stops reading, which is not covered here.
 //!
 //! Public shape:
 //!
@@ -22,39 +36,52 @@
 //! impl Listener {
 //!     pub fn bind(addr: SocketAddr) -> io::Result<Self>;
 //!     pub fn local_addr(&self) -> SocketAddr;
-//!     /// Accept one connection and run the version exchange under the
-//!     /// timeout. Refuses when too many handshakes are pending.
+//!     /// Accept one connection and reserve a pending-handshake slot for it.
+//!     /// Refuses when too many handshakes are already pending.
 //!     pub fn accept(&self) -> Result<Pending, TcpError>;
 //! }
 //!
-//! /// A connection that has agreed a version and nothing else yet.
+//! /// A connection that has been accepted, but has not yet agreed a version
+//! /// or run a Noise handshake.
 //! pub struct Pending { .. }
 //! impl Pending {
 //!     pub fn remote(&self) -> SocketAddr;
-//!     pub fn version(&self) -> u16;
-//!     /// Run Noise XX as responder. Clears the timeout on success.
-//!     pub fn pair(self, key: &StaticKey) -> Result<Paired, TcpError>;
-//!     /// Run Noise KK as responder against a known peer. Clears the timeout.
+//!     /// Agree a version, then run Noise XX as responder, both inside one
+//!     /// deadline. Starts the idle timeout on success.
+//!     pub fn pair(self, key: &StaticKey) -> Result<PairedConnection, TcpError>;
+//!     /// Agree a version, then run Noise KK as responder against a known
+//!     /// peer, both inside one deadline. Starts the idle timeout on success.
 //!     pub fn connect(self, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError>;
 //! }
 //!
-//! pub struct Connection { pub stream: SecureStream, pub remote: SocketAddr }
+//! pub struct Connection { pub stream: SecureStream, pub remote: SocketAddr, pub version: u16 }
+//!
+//! /// What a successful `pair` or `Pending::pair` produces. `Paired` has no
+//! /// room for a version field and this crate does not own that type, so
+//! /// this wraps it instead of changing it.
+//! pub struct PairedConnection { pub paired: Paired, pub version: u16 }
 //!
 //! /// Dial a peer, agree a version, and run KK as initiator.
 //! pub fn connect(addr: SocketAddr, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError>;
 //! /// Dial a peer, agree a version, and run XX as initiator.
-//! pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<Paired, TcpError>;
+//! pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpError>;
 //! ```
 //!
 //! `Paired` is `crate::noise::Paired`. The pending counter decrements when a
 //! `Pending` is consumed or dropped, so a caller that abandons one does not
 //! leak a slot.
+//!
+//! # Not yet
+//!
+//! A cap on how many connections one peer may hold at once belongs to a
+//! server loop that does not exist yet in this crate. `MAX_PENDING_HANDSHAKES`
+//! only limits handshakes in progress, not connections already served.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use crate::limits;
 use crate::noise::{self, NoiseError, Paired, PublicKey, SecureStream, StaticKey};
@@ -89,6 +116,14 @@ pub enum TcpError {
     Timeout,
 }
 
+/// How long a read may wait for data once a handshake has finished, in
+/// seconds.
+///
+/// Five minutes is long enough that a person who pauses the app does not
+/// lose the connection, and short enough that a peer that goes silent, or
+/// dies, does not hold a thread and a socket open forever.
+pub const IDLE_TIMEOUT_SECS: u64 = 300;
+
 /// True when an I/O error is a read or a write that ran past its deadline.
 ///
 /// The two kinds exist because platforms differ in which one a timed-out
@@ -117,34 +152,107 @@ fn map_noise<T>(result: Result<T, NoiseError>) -> Result<T, TcpError> {
     })
 }
 
-/// Set the read and write timeout to `timeout` on both directions of
-/// `stream`.
-fn set_timeouts(stream: &TcpStream, timeout: Duration) -> io::Result<()> {
-    stream.set_read_timeout(Some(timeout))?;
-    stream.set_write_timeout(Some(timeout))?;
-    Ok(())
-}
-
-/// Clear the read and write timeout on both directions of `stream`.
-fn clear_timeouts(stream: &TcpStream) -> io::Result<()> {
-    stream.set_read_timeout(None)?;
-    stream.set_write_timeout(None)?;
-    Ok(())
-}
-
-/// Run one Noise step over `stream`, then clear its handshake timeout.
+/// A `TcpStream` bounded by one deadline that shrinks with every call.
 ///
-/// `run` moves `stream` into the Noise handshake and, on success, into the
-/// value it returns, so this keeps a cloned handle to the same socket to
-/// clear the timeout afterwards. A clone shares the underlying socket, so
-/// the timeout it sets or clears applies to the original handle too.
-fn finish_handshake<T>(
+/// A plain socket timeout limits one call to `read` or `write`. Code such as
+/// `read_exact` calls `read` in a loop. A peer that sends one byte per
+/// timeout window resets the limit every time, and can hold the socket open
+/// forever. This wrapper works out the time left before every call, and sets
+/// the socket timeout to that. The whole sequence of calls is then bounded by
+/// one deadline, no matter how many calls it takes.
+///
+/// `armed` is shared with the code that built this stream. The Noise
+/// handshake keeps whatever stream it is given for the life of the
+/// connection, so this wrapper cannot be swapped back out for a plain
+/// `TcpStream` once the handshake has taken it. Turning `armed` off has the
+/// same effect: later calls skip the deadline and go straight to the socket,
+/// which is exactly what a plain `TcpStream` would do.
+#[derive(Debug)]
+struct DeadlineStream {
     stream: TcpStream,
-    run: impl FnOnce(TcpStream) -> Result<T, NoiseError>,
+    deadline: Instant,
+    armed: Arc<AtomicBool>,
+}
+
+impl DeadlineStream {
+    /// The time left before the deadline.
+    ///
+    /// Returns a `TimedOut` error once the deadline has passed, rather than
+    /// a zero duration, because a zero-length socket timeout is not a valid
+    /// one.
+    fn time_left(&self) -> io::Result<Duration> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the handshake did not finish before its deadline",
+            ));
+        }
+        Ok(left)
+    }
+}
+
+impl Read for DeadlineStream {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.armed.load(Ordering::SeqCst) {
+            let left = self.time_left()?;
+            self.stream.set_read_timeout(Some(left))?;
+        }
+        self.stream.read(buf)
+    }
+}
+
+impl Write for DeadlineStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.armed.load(Ordering::SeqCst) {
+            let left = self.time_left()?;
+            self.stream.set_write_timeout(Some(left))?;
+        }
+        self.stream.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+/// Run the version exchange, then one Noise step, over `stream`. Both are
+/// bounded by `deadline`, no matter how many reads or writes either one
+/// takes.
+///
+/// `run` gets the agreed version alongside the stream, because it needs the
+/// prologue from [`Agreed`] to start the Noise handshake. It moves the
+/// stream into that handshake, and, on success, into the value it returns.
+///
+/// A cloned handle to the same socket is kept aside first. A timeout belongs
+/// to the socket, not to whichever Rust value currently holds it, so setting
+/// the idle timeout on that clone reaches the connection no matter which
+/// wrapper the returned value keeps.
+fn run_handshake<T>(
+    stream: TcpStream,
+    role: Role,
+    deadline: Instant,
+    idle_timeout: Duration,
+    run: impl FnOnce(DeadlineStream, Agreed) -> Result<T, NoiseError>,
 ) -> Result<T, TcpError> {
-    let timeout_handle = stream.try_clone()?;
-    let value = map_noise(run(stream))?;
-    clear_timeouts(&timeout_handle)?;
+    let idle_handle = stream.try_clone()?;
+    let armed = Arc::new(AtomicBool::new(true));
+    let mut deadline_stream = DeadlineStream {
+        stream,
+        deadline,
+        armed: Arc::clone(&armed),
+    };
+
+    let agreed = map_version(version::negotiate(&mut deadline_stream, role))?;
+    let value = map_noise(run(deadline_stream, agreed))?;
+
+    // The handshake is done. Turn the deadline off, and start the idle
+    // timeout instead of clearing it, so a peer that later goes silent does
+    // not hold this thread forever.
+    armed.store(false, Ordering::SeqCst);
+    idle_handle.set_read_timeout(Some(idle_timeout))?;
+    idle_handle.set_write_timeout(None)?;
+
     Ok(value)
 }
 
@@ -162,13 +270,14 @@ impl Drop for PendingSlot {
     }
 }
 
-/// Accepts TCP connections and runs the version exchange on each one.
+/// Accepts TCP connections and reserves a handshake slot for each one.
 #[derive(Debug)]
 pub struct Listener {
     inner: TcpListener,
     local_addr: SocketAddr,
     pending: Arc<AtomicU32>,
     handshake_timeout: Duration,
+    idle_timeout: Duration,
 }
 
 impl Listener {
@@ -198,7 +307,20 @@ impl Listener {
             local_addr,
             pending: Arc::new(AtomicU32::new(0)),
             handshake_timeout,
+            idle_timeout: Duration::from_secs(IDLE_TIMEOUT_SECS),
         })
+    }
+
+    /// Use `idle_timeout` instead of [`IDLE_TIMEOUT_SECS`] for connections
+    /// this listener hands out.
+    ///
+    /// Production code never calls this. It exists so a test can wait out a
+    /// short idle timeout instead of the real one.
+    #[cfg(test)]
+    #[must_use]
+    fn with_idle_timeout(mut self, idle_timeout: Duration) -> Self {
+        self.idle_timeout = idle_timeout;
+        self
     }
 
     /// The address this listener is bound to.
@@ -218,8 +340,12 @@ impl Listener {
         Ok(PendingSlot(Arc::clone(&self.pending)))
     }
 
-    /// Accept one connection and run the version exchange under the
-    /// handshake timeout.
+    /// Accept one connection and reserve a pending-handshake slot for it.
+    ///
+    /// This does no I/O beyond the TCP accept itself. The version exchange
+    /// and the Noise handshake happen later, inside [`Pending::pair`] or
+    /// [`Pending::connect`], so a peer that never sends a byte cannot make
+    /// `accept` wait, and cannot delay the connections queued behind it.
     ///
     /// The pending-handshake limit is checked as soon as the connection is
     /// accepted, before anything is read from it, so a ninth connection is
@@ -230,35 +356,37 @@ impl Listener {
     /// # Errors
     ///
     /// Returns [`TcpError::TooManyPending`] when the limit above is already
-    /// reached, and [`TcpError::Timeout`] when the version exchange does not
-    /// finish before the handshake timeout.
+    /// reached.
     pub fn accept(&self) -> Result<Pending, TcpError> {
-        let (mut stream, remote) = self.inner.accept()?;
+        let (stream, remote) = self.inner.accept()?;
         let slot = self.reserve_slot()?;
-
-        set_timeouts(&stream, self.handshake_timeout)?;
-        let agreed = map_version(version::negotiate(&mut stream, Role::Responder))?;
+        let deadline = Instant::now() + self.handshake_timeout;
 
         Ok(Pending {
             stream,
             remote,
-            agreed,
             slot,
+            deadline,
+            idle_timeout: self.idle_timeout,
         })
     }
 }
 
-/// A connection that has agreed a version and nothing else yet.
+/// A connection that has been accepted, but has not yet agreed a version or
+/// run a Noise handshake.
 ///
-/// It holds one pending-handshake slot. The slot is freed when [`Pending::pair`]
-/// or [`Pending::connect`] finishes, or when this value is dropped without
-/// calling either.
+/// It holds one pending-handshake slot and the deadline its handshake must
+/// finish by. [`Pending::pair`] and [`Pending::connect`] each run the version
+/// exchange and the Noise handshake together, bounded by that one deadline.
+/// The slot is freed when either finishes, or when this value is dropped
+/// without calling either.
 #[derive(Debug)]
 pub struct Pending {
     stream: TcpStream,
     remote: SocketAddr,
-    agreed: Agreed,
     slot: PendingSlot,
+    deadline: Instant,
+    idle_timeout: Duration,
 }
 
 impl Pending {
@@ -268,52 +396,72 @@ impl Pending {
         self.remote
     }
 
-    /// The protocol version both sides agreed on.
-    #[must_use]
-    pub fn version(&self) -> u16 {
-        self.agreed.version
-    }
-
-    /// Run Noise XX as responder. Clears the handshake timeout on success.
+    /// Agree a version, then run Noise XX as responder, both inside one
+    /// deadline. Starts the idle timeout on success.
     ///
     /// # Errors
     ///
-    /// Returns [`TcpError::Noise`] when the handshake fails, and
-    /// [`TcpError::Timeout`] when it does not finish before the timeout.
-    pub fn pair(self, key: &StaticKey) -> Result<Paired, TcpError> {
+    /// Returns [`TcpError::Version`] when version negotiation fails,
+    /// [`TcpError::Noise`] when the handshake fails, and
+    /// [`TcpError::Timeout`] when the two together do not finish before the
+    /// deadline.
+    pub fn pair(self, key: &StaticKey) -> Result<PairedConnection, TcpError> {
         // Destructuring keeps `slot` alive, under its own name, until this
         // function returns. Its `Drop` then frees the slot exactly once,
         // whether the handshake below succeeds or fails.
         let Pending {
             stream,
-            agreed,
+            deadline,
+            idle_timeout,
             slot: _slot,
             ..
         } = self;
-        finish_handshake(stream, |s| {
-            noise::pair_as_responder(s, key, &agreed.prologue)
-        })
+        run_handshake(
+            stream,
+            Role::Responder,
+            deadline,
+            idle_timeout,
+            |s, agreed| {
+                noise::pair_as_responder(s, key, &agreed.prologue).map(|paired| PairedConnection {
+                    paired,
+                    version: agreed.version,
+                })
+            },
+        )
     }
 
-    /// Run Noise KK as responder against a known peer. Clears the handshake
-    /// timeout on success.
+    /// Agree a version, then run Noise KK as responder against a known peer,
+    /// both inside one deadline. Starts the idle timeout on success.
     ///
     /// # Errors
     ///
-    /// Returns [`TcpError::Noise`] when the peer does not hold the private
-    /// key matching `peer`, and [`TcpError::Timeout`] when the handshake
-    /// does not finish before the timeout.
+    /// Returns [`TcpError::Version`] when version negotiation fails,
+    /// [`TcpError::Noise`] when the peer does not hold the private key
+    /// matching `peer`, and [`TcpError::Timeout`] when the two together do
+    /// not finish before the deadline.
     pub fn connect(self, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError> {
         let Pending {
             stream,
             remote,
-            agreed,
+            deadline,
+            idle_timeout,
             slot: _slot,
         } = self;
-        let stream = finish_handshake(stream, |s| {
-            noise::connect_as_responder(s, key, peer, &agreed.prologue)
-        })?;
-        Ok(Connection { stream, remote })
+        run_handshake(
+            stream,
+            Role::Responder,
+            deadline,
+            idle_timeout,
+            |s, agreed| {
+                noise::connect_as_responder(s, key, peer, &agreed.prologue).map(|stream| {
+                    Connection {
+                        stream,
+                        remote,
+                        version: agreed.version,
+                    }
+                })
+            },
+        )
     }
 }
 
@@ -324,6 +472,22 @@ pub struct Connection {
     pub stream: SecureStream,
     /// The address of the peer.
     pub remote: SocketAddr,
+    /// The protocol version both sides agreed on, before the Noise handshake
+    /// ran.
+    pub version: u16,
+}
+
+/// What a successful [`pair`] or [`Pending::pair`] produces.
+///
+/// [`Paired`], from `crate::noise`, has no room for a version field, and this
+/// crate does not own that type, so this wraps it instead of changing it.
+#[derive(Debug)]
+pub struct PairedConnection {
+    /// The encrypted channel and the pairing code, exactly as Noise XX
+    /// produced them.
+    pub paired: Paired,
+    /// The protocol version both sides agreed on, before pairing began.
+    pub version: u16,
 }
 
 /// Dial a peer, agree a version, and run KK as initiator.
@@ -332,21 +496,29 @@ pub struct Connection {
 ///
 /// Returns [`TcpError::Version`] when version negotiation fails,
 /// [`TcpError::Noise`] when the peer does not hold the private key matching
-/// `peer`, and [`TcpError::Timeout`] when either step does not finish before
-/// the handshake timeout.
+/// `peer`, and [`TcpError::Timeout`] when the two together do not finish
+/// before the handshake timeout.
 pub fn connect(
     addr: SocketAddr,
     key: &StaticKey,
     peer: &PublicKey,
 ) -> Result<Connection, TcpError> {
-    let mut stream = TcpStream::connect(addr)?;
+    let stream = TcpStream::connect(addr)?;
     let remote = stream.peer_addr()?;
-    set_timeouts(&stream, Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS))?;
-    let agreed = map_version(version::negotiate(&mut stream, Role::Initiator))?;
-    let stream = finish_handshake(stream, |s| {
-        noise::connect_as_initiator(s, key, peer, &agreed.prologue)
-    })?;
-    Ok(Connection { stream, remote })
+    let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
+    run_handshake(
+        stream,
+        Role::Initiator,
+        deadline,
+        Duration::from_secs(IDLE_TIMEOUT_SECS),
+        |s, agreed| {
+            noise::connect_as_initiator(s, key, peer, &agreed.prologue).map(|stream| Connection {
+                stream,
+                remote,
+                version: agreed.version,
+            })
+        },
+    )
 }
 
 /// Dial a peer, agree a version, and run XX as initiator.
@@ -356,13 +528,21 @@ pub fn connect(
 /// As [`connect`], except there is no stored peer key to check, so a
 /// [`TcpError::Noise`] here means the handshake itself failed rather than
 /// that the peer's identity was wrong.
-pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<Paired, TcpError> {
-    let mut stream = TcpStream::connect(addr)?;
-    set_timeouts(&stream, Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS))?;
-    let agreed = map_version(version::negotiate(&mut stream, Role::Initiator))?;
-    finish_handshake(stream, |s| {
-        noise::pair_as_initiator(s, key, &agreed.prologue)
-    })
+pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpError> {
+    let stream = TcpStream::connect(addr)?;
+    let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
+    run_handshake(
+        stream,
+        Role::Initiator,
+        deadline,
+        Duration::from_secs(IDLE_TIMEOUT_SECS),
+        |s, agreed| {
+            noise::pair_as_initiator(s, key, &agreed.prologue).map(|paired| PairedConnection {
+                paired,
+                version: agreed.version,
+            })
+        },
+    )
 }
 
 #[cfg(test)]
@@ -370,11 +550,11 @@ mod tests {
     use super::{Listener, Pending, TcpError, connect, pair};
     use crate::limits;
     use crate::noise::StaticKey;
-    use crate::version::{self, Role};
+    use crate::version::{MAGIC, VERSION_MAX};
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A loopback address with no fixed port, so tests never collide.
     fn local_any() -> SocketAddr {
@@ -396,7 +576,7 @@ mod tests {
         let initiator = pair(addr, &key_initiator).unwrap();
         let responder = server.join().unwrap();
 
-        assert_eq!(initiator.code, responder.code);
+        assert_eq!(initiator.paired.code, responder.paired.code);
     }
 
     #[test]
@@ -431,15 +611,15 @@ mod tests {
         let listener = Listener::bind(local_any()).unwrap();
         let addr = listener.local_addr();
 
-        // Each of these clients completes the version exchange, so `accept`
-        // returns a `Pending` for it right away. None of them goes on to
-        // pair or connect, so each slot stays reserved until the test drops
-        // the `Pending` values below.
+        // Each of these clients connects, so `accept` returns a `Pending`
+        // for it right away; `accept` no longer needs a version exchange to
+        // finish first. None of them goes on to pair or connect, so each
+        // slot stays reserved until the test drops the `Pending` values
+        // below.
         let clients: Vec<_> = (0..limits::MAX_PENDING_HANDSHAKES)
             .map(|_| {
                 thread::spawn(move || {
                     let mut stream = TcpStream::connect(addr).unwrap();
-                    version::negotiate(&mut stream, Role::Initiator).unwrap();
                     // Block here until the server side closes, so the socket
                     // stays open for as long as the test needs it pending.
                     let mut buf = [0u8; 1];
@@ -476,7 +656,11 @@ mod tests {
 
         let _client = TcpStream::connect(addr).unwrap();
 
-        match listener.accept() {
+        // `accept` itself no longer waits on the handshake, so the timeout
+        // now shows up once the handshake actually runs, inside `pair`.
+        let pending = listener.accept().unwrap();
+        let key = StaticKey::generate().unwrap();
+        match pending.pair(&key) {
             Err(TcpError::Timeout) => {}
             other => panic!("expected a timeout, got {other:?}"),
         }
@@ -507,5 +691,133 @@ mod tests {
             attempt.is_err() || server_result.is_err(),
             "a client without the paired key must be refused"
         );
+    }
+
+    #[test]
+    fn a_client_that_drips_one_byte_per_window_is_still_dropped_at_the_deadline() {
+        let listener =
+            Listener::bind_with_timeout(local_any(), Duration::from_millis(300)).unwrap();
+        let addr = listener.local_addr();
+
+        let client = thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+
+            // The 7 byte version exchange, dripped one byte every 200ms. A
+            // socket timeout that resets on every read would let this alone
+            // take well over a second.
+            let mut version_bytes = Vec::with_capacity(7);
+            version_bytes.extend_from_slice(&MAGIC);
+            version_bytes.extend_from_slice(&VERSION_MAX.to_be_bytes());
+            for byte in version_bytes {
+                if stream.write_all(&[byte]).is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+
+            // A valid-looking handshake length prefix, then a body dripped
+            // the same way. The body never fully arrives.
+            if stream.write_all(&900u16.to_be_bytes()).is_err() {
+                return;
+            }
+            loop {
+                if stream.write_all(&[0u8]).is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+        });
+
+        let key = StaticKey::generate().unwrap();
+        let pending = listener.accept().unwrap();
+
+        let start = Instant::now();
+        let result = pending.connect(&key, &key.public());
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(result, Err(TcpError::Timeout)),
+            "expected a timeout, got {result:?}"
+        );
+        assert!(
+            elapsed < Duration::from_millis(450),
+            "expected the deadline to cut the handshake off quickly, took {elapsed:?}"
+        );
+
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn a_silent_client_does_not_delay_the_next_accept() {
+        let listener =
+            Listener::bind_with_timeout(local_any(), Duration::from_millis(500)).unwrap();
+        let addr = listener.local_addr();
+
+        // A silent client. It connects but never sends a byte, so it must
+        // not make `accept`, or anyone else's handshake, wait for it.
+        let _silent = TcpStream::connect(addr).unwrap();
+
+        let key_initiator = StaticKey::generate().unwrap();
+        let start = Instant::now();
+        let second_client = thread::spawn(move || pair(addr, &key_initiator).unwrap());
+
+        // Two accepts, one per connection. Neither does any I/O, so both
+        // return right away, before either handshake has run.
+        let silent_pending = listener.accept().unwrap();
+        let second_pending = listener.accept().unwrap();
+
+        // Each `Pending` runs its handshake on its own thread, as a real
+        // server would. The silent one is left to time out on its own.
+        let silent = thread::spawn(move || {
+            let key = StaticKey::generate().unwrap();
+            silent_pending.pair(&key)
+        });
+        let key_responder = StaticKey::generate().unwrap();
+        let responder = thread::spawn(move || second_pending.pair(&key_responder).unwrap());
+
+        let responder_result = responder.join().unwrap();
+        let elapsed = start.elapsed();
+        let initiator_result = second_client.join().unwrap();
+
+        assert_eq!(initiator_result.paired.code, responder_result.paired.code);
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "the second handshake should not wait on the silent client, took {elapsed:?}"
+        );
+
+        let _ = silent.join();
+    }
+
+    #[test]
+    fn an_idle_connection_read_times_out() {
+        let listener = Listener::bind_with_timeout(local_any(), Duration::from_secs(5))
+            .unwrap()
+            .with_idle_timeout(Duration::from_millis(200));
+        let addr = listener.local_addr();
+
+        let key_responder = StaticKey::generate().unwrap();
+        let server = thread::spawn(move || {
+            let pending = listener.accept().unwrap();
+            let mut connection = pending.pair(&key_responder).unwrap();
+            let start = Instant::now();
+            let mut buf = [0u8; 1];
+            let result = connection.paired.stream.read(&mut buf);
+            (result, start.elapsed())
+        });
+
+        let key_initiator = StaticKey::generate().unwrap();
+        // Kept alive until the server side has read from it, so the read
+        // times out on idleness, not on a closed connection.
+        let client = pair(addr, &key_initiator).unwrap();
+
+        let (result, elapsed) = server.join().unwrap();
+
+        assert!(result.is_err(), "expected the idle read to time out");
+        assert!(
+            elapsed < Duration::from_millis(350),
+            "expected the idle timeout to cut the read off quickly, took {elapsed:?}"
+        );
+
+        drop(client);
     }
 }
