@@ -395,17 +395,19 @@ Done, 10 September 2026:
   engines pair and move a file in one process in under a second. Builds as a
   shared library for Android. Audited once, fourteen findings fixed. See
   `docs/audit-2.md`.
-- Both app shells build, with every screen in every state from sample data,
-  the tokens, the components, and the error words. No Rust is linked yet.
+- Both apps are wired to the engine and build. The Mac links the runtime as
+  a static library and keeps its key in the Keychain. The phone packages the
+  runtime as a shared library, keeps its key in private storage, runs a
+  foreground service while reachable, and asks for all files access on first
+  run. The Mac browses the phone's shared storage and pulls a file. Neither
+  app has run on a device yet.
 
 Not done, in order:
 
-1. Wire each app to the engine through the generated bindings. Key storage in
-   the Keychain and in Android private storage. The foreground service and
-   the reachable notification on the phone. The permission flow on first run.
-2. Run it for real: a Mac and the Pixel, over Wi-Fi, then over the cable.
-   The outcome metrics in `docs/jobs.md` are the acceptance criteria.
-3. Phase 2 work the runtime recorded as limits: a responder that tries each
+1. Run it for real: a Mac and the Pixel, over Wi-Fi, then over the cable.
+   `docs/manual-checks.md` task 3 is the script. The outcome metrics in
+   `docs/jobs.md` are the acceptance criteria. Fix what the run finds.
+2. Phase 2 work the runtime recorded as limits: a responder that tries each
    stored key against the first KK message instead of guessing; a manifest
    request so the first pass of a pull verifies too; a way for `stop` to
    close a socket held inside an encrypted stream; push, from the Mac to the

@@ -117,7 +117,7 @@ The phone has more, because Android needs more from a person.
 | Setting | Shows |
 |---|---|
 | Reachable | A switch. On: the phone advertises and accepts connections. Off: neither. |
-| Shared folders | The fixed list: DCIM, Pictures, Movies, Music, Download, Documents. Not editable in phase 1. |
+| Shared storage | "Internal storage". The engine serves one root, and on the phone that root is internal storage, so the Mac sees every folder in it. Not editable in phase 1. |
 | All files access | "Granted" or "Not granted", with a control that opens the system screen. Ferry cannot serve files without it. |
 | Notifications | On Android 13 and later: "Allowed" or "Not allowed", with a control to the system screen. Needed for the reachable notification. |
 
