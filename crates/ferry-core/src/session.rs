@@ -220,18 +220,30 @@ impl Transfer {
 /// `fetch` is called with an offset relative to the start of the range. It
 /// returns an empty result when the source has no more bytes, which ends the
 /// loop and leaves the caller to decide whether a short result is a problem.
+///
+/// A read is also short when [`limits::MAX_READS_PER_CHUNK`] reads have run
+/// and the range is still not full. That cap exists so that a peer which
+/// answers a byte or two per read cannot hold this loop for as many round
+/// trips as the range has bytes. What has been read so far is returned, as
+/// the same kind of short result an empty answer produces, for the caller to
+/// judge.
 fn read_range<E>(
     length: u32,
     mut fetch: impl FnMut(u64, u32) -> Result<Vec<u8>, E>,
 ) -> Result<Vec<u8>, E> {
     let mut out: Vec<u8> = Vec::with_capacity(length as usize);
+    let mut reads: u32 = 0;
     loop {
         let done = u32::try_from(out.len()).unwrap_or(length);
         if done >= length {
             return Ok(out);
         }
+        if reads >= limits::MAX_READS_PER_CHUNK {
+            return Ok(out);
+        }
         let piece = (length - done).min(limits::MAX_READ_LEN);
         let got = fetch(u64::from(done), piece)?;
+        reads += 1;
         if got.is_empty() {
             return Ok(out);
         }
@@ -410,7 +422,7 @@ pub fn pull_with_progress<S: Read + Write>(
 
 #[cfg(test)]
 mod tests {
-    use super::{Transfer, TransferError, pull, resume_point};
+    use super::{Transfer, TransferError, pull, read_range, resume_point};
     use crate::chunk::{ChunkSize, manifest_from_bytes};
     use crate::memfs::MemoryFs;
     use crate::path::RemotePath;
@@ -606,5 +618,21 @@ mod tests {
         let b = transfer_for(&bytes);
         assert_ne!(a.id, b.id);
         assert_ne!(a.temporary_path().unwrap(), b.temporary_path().unwrap());
+    }
+
+    #[test]
+    fn read_range_gives_up_after_the_read_cap_and_returns_what_it_has() {
+        // A peer that answers one byte per read must not hold this loop for
+        // as many reads as the range has bytes. The range asked for here
+        // needs far more than the cap allows at one byte per read, so only a
+        // working cap ends the loop.
+        let mut calls: u32 = 0;
+        let result: Result<Vec<u8>, TransferError> = read_range(10_000, |_at, _piece| {
+            calls += 1;
+            Ok(vec![7u8])
+        });
+        let got = result.unwrap();
+        assert_eq!(calls, crate::limits::MAX_READS_PER_CHUNK);
+        assert_eq!(got.len(), crate::limits::MAX_READS_PER_CHUNK as usize);
     }
 }

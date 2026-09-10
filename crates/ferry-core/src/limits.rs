@@ -81,3 +81,15 @@ pub const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// moment it is accepted until its handshake ends, and refuses the next one
 /// once this many are already pending.
 pub const MAX_PENDING_HANDSHAKES: u32 = 8;
+
+/// The largest number of reads one byte range may take.
+///
+/// A range is fetched in pieces of at most [`MAX_READ_LEN`], one mebibyte
+/// each. A chunk is at most sixteen mebibytes, `ChunkSize`'s own maximum, so
+/// a correct peer never needs more than sixteen reads to fill one. This cap
+/// leaves four times that room, for a peer that answers in smaller pieces,
+/// and stops a peer that answers a byte or two at a time from holding the
+/// loop for as many reads as the range has bytes. When the cap is reached,
+/// `read_range` in `ferry-core`'s `session` module returns what it has read
+/// so far as a short result, for the caller to judge.
+pub const MAX_READS_PER_CHUNK: u32 = 64;

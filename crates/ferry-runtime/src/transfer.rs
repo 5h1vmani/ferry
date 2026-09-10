@@ -74,14 +74,6 @@ const REPORT_EVERY: Duration = Duration::from_secs(1);
 /// How many transfers may move at once.
 const MAX_WORKERS: usize = 4;
 
-/// How many reads one chunk may take before the peer counts as stalled.
-///
-/// One chunk is one mebibyte and one read may carry a whole mebibyte, so an
-/// ordinary peer answers a chunk in one read. Sixty four leaves room for a
-/// peer that answers in smaller pieces, and stops a peer that answers one
-/// byte at a time from holding a worker for ever.
-const MAX_READS_PER_CHUNK: u32 = 64;
-
 /// How long one chunk may take before the peer counts as stalled.
 const CHUNK_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -706,7 +698,7 @@ fn fetch_remote<S: Read + Write>(
     let mut out: Vec<u8> = Vec::new();
     while let Some(piece) = next_piece(out.len(), want) {
         reads += 1;
-        if reads > MAX_READS_PER_CHUNK || started.elapsed() > CHUNK_DEADLINE {
+        if reads > limits::MAX_READS_PER_CHUNK || started.elapsed() > CHUNK_DEADLINE {
             return Err(Fetch::Stalled);
         }
         let at = offset + u64::try_from(out.len()).unwrap_or(0);
