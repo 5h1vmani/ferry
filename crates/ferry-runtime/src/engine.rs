@@ -1757,7 +1757,9 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
 /// checked against what actually survived. A batch none of whose transfer
 /// ids name a surviving row is dropped, and its file removed: the same rule
 /// a single finished transfer already follows on its own, since its record
-/// is deleted the moment it becomes `Done`. See `load_saved_transfers`.
+/// is deleted the moment it becomes `Done`. A batch file that does not
+/// decode at all is removed the same way, rather than left on disk for
+/// every future start to skip again. See `load_saved_transfers`.
 fn load_saved_batches(shared: &Arc<Shared>) {
     let Ok(entries) = std::fs::read_dir(&shared.batches_dir) else {
         return;
@@ -1774,6 +1776,7 @@ fn load_saved_batches(shared: &Arc<Shared>) {
                 continue;
             };
             let Some(record) = batch::read_batch(&path) else {
+                to_remove.push(path);
                 continue;
             };
             let survives = record

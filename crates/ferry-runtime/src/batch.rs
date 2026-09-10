@@ -126,6 +126,14 @@ impl BatchRecord {
         };
         let started_unix_secs = i64::from_be_bytes(d.fixed::<8>().ok()?);
         let count = d.u32().ok()?;
+        // Refused before `Vec::with_capacity` reserves anything: `pull_folder`
+        // never queues more than `MAX_FOLDER_FILES` transfers into one batch,
+        // so a count above that is not a batch this crate ever wrote, and
+        // reserving space for it first would let a bad file's count alone
+        // decide how much memory this load takes.
+        if count as usize > crate::folder::MAX_FOLDER_FILES {
+            return None;
+        }
         let mut transfer_ids = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
         for _ in 0..count {
             transfer_ids.push(d.text(limits::MAX_PATH_LEN).ok()?.to_owned());
@@ -268,6 +276,31 @@ mod tests {
         let bytes = sample().encode();
         fs::write(&file, &bytes[..bytes.len() / 2]).expect("the test may write a short file");
         assert!(read_batch(&file).is_none());
+    }
+
+    #[test]
+    fn a_huge_transfer_count_is_refused_before_it_is_reserved() {
+        use ferry_core::wire::Encoder;
+
+        let dir = temp_dir("huge-count");
+        let file = dir.join("batch-5");
+        let mut e = Encoder::new();
+        e.u8(2); // FORMAT_VERSION
+        e.text("Internal storage/DCIM/Camera");
+        e.u8(0); // Origin::Manual
+        e.u8(0); // Direction::Pull
+        e.fixed(&1_700_000_000i64.to_be_bytes());
+        // Far more than `pull_folder` ever queues into one batch, and with
+        // none of the ids this count promises actually following. A build
+        // that reserved space for this count first, before checking it,
+        // would try to allocate room for billions of ids.
+        e.u32(u32::MAX);
+        fs::write(&file, e.finish()).expect("the hand-built file should write");
+
+        assert!(
+            read_batch(&file).is_none(),
+            "a count this large is refused outright, not allocated for"
+        );
     }
 
     #[test]

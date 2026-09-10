@@ -1638,6 +1638,49 @@ fn forget_removes_the_devices_batch_file() {
 }
 
 // ---------------------------------------------------------------------------
+// Batch D audit, D5 and D6: a bound on a stored batch's count, and cleanup
+// of one that does not decode.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_garbage_batch_file_is_removed_when_the_engine_starts() {
+    let side = build("Vamana");
+    side.engine.stop();
+
+    let batches_dir = side.data.path().join("batches");
+    // A name shaped like a real batch id, `<device key>-<session>`, so it is
+    // not skipped for that reason first; its contents are what do not
+    // decode.
+    let garbage_path = batches_dir.join("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef-garbage");
+    std::fs::write(&garbage_path, b"not a batch record")
+        .expect("the garbage file should write");
+    assert!(
+        garbage_path.exists(),
+        "the garbage file exists before the restart"
+    );
+
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        side.key.clone(),
+        side.data.path(),
+        side.shared.path(),
+        side.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build even with a garbage batch file present");
+
+    assert!(
+        !garbage_path.exists(),
+        "a batch file that does not decode is removed, not left for every future start to skip"
+    );
+    assert!(
+        engine.batches().is_empty(),
+        "the garbage file names no real batch"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Finding 7: no callback after stop returned.
 // ---------------------------------------------------------------------------
 
