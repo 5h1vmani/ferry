@@ -1,4 +1,4 @@
-//! One transfer, on one thread, until it is done or it fails.
+//! Transfers, on a small pool of threads, until each is done or fails.
 //!
 //! # Why the first pass builds the manifest
 //!
@@ -22,13 +22,26 @@
 //! first pass and a resume makes chunk verification fail, and the transfer
 //! stops. That is the designed behaviour, per `docs/protocol.md` section 9.
 //!
-//! A first pass that is interrupted has no manifest yet, so it starts again
-//! from the first byte the partial file does not already hold. The size and
-//! the modified time of the source are compared on every attempt; a source
-//! that changed makes the pass start from zero.
+//! A first pass writes a record of its own at every chunk boundary, holding
+//! the size of the source and how many whole chunks have arrived. So a first
+//! pass that is cut short is picked up where it stopped, even after the app
+//! has closed and opened again. Without that record the partial file was
+//! left in the person's folder and the whole file was fetched again.
+//!
+//! The size and the modified time of the source are compared on every
+//! attempt. A source that changed makes the pass start from zero.
+//!
+//! # Why there is a pool
+//!
+//! One thread per transfer meant that two hundred pulls made two hundred
+//! threads, all dialing at once. A pool of four keeps the link busy, because
+//! a transfer waits on the network and not on this machine. A transfer that
+//! is waiting out a backoff gives its worker back and sits in the queue with
+//! a time on it, so a queue of paused transfers never holds a worker asleep.
 
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -41,20 +54,36 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello};
 use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress};
 use ferry_core::tcp;
 
-use crate::engine::{Shared, dial_targets, mark_reachable};
+use crate::engine::{Shared, dial_targets, mark_reachable, notify, remove_record};
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
 use crate::guard::StopAware;
+use crate::notify::Change;
+use crate::record::{FirstPass, Record, read_record, write_record};
 use crate::state::{key_from_hex, lock};
 use crate::{FerryError, TransferState, Transport};
 
 /// The shortest wait before trying again.
-const BACKOFF_MIN: Duration = Duration::from_secs(1);
+pub(crate) const BACKOFF_MIN: Duration = Duration::from_secs(1);
 
 /// The longest wait before trying again.
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 /// How often the app is told a transfer moved.
 const REPORT_EVERY: Duration = Duration::from_secs(1);
+
+/// How many transfers may move at once.
+const MAX_WORKERS: usize = 4;
+
+/// How many reads one chunk may take before the peer counts as stalled.
+///
+/// One chunk is one mebibyte and one read may carry a whole mebibyte, so an
+/// ordinary peer answers a chunk in one read. Sixty four leaves room for a
+/// peer that answers in smaller pieces, and stops a peer that answers one
+/// byte at a time from holding a worker for ever.
+const MAX_READS_PER_CHUNK: u32 = 64;
+
+/// How long one chunk may take before the peer counts as stalled.
+const CHUNK_DEADLINE: Duration = Duration::from_secs(30);
 
 /// How one attempt ended.
 enum Outcome {
@@ -66,22 +95,57 @@ enum Outcome {
     Fatal(FerryError),
 }
 
-/// Start a thread for every transfer that is not finished.
+/// What a worker found at the front of the queue.
+enum Job {
+    /// This transfer may be attempted now.
+    Ready(String),
+    /// Nothing may be attempted for this long.
+    Wait(Duration),
+}
+
+/// Queue every transfer that is not finished, and drop the strays.
+///
+/// A record whose device is not paired any more is deleted rather than
+/// resumed. Such a record is what brought a forgotten device back: the
+/// transfer would dial it, and a name exchange would put it in the list
+/// again.
 pub(crate) fn resume_all(shared: &Arc<Shared>) {
-    let ids: Vec<String> = lock(&shared.state)
-        .transfers
-        .values()
-        .filter(|row| !matches!(row.state, TransferState::Done | TransferState::Failed))
-        .map(|row| row.id.clone())
-        .collect();
+    let (ids, strays) = {
+        let mut state = lock(&shared.state);
+        let mut ids: Vec<String> = Vec::new();
+        let mut strays: Vec<String> = Vec::new();
+        for row in state.transfers.values() {
+            let paired = key_from_hex(&row.device_key_hex)
+                .is_some_and(|key| state.peers.get(&key).is_some());
+            if paired {
+                if !matches!(row.state, TransferState::Done | TransferState::Failed) {
+                    ids.push(row.id.clone());
+                }
+            } else {
+                strays.push(row.id.clone());
+            }
+        }
+        for id in &strays {
+            state.transfers.remove(id);
+        }
+        (ids, strays)
+    };
+    for id in &strays {
+        // A record that will not go is left alone. The row is gone either
+        // way, so nothing dials that device in this run.
+        drop(remove_record(shared, id));
+    }
+    if !strays.is_empty() {
+        notify(shared, Change::Transfers);
+    }
     for id in ids {
         spawn(shared, &id);
     }
 }
 
-/// Start the thread that carries one transfer.
+/// Put one transfer in the queue, and start a worker if one is free.
 pub(crate) fn spawn(shared: &Arc<Shared>, id: &str) {
-    {
+    let start_worker = {
         let mut state = lock(&shared.state);
         let Some(row) = state.transfers.get_mut(id) else {
             return;
@@ -90,46 +154,128 @@ pub(crate) fn spawn(shared: &Arc<Shared>, id: &str) {
             return;
         }
         row.running = true;
+        row.attempt_after = None;
+        row.backoff = BACKOFF_MIN;
+        state.queue.push_back(id.to_owned());
+        let free = state.workers < MAX_WORKERS;
+        if free {
+            state.workers += 1;
+        }
+        free
+    };
+    // A worker resting out somebody else's backoff looks again.
+    shared.wake.notify_all();
+    if start_worker {
+        let shared_for_thread = Arc::clone(shared);
+        shared.keep(std::thread::spawn(move || worker(&shared_for_thread)));
     }
-    let shared_for_thread = Arc::clone(shared);
-    let id = id.to_owned();
-    shared.keep(std::thread::spawn(move || {
-        run(&shared_for_thread, &id);
-        lock(&shared_for_thread.state)
-            .transfers
-            .entry(id)
-            .and_modify(|row| row.running = false);
-    }));
 }
 
-/// Try, wait, try again, until the transfer is done or cannot continue.
-fn run(shared: &Arc<Shared>, id: &str) {
-    let mut backoff = BACKOFF_MIN;
+/// Take transfers from the queue until there is nothing left to do.
+fn worker(shared: &Arc<Shared>) {
     loop {
         if shared.stopping() {
+            let mut state = lock(&shared.state);
+            state.workers = state.workers.saturating_sub(1);
             return;
         }
-        match attempt(shared, id) {
-            Outcome::Done => {
-                finish(shared, id, TransferState::Done, None);
-                // The record's only job was to survive a restart, and there
-                // is nothing left to survive.
-                drop(std::fs::remove_file(shared.record_path(id)));
-                return;
-            }
-            Outcome::Fatal(error) => {
-                finish(shared, id, TransferState::Failed, Some(error));
-                return;
-            }
-            Outcome::Retry(error) => {
-                finish(shared, id, TransferState::Paused, Some(error));
-                if !shared.rest(backoff) {
-                    return;
-                }
-                backoff = (backoff * 2).min(BACKOFF_MAX);
+        // `next_job` gives this worker back when the queue holds nothing.
+        let Some(job) = next_job(shared) else {
+            return;
+        };
+        match job {
+            Job::Ready(id) => run_once(shared, &id),
+            Job::Wait(left) => {
+                shared.rest(left);
             }
         }
     }
+}
+
+/// The next transfer to attempt, or how long until one is ready.
+///
+/// Returns `None` when the queue is empty, and gives the worker back under
+/// the same lock, so a transfer queued a moment later starts a new one.
+fn next_job(shared: &Arc<Shared>) -> Option<Job> {
+    let now = Instant::now();
+    let mut state = lock(&shared.state);
+    let mut ready: Option<usize> = None;
+    let mut soonest: Option<Duration> = None;
+    for (index, id) in state.queue.iter().enumerate() {
+        // A transfer whose row has gone is taken out by attempting it: the
+        // attempt finds nothing and the queue is one shorter.
+        let left = state
+            .transfers
+            .get(id)
+            .and_then(|row| row.attempt_after)
+            .map(|at| at.saturating_duration_since(now));
+        match left {
+            None => {
+                ready = Some(index);
+                break;
+            }
+            Some(left) if left.is_zero() => {
+                ready = Some(index);
+                break;
+            }
+            Some(left) => soonest = Some(soonest.map_or(left, |best: Duration| best.min(left))),
+        }
+    }
+    if let Some(index) = ready {
+        return state.queue.remove(index).map(Job::Ready);
+    }
+    if let Some(left) = soonest {
+        return Some(Job::Wait(left));
+    }
+    state.workers = state.workers.saturating_sub(1);
+    None
+}
+
+/// One attempt, and what follows from how it ended.
+fn run_once(shared: &Arc<Shared>, id: &str) {
+    match attempt(shared, id) {
+        Outcome::Done => {
+            finish(shared, id, TransferState::Done, None);
+            // The record's only job was to survive a restart, and there is
+            // nothing left to survive.
+            drop(remove_record(shared, id));
+            clear_running(shared, id);
+        }
+        Outcome::Fatal(error) => {
+            finish(shared, id, TransferState::Failed, Some(error));
+            clear_running(shared, id);
+        }
+        Outcome::Retry(error) => {
+            finish(shared, id, TransferState::Paused, Some(error));
+            if shared.stopping() {
+                clear_running(shared, id);
+                return;
+            }
+            requeue(shared, id);
+        }
+    }
+}
+
+/// Put a transfer back in the queue, to be tried again after its backoff.
+fn requeue(shared: &Arc<Shared>, id: &str) {
+    let mut state = lock(&shared.state);
+    let Some(row) = state.transfers.get_mut(id) else {
+        return;
+    };
+    row.attempt_after = Some(Instant::now() + row.backoff);
+    row.backoff = (row.backoff * 2).min(BACKOFF_MAX);
+    state.queue.push_back(id.to_owned());
+}
+
+/// Note that no worker owns this transfer any more.
+fn clear_running(shared: &Arc<Shared>, id: &str) {
+    lock(&shared.state)
+        .transfers
+        .entry(id.to_owned())
+        .and_modify(|row| {
+            row.running = false;
+            row.attempt_after = None;
+        });
 }
 
 /// Write a transfer's new state down and tell the app.
@@ -148,8 +294,8 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
             row.bytes_done = row.bytes_total;
         }
     }
-    shared.listener.transfers_changed();
-    shared.listener.devices_changed();
+    notify(shared, Change::Transfers);
+    notify(shared, Change::Devices);
 }
 
 /// What one attempt needs to know, copied out from under the lock.
@@ -187,6 +333,11 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
         return Outcome::Fatal(failed("Runtime::TransferNotFound"));
     };
     let Some(fs) = shared.shared_fs() else {
+        // `stop` takes the shared root away. That is not a fault in the
+        // transfer, so it pauses rather than fails.
+        if shared.stopping() {
+            return Outcome::Retry(failed("Runtime::NotReachable"));
+        }
         return Outcome::Fatal(failed("Runtime::NotStarted"));
     };
 
@@ -208,9 +359,13 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
             row.state = TransferState::Active;
             row.transport = Some(via);
             row.error = None;
+            // A link that works starts the backoff again from the shortest
+            // wait, so a long transfer that drops now and then is not
+            // punished for having lived a long time.
+            row.backoff = BACKOFF_MIN;
         }
     }
-    shared.listener.transfers_changed();
+    notify(shared, Change::Transfers);
 
     let mut client = Client::new(stream);
     let record = match load_or_build(shared, id, &plan, fs.as_ref(), &mut client) {
@@ -244,13 +399,12 @@ fn load_or_build<S: Read + Write>(
     fs: &dyn FileOps,
     client: &mut Client<S>,
 ) -> Result<Transfer, Outcome> {
-    if let Ok(bytes) = std::fs::read(shared.record_path(id)) {
-        return match Transfer::decode(&bytes) {
-            Ok(record) => Ok(record),
-            Err(error) => Err(Outcome::Fatal(from_transfer(&error))),
-        };
+    match read_record(&shared.record_path(id)) {
+        Ok(Some(Record::Ready(record))) => Ok(record),
+        Ok(Some(Record::FirstPass(pass))) => first_pass(shared, id, plan, fs, client, Some(&pass)),
+        Ok(None) => first_pass(shared, id, plan, fs, client, None),
+        Err(error) => Err(Outcome::Fatal(error)),
     }
-    first_pass(shared, id, plan, fs, client)
 }
 
 /// Read the whole file once, building the manifest as the bytes arrive.
@@ -260,6 +414,7 @@ fn first_pass<S: Read + Write>(
     plan: &Plan,
     fs: &dyn FileOps,
     client: &mut Client<S>,
+    saved: Option<&FirstPass>,
 ) -> Result<Transfer, Outcome> {
     let entry = match client.stat(&plan.source) {
         Ok(entry) => entry,
@@ -285,11 +440,33 @@ fn first_pass<S: Read + Write>(
     let temporary = temp_path(&plan.destination, &plan.suffix).map_err(Outcome::Fatal)?;
     ensure_parents(fs, &plan.destination).map_err(|e| Outcome::Fatal(from_op(e)))?;
     let chunk = ChunkSize::one_mebibyte();
-    let start =
-        start_offset(fs, &temporary, chunk, changed).map_err(|e| Outcome::Fatal(from_op(e)))?;
+    // A record from an earlier run says how much was hashed, and no more of
+    // the partial file than that is believed.
+    let verified = if changed {
+        None
+    } else {
+        saved.map(FirstPass::bytes_done)
+    };
+    let start = start_offset(fs, &temporary, chunk, changed, verified)
+        .map_err(|e| Outcome::Fatal(from_op(e)))?;
 
-    let mut builder = ManifestBuilder::new(chunk);
-    rehash_local(fs, &temporary, chunk, start, &mut builder)
+    let mut pass = Pass {
+        record: shared.record_path(id),
+        state: FirstPass {
+            source: plan.source.clone(),
+            destination: plan.destination.clone(),
+            source_size: size,
+            source_mtime: entry.modified_unix_secs,
+            chunk_size: chunk.get(),
+            chunks_done: chunks_in(start, chunk),
+        },
+        builder: ManifestBuilder::new(chunk),
+    };
+    // The record goes down before the first byte is asked for. A pass with
+    // no record leaves a partial file that nothing knows about.
+    write_record(&pass.record, &Record::FirstPass(pass.state.clone())).map_err(Outcome::Fatal)?;
+
+    rehash_local(fs, &temporary, chunk, start, &mut pass.builder)
         .map_err(|e| Outcome::Fatal(from_op(e)))?;
     let span = Span {
         chunk,
@@ -297,10 +474,10 @@ fn first_pass<S: Read + Write>(
         size,
         temporary: temporary.clone(),
     };
-    fetch_rest(shared, id, plan, fs, client, &span, &mut builder)?;
+    fetch_rest(shared, id, plan, fs, client, &span, &mut pass)?;
 
     let record = Transfer::new(
-        builder.finish(),
+        pass.builder.finish(),
         plan.source.clone(),
         plan.destination.clone(),
     )
@@ -310,9 +487,24 @@ fn first_pass<S: Read + Write>(
         .map_err(|e| Outcome::Fatal(from_transfer(&e)))?;
     fs.rename(&temporary, &landing)
         .map_err(|e| Outcome::Fatal(from_op(e)))?;
-    std::fs::write(shared.record_path(id), record.encode())
-        .map_err(|_| Outcome::Fatal(failed("TransferError::Local")))?;
+    write_record(&shared.record_path(id), &Record::Ready(record.clone()))
+        .map_err(Outcome::Fatal)?;
     Ok(record)
+}
+
+/// How many whole chunks a byte count holds.
+fn chunks_in(bytes: u64, chunk: ChunkSize) -> u32 {
+    u32::try_from(bytes / chunk.as_u64()).unwrap_or(u32::MAX)
+}
+
+/// Everything the first pass writes to as it runs.
+struct Pass {
+    /// Where this transfer's record lives.
+    record: PathBuf,
+    /// The record as it stands, rewritten at every chunk boundary.
+    state: FirstPass,
+    /// The manifest being built out of the bytes as they arrive.
+    builder: ManifestBuilder,
 }
 
 /// Where the first pass writes, and how far it has to go.
@@ -335,7 +527,7 @@ fn fetch_rest<S: Read + Write>(
     fs: &dyn FileOps,
     client: &mut Client<S>,
     span: &Span,
-    builder: &mut ManifestBuilder,
+    pass: &mut Pass,
 ) -> Result<(), Outcome> {
     let mut reporter = Reporter::new(shared, id, &plan.device_key_hex);
     let mut offset = span.start;
@@ -350,7 +542,12 @@ fn fetch_rest<S: Read + Write>(
             .unwrap_or(span.chunk.get());
         let bytes = match fetch_remote(client, &plan.source, offset, want) {
             Ok(bytes) => bytes,
-            Err(error) => return Err(classify_rpc(&error)),
+            Err(Fetch::Rpc(error)) => return Err(classify_rpc(&error)),
+            // A peer that answers a chunk in crumbs is not answering. The
+            // attempt pauses and the backoff decides when to try again.
+            Err(Fetch::Stalled) => {
+                return Err(Outcome::Retry(failed("TransferError::ShortRead")));
+            }
         };
         if bytes.len() != usize::try_from(want).unwrap_or(usize::MAX) {
             // The device holds less of the file than it said it holds.
@@ -358,8 +555,13 @@ fn fetch_rest<S: Read + Write>(
         }
         write_all_local(fs, &span.temporary, offset, &bytes)
             .map_err(|e| Outcome::Fatal(from_op(e)))?;
-        builder.push(&bytes);
+        pass.builder.push(&bytes);
         offset += u64::from(want);
+        // The record is rewritten at every chunk boundary, so a first pass
+        // that stops here starts again from this point and not from zero.
+        pass.state.chunks_done = chunks_in(offset, span.chunk);
+        write_record(&pass.record, &Record::FirstPass(pass.state.clone()))
+            .map_err(Outcome::Fatal)?;
         reporter.moved(offset, span.size);
         if shared.stopping() {
             return Err(Outcome::Retry(failed("Runtime::NotReachable")));
@@ -427,23 +629,28 @@ fn temp_path(destination: &RemotePath, suffix: &str) -> Result<RemotePath, Ferry
 ///
 /// A link that died mid chunk leaves a part of one behind. Only whole chunks
 /// are kept, because `ManifestBuilder` needs every chunk but the last to be
-/// exactly one chunk long.
+/// exactly one chunk long. `verified` is what the stored record says was
+/// hashed, and nothing past it is believed, whatever the file holds.
 fn start_offset(
     fs: &dyn FileOps,
     temporary: &RemotePath,
     chunk: ChunkSize,
     changed: bool,
+    verified: Option<u64>,
 ) -> Result<u64, OpError> {
     let held = match fs.stat(temporary) {
         Ok(entry) => entry.size,
         Err(OpError::NotFound) => return Ok(0),
         Err(other) => return Err(other),
     };
-    let keep = if changed {
+    let mut keep = if changed {
         0
     } else {
         (held / chunk.as_u64()) * chunk.as_u64()
     };
+    if let Some(verified) = verified {
+        keep = keep.min(verified);
+    }
     if keep != held {
         fs.truncate(temporary, keep)?;
     }
@@ -473,17 +680,37 @@ fn rehash_local(
     Ok(())
 }
 
+/// Why one chunk did not arrive.
+enum Fetch {
+    /// The call itself failed.
+    Rpc(RpcError),
+    /// The peer answered, and answered, and never finished the chunk.
+    Stalled,
+}
+
 /// Read one range from the peer, in pieces one message can carry.
+///
+/// A peer that answers one byte per read would keep this loop going for a
+/// mebibyte of round trips, holding a worker with no progress worth the
+/// name. Two bounds end it: the number of reads one chunk may take, and the
+/// time one chunk may take. Whichever comes first ends the attempt, and the
+/// backoff decides when to try again.
 fn fetch_remote<S: Read + Write>(
     client: &mut Client<S>,
     path: &RemotePath,
     offset: u64,
     want: u32,
-) -> Result<Vec<u8>, RpcError> {
+) -> Result<Vec<u8>, Fetch> {
+    let started = Instant::now();
+    let mut reads: u32 = 0;
     let mut out: Vec<u8> = Vec::new();
     while let Some(piece) = next_piece(out.len(), want) {
+        reads += 1;
+        if reads > MAX_READS_PER_CHUNK || started.elapsed() > CHUNK_DEADLINE {
+            return Err(Fetch::Stalled);
+        }
         let at = offset + u64::try_from(out.len()).unwrap_or(0);
-        let got = client.read(path, at, piece)?;
+        let got = client.read(path, at, piece).map_err(Fetch::Rpc)?;
         if got.is_empty() {
             break;
         }
@@ -605,8 +832,8 @@ impl<'a> Reporter<'a> {
         if due {
             self.last_report = Instant::now();
             self.bytes_at_last_report = bytes_done;
-            self.shared.listener.transfers_changed();
-            self.shared.listener.devices_changed();
+            notify(self.shared, Change::Transfers);
+            notify(self.shared, Change::Devices);
         }
     }
 }

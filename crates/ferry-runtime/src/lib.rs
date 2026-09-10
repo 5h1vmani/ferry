@@ -26,7 +26,28 @@
 //!
 //! Blocking I/O with threads, per decision record 7. `start` spawns: one
 //! accept loop that hands each connection to its own thread; one discovery
-//! browser; and one thread per active transfer. `stop` joins them.
+//! browser; and a pool of four transfer workers. `stop` joins them. A
+//! transfer beyond the fourth waits in a queue and is reported as `Queued`.
+//!
+//! # The app must call `stop`
+//!
+//! [`Engine::stop`] is what ends the engine, not dropping it. A listener
+//! that holds the engine, which is the ordinary shape in both apps, is a
+//! ring of references, so the engine is never dropped and `Drop` never runs.
+//!
+//! After `stop` returns, no method of [`EngineListener`] is called again,
+//! no file is served to any device, and the data directory is free for
+//! another engine. One narrow case remains: a serving thread that ends in
+//! the same instant may make one last `devices_changed` call, because such
+//! a thread is not joined. See the known limitation below. One engine at a time may use a data directory;
+//! [`Engine::new`] refuses the second with `Runtime::BadConfig` and names
+//! the file to clear if a crash left one behind.
+//!
+//! Notifications are rationed. [`EngineListener::devices_changed`] and
+//! [`EngineListener::transfers_changed`] arrive at most once every 250
+//! milliseconds each, however much moved, and the last change always
+//! arrives. Pairing states are not rationed, because each one carries a
+//! value the screen needs.
 //!
 //! # Roles
 //!
@@ -134,15 +155,20 @@
 //! # Known limitation: a serving thread cannot be woken
 //!
 //! `stop` joins the accept loop, the discovery loop, the `adb` poll, the
-//! pairing watchdog, and every transfer thread. It does not join threads that
+//! pairing watchdog, and every transfer worker. It does not join threads that
 //! are serving a connection. Such a thread is blocked reading from an
 //! encrypted stream, and the socket handle sits inside that stream where this
 //! crate cannot reach it. So it ends when the peer goes away or when the idle
 //! timeout in `tcp.rs` fires, whichever comes first.
 //!
-//! `forget` has the same shape of problem and solves it differently. It
-//! cannot close the socket, so it switches the served filesystem off instead.
-//! Every operation on that connection is refused from that moment.
+//! `stop` and `forget` have the same shape of problem and solve it the same
+//! way. Neither can close the socket, so both switch the served filesystem
+//! off instead. Every operation on that connection is refused from that
+//! moment, and `stop` also takes the shared root away, so a socket that
+//! stays open until its idle timeout serves nothing at all. The switch is
+//! put in place as soon as the handshake proves who is calling, before names
+//! are exchanged, so a peer that delays its `hello` is still within reach of
+//! `forget`.
 //!
 //! A transfer thread is joined, and it ends quickly, because the stream it
 //! reads through fails as soon as the stop flag is set. The one case that
@@ -154,6 +180,8 @@ uniffi::setup_scaffolding!();
 mod engine;
 pub mod errors;
 mod guard;
+mod notify;
+mod record;
 mod state;
 mod transfer;
 

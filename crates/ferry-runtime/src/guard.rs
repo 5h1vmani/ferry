@@ -107,8 +107,14 @@ impl<S> StopAware<S> {
     }
 
     /// An error that says the engine asked this stream to stop.
+    ///
+    /// The kind is part of the contract. `Read::read_exact` and
+    /// `Write::write_all` treat `Interrupted` as "try again", so a stream
+    /// that reported that kind was asked again at once, for ever, and `stop`
+    /// waited on a thread spinning at full speed. `ConnectionAborted` is
+    /// never retried, so the call fails and the thread ends.
     fn stopping_error() -> io::Error {
-        io::Error::new(io::ErrorKind::Interrupted, "the engine is stopping")
+        io::Error::new(io::ErrorKind::ConnectionAborted, "the engine is stopping")
     }
 }
 

@@ -5,11 +5,11 @@
 //! needs, drops the lock, does the input and output, then takes the lock
 //! again to write the result down.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferry_core::noise::PublicKey;
 use ferry_core::path::RemotePath;
@@ -135,6 +135,12 @@ pub(crate) struct Pairing {
     pub(crate) deadline: Option<Instant>,
     /// The connection waiting for a confirm.
     pub(crate) held: Option<HeldPairing>,
+    /// True while a chosen candidate is being dialed.
+    ///
+    /// A handshake takes a moment, and until it finishes nothing is held. So
+    /// without this a second tap on a candidate would start a second
+    /// handshake, and the two would show two different codes.
+    pub(crate) dialing: bool,
     /// Candidates found so far, by identifier.
     pub(crate) candidates: BTreeMap<String, Candidate>,
 }
@@ -146,6 +152,7 @@ impl Pairing {
             shown: PairingState::Idle,
             deadline: None,
             held: None,
+            dialing: false,
             candidates: BTreeMap::new(),
         }
     }
@@ -153,9 +160,11 @@ impl Pairing {
     /// True while the engine is looking for a device or listing candidates.
     ///
     /// An inbound connection is offered the pairing handshake only in these
-    /// two states, and only while nothing is held yet.
+    /// two states, and only while nothing is held and nothing is being
+    /// dialed.
     pub(crate) fn is_open_to_pairing(&self) -> bool {
         self.held.is_none()
+            && !self.dialing
             && matches!(
                 self.shown,
                 PairingState::Waiting | PairingState::Found { .. }
@@ -214,8 +223,16 @@ pub(crate) struct TransferRow {
     pub(crate) source_size: Option<u64>,
     /// The modified time the source had when the first pass started.
     pub(crate) source_mtime: Option<i64>,
-    /// True once a thread is running for this transfer.
+    /// True once this transfer is queued for a worker or running on one.
     pub(crate) running: bool,
+    /// When the next attempt may start, while the transfer is waiting.
+    ///
+    /// A worker is a shared thing, so a transfer that is waiting out its
+    /// backoff sits in the queue with a time on it instead of holding a
+    /// worker asleep.
+    pub(crate) attempt_after: Option<Instant>,
+    /// How long the next wait after a failed attempt is.
+    pub(crate) backoff: Duration,
 }
 
 impl TransferRow {
@@ -252,6 +269,10 @@ pub(crate) struct State {
     pub(crate) pairing: Pairing,
     /// Every transfer, by identifier.
     pub(crate) transfers: BTreeMap<String, TransferRow>,
+    /// The transfers waiting for a worker, oldest first.
+    pub(crate) queue: VecDeque<String>,
+    /// How many transfer workers are running.
+    pub(crate) workers: usize,
     /// The `adb` forwards this engine opened.
     pub(crate) forwards: Vec<UsbForward>,
     /// Addresses discovery has seen, newest first.
@@ -273,6 +294,8 @@ impl State {
             live: BTreeMap::new(),
             pairing: Pairing::idle(),
             transfers: BTreeMap::new(),
+            queue: VecDeque::new(),
+            workers: 0,
             forwards: Vec::new(),
             discovered: Vec::new(),
         }

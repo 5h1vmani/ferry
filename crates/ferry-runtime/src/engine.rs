@@ -10,21 +10,23 @@ use std::time::{Duration, Instant};
 use ferry_core::adb::{Adb, find_adb};
 use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
-use ferry_core::noise::{PublicKey, StaticKey};
+use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::path::RemotePath;
 use ferry_core::peers::{Peer, PeerStore};
 use ferry_core::rpc::{MAX_NAME_LEN, exchange_hello, serve};
-use ferry_core::session::{SessionId, Transfer};
+use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
 use zeroize::Zeroize;
 
-use crate::errors::{bad_config, failed, from_noise, from_path, from_peer, from_tcp};
-use crate::guard::GuardedFs;
+use crate::errors::{bad_config, failed, from_noise, from_path, from_peer, from_rpc, from_tcp};
+use crate::guard::{GuardedFs, StopAware};
+use crate::notify::{Change, Notify};
+use crate::record::{Record, read_record};
 use crate::state::{
     Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward, hex_of,
     key_from_hex, lock, now_unix_secs,
 };
-use crate::transfer;
+use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
     Config, DeviceInfo, EngineListener, FerryError, KeyPair, PairingCandidate, PairingState,
     TransferInfo, TransferState, Transport,
@@ -52,10 +54,26 @@ const BROWSE_TICK: Duration = Duration::from_millis(400);
 /// How many addresses discovery keeps to try later.
 const MAX_DISCOVERED: usize = 16;
 
+/// How many candidates the pairing screen holds at once.
+///
+/// A person picks a device from a short list. A network with hundreds of
+/// answers, or one peer answering hundreds of times, must not turn that list
+/// into a value the app has to carry across the boundary again and again.
+const MAX_CANDIDATES: usize = 32;
+
+/// How long the name exchange after a confirm may take.
+///
+/// The other side may confirm slowly, or never. This bounds the wait, which
+/// matters because `stop` joins the thread that does the exchange.
+const FINISH_PAIRING_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How often the wait for the name exchange looks at the stop flag.
+const FINISH_PAIRING_TICK: Duration = Duration::from_millis(50);
+
 /// Everything the engine's threads share.
 pub(crate) struct Shared {
-    /// Where change notifications go.
-    pub(crate) listener: Arc<dyn EngineListener>,
+    /// Where change notifications go, while the engine is running.
+    pub(crate) notify: Notify,
     /// This device's long-lived key.
     pub(crate) key: StaticKey,
     /// The name sent in `hello`.
@@ -85,6 +103,14 @@ pub(crate) struct Shared {
     pub(crate) joins: Mutex<Vec<JoinHandle<()>>>,
     /// How long pairing runs before it gives up.
     pub(crate) pairing_timeout: Mutex<Duration>,
+    /// Held by whichever thread is writing the paired device list.
+    ///
+    /// Writing that list calls `fsync`, which is slow, so the state lock is
+    /// dropped for it. This takes its place: one writer at a time, so two
+    /// savers cannot write the file in one order and publish in the other.
+    pub(crate) peers_write: Mutex<()>,
+    /// The claim on the data folder, held for as long as the engine is.
+    pub(crate) dir_lock: DirLock,
 }
 
 impl Shared {
@@ -135,11 +161,154 @@ impl Shared {
             if !state.pairing.is_running() {
                 state.pairing.deadline = None;
                 state.pairing.held = None;
+                state.pairing.dialing = false;
                 state.pairing.candidates.clear();
             }
         }
-        self.listener.pairing_changed(next.clone());
+        self.notify.pairing(next);
     }
+}
+
+/// The claim on one data folder.
+///
+/// Two engines on one folder each keep the whole paired device list in
+/// memory and each write the whole file, so the second one to write puts
+/// back what the first one removed. A forgotten device would come back. One
+/// file, created with `create_new`, is what stops that: the second engine
+/// cannot create it, so it is refused before it opens anything.
+///
+/// The file holds the process identifier, so a person can see which program
+/// to close. A crash leaves the file behind, and the app is told which file
+/// to offer to clear.
+pub(crate) struct DirLock {
+    path: PathBuf,
+    held: AtomicBool,
+}
+
+impl DirLock {
+    /// Claim the folder, or report that somebody else holds it.
+    fn take(path: PathBuf) -> Result<Self, FerryError> {
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path);
+        match file {
+            Ok(mut file) => {
+                // The identifier is written for a person to read. Nothing
+                // depends on it, so a failed write is not a failed claim.
+                drop(std::io::Write::write_all(
+                    &mut file,
+                    format!("{}\n", std::process::id()).as_bytes(),
+                ));
+                Ok(Self {
+                    path,
+                    held: AtomicBool::new(true),
+                })
+            }
+            Err(_) => Err(bad_config(&format!(
+                "Another Ferry is using this folder, or a crash left {} behind.",
+                path.display()
+            ))),
+        }
+    }
+
+    /// Give the folder back. Doing this twice is safe.
+    pub(crate) fn release(&self) {
+        if self.held.swap(false, Ordering::SeqCst) {
+            // A file that is already gone is the outcome asked for.
+            drop(std::fs::remove_file(&self.path));
+        }
+    }
+}
+
+impl Drop for DirLock {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Note that something changed, and tell the app when its turn comes.
+///
+/// Every callback but a pairing state goes through here. Without it a
+/// hundred transfers moving at once would call the app on every chunk.
+pub(crate) fn notify(shared: &Arc<Shared>, change: Change) {
+    shared.notify.mark(change);
+    report_due(shared, false);
+    if shared.notify.claim_timer() && !shared.stopping() {
+        let shared_for_thread = Arc::clone(shared);
+        shared.keep(std::thread::spawn(move || notify_timer(&shared_for_thread)));
+    }
+}
+
+/// Tell the app about every kind whose turn has come.
+fn report_due(shared: &Arc<Shared>, force: bool) {
+    let due = shared.notify.take_due(force);
+    if due.is_empty() {
+        return;
+    }
+    if due.found {
+        let candidates = {
+            let state = lock(&shared.state);
+            // A list that nobody is picking from is not worth reporting.
+            state
+                .pairing
+                .is_open_to_pairing()
+                .then(|| state.candidate_list())
+        };
+        if let Some(candidates) = candidates {
+            shared.set_pairing(&PairingState::Found { candidates });
+        }
+    }
+    shared.notify.send(due);
+}
+
+/// Wait for the turn of whatever is held back, then report it.
+///
+/// One of these runs at a time. It ends when nothing is waiting, and it
+/// reports what is left before it ends, so the last state always reaches the
+/// app.
+fn notify_timer(shared: &Arc<Shared>) {
+    loop {
+        let Some(left) = shared.notify.next_turn() else {
+            return;
+        };
+        if !left.is_zero() {
+            shared.rest(left);
+        }
+        if shared.stopping() {
+            // `stop` joins this thread before it empties the listener slot,
+            // so this last report still reaches the app.
+            report_due(shared, true);
+            shared.notify.release_timer();
+            return;
+        }
+        report_due(shared, false);
+    }
+}
+
+/// Change the paired device list and write it out.
+///
+/// The state lock is not held across the write, because writing calls
+/// `fsync`. A peer that sends a new name would otherwise stop every other
+/// thread for as long as the disk takes.
+///
+/// # Errors
+///
+/// Returns a `PeerError` code when the list cannot be written. Nothing is
+/// published in that case, so memory and disk still agree.
+pub(crate) fn save_peers(
+    shared: &Arc<Shared>,
+    change: impl FnOnce(&mut PeerStore),
+) -> Result<(), FerryError> {
+    let writing = lock(&shared.peers_write);
+    let mut copy = lock(&shared.state).peers.clone();
+    change(&mut copy);
+    let written = copy.save();
+    if written.is_ok() {
+        lock(&shared.state).peers = copy;
+    }
+    drop(writing);
+    written.map_err(|e| from_peer(&e))
 }
 
 /// The engine both apps link. See the crate documentation for the contract.
@@ -160,12 +329,18 @@ impl Engine {
     /// list is read, and any transfer records left by an earlier run are
     /// loaded as paused. [`Engine::start`] then opens the network.
     ///
+    /// One engine at a time may use a data directory. The second one is
+    /// refused, because two engines each hold the whole paired device list
+    /// in memory and each write the whole file, so the second to write puts
+    /// back what the first removed.
+    ///
     /// # Errors
     ///
-    /// Returns `Runtime::BadConfig` when a directory cannot be made or the
-    /// device list cannot be read, `Runtime::NameTooLong` when the display
-    /// name is over 64 bytes, and a `NoiseError` code when the key is not
-    /// two lots of 32 bytes.
+    /// Returns `Runtime::BadConfig` when a directory cannot be made, the
+    /// device list cannot be read, or another engine is already using the
+    /// directory, `Runtime::NameTooLong` when the display name is over 64
+    /// bytes, and a `NoiseError` code when the key is not two lots of 32
+    /// bytes.
     #[uniffi::constructor]
     pub fn new(config: Config, listener: Box<dyn EngineListener>) -> Result<Arc<Self>, FerryError> {
         let mut config = config;
@@ -190,8 +365,11 @@ impl Engine {
         let peers = PeerStore::load(&data_dir.join("peers.bin"))
             .map_err(|_| bad_config("The paired device list could not be read."))?;
 
+        // Last, because nothing below it can fail and leave the claim behind.
+        let dir_lock = DirLock::take(data_dir.join("lock"))?;
+
         let shared = Arc::new(Shared {
-            listener: Arc::from(listener),
+            notify: Notify::new(listener),
             key,
             display_name: config.display_name.clone(),
             transfers_dir,
@@ -206,6 +384,8 @@ impl Engine {
             adb: find_adb().map(Adb::new),
             joins: Mutex::new(Vec::new()),
             pairing_timeout: Mutex::new(PAIRING_TIMEOUT),
+            peers_write: Mutex::new(()),
+            dir_lock,
         });
 
         load_saved_transfers(&shared);
@@ -266,6 +446,10 @@ impl Engine {
     }
 
     /// Stop everything and join every loop. Safe to call twice.
+    ///
+    /// After this returns the listener is never called again, no file is
+    /// served to any device, and the data directory is free for another
+    /// engine.
     pub fn stop(&self) {
         {
             let mut state = lock(&self.shared.state);
@@ -278,6 +462,20 @@ impl Engine {
         self.shared.stopping.store(true, Ordering::SeqCst);
         *lock(&self.shared.advertiser) = None;
         self.shared.wake.notify_all();
+
+        // A serving thread cannot be woken, so it is taken from instead:
+        // every switch goes off and the shared root goes away. A connection
+        // that is still open refuses everything from here on, exactly as it
+        // does after `forget`.
+        {
+            let mut state = lock(&self.shared.state);
+            for live in state.live.values_mut() {
+                for switch in live.serving.drain(..) {
+                    switch.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+        *lock(&self.shared.fs) = None;
 
         // The accept loop is blocked inside `accept`. A connection to our own
         // port is the only way to bring it back, since the listener has no
@@ -292,6 +490,10 @@ impl Engine {
 
         self.remove_forwards();
         *lock(&self.shared.net) = None;
+        // Every joined thread has finished, so this is the last moment a
+        // callback could have been made. The app is told nothing after it.
+        self.shared.notify.close();
+        self.shared.dir_lock.release();
     }
 
     /// Advertise over mDNS and accept connections, or stop doing both.
@@ -310,7 +512,7 @@ impl Engine {
             *lock(&self.shared.advertiser) = None;
         }
         lock(&self.shared.state).reachable = on;
-        self.shared.listener.devices_changed();
+        notify(&self.shared, Change::Devices);
     }
 
     /// Every paired device, with what is known about it right now.
@@ -326,16 +528,23 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Runtime::NotPaired` when no device has that key.
+    /// Returns `Runtime::NotPaired` when no device has that key, a
+    /// `PeerError` code when the device list cannot be written, and
+    /// `TransferError::Local` when a transfer record cannot be deleted. The
+    /// last one matters: a record left on disk would start the transfer
+    /// again on the next run.
     pub fn forget(&self, key_hex: String) -> Result<(), FerryError> {
         let key = key_from_hex(&key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+        if lock(&self.shared.state).peers.get(&key).is_none() {
+            return Err(failed("Runtime::NotPaired"));
+        }
+        save_peers(&self.shared, |store| {
+            drop(store.remove(&key));
+        })?;
+
         let gone: Vec<String>;
         {
             let mut state = lock(&self.shared.state);
-            if state.peers.remove(&key).is_none() {
-                return Err(failed("Runtime::NotPaired"));
-            }
-            state.peers.save().map_err(|e| from_peer(&e))?;
             if let Some(live) = state.live.remove(&key_hex) {
                 for switch in live.serving {
                     switch.store(false, Ordering::SeqCst);
@@ -351,13 +560,18 @@ impl Engine {
                 state.transfers.remove(id);
             }
         }
+        let mut trouble = None;
         for id in &gone {
-            // A record that is already gone is the outcome asked for.
-            drop(std::fs::remove_file(self.shared.record_path(id)));
+            if let Err(error) = remove_record(&self.shared, id) {
+                trouble = Some(error);
+            }
         }
-        self.shared.listener.devices_changed();
-        self.shared.listener.transfers_changed();
-        Ok(())
+        notify(&self.shared, Change::Devices);
+        notify(&self.shared, Change::Transfers);
+        match trouble {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Enter pairing. Times out after two minutes.
@@ -373,7 +587,7 @@ impl Engine {
             if state.pairing.is_running() {
                 let shown = state.pairing.shown.clone();
                 drop(state);
-                self.shared.listener.pairing_changed(shown);
+                self.shared.notify.pairing(&shown);
                 return;
             }
             state.pairing = Pairing::idle();
@@ -394,22 +608,27 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Runtime::NoCandidate` when that candidate is not listed, and
-    /// `Runtime::PairingBusy` when a code is already showing.
+    /// `Runtime::PairingBusy` when a code is already showing or another
+    /// candidate is already being dialed.
     pub fn pick_candidate(&self, id: String) -> Result<(), FerryError> {
         let addr = {
-            let state = lock(&self.shared.state);
+            let mut state = lock(&self.shared.state);
             if !state.pairing.is_running() {
                 return Err(failed("Runtime::NoCandidate"));
             }
             if !state.pairing.is_open_to_pairing() {
                 return Err(failed("Runtime::PairingBusy"));
             }
-            state
+            let addr = state
                 .pairing
                 .candidates
                 .get(&id)
                 .map(|c| c.addr)
-                .ok_or_else(|| failed("Runtime::NoCandidate"))?
+                .ok_or_else(|| failed("Runtime::NoCandidate"))?;
+            // One dial at a time, from this moment and not from the moment
+            // the handshake finishes. Two dials would show two codes.
+            state.pairing.dialing = true;
+            addr
         };
 
         let shared = Arc::clone(&self.shared);
@@ -442,7 +661,11 @@ impl Engine {
 
     /// Stop pairing and drop whatever it was holding.
     pub fn cancel_pairing(&self) {
-        lock(&self.shared.state).pairing.held = None;
+        {
+            let mut state = lock(&self.shared.state);
+            state.pairing.held = None;
+            state.pairing.dialing = false;
+        }
         self.shared.set_pairing(&PairingState::Idle);
     }
 
@@ -507,12 +730,14 @@ impl Engine {
                     source_size: None,
                     source_mtime: None,
                     running: false,
+                    attempt_after: None,
+                    backoff: BACKOFF_MIN,
                 },
             );
             id
         };
 
-        self.shared.listener.transfers_changed();
+        notify(&self.shared, Change::Transfers);
         transfer::spawn(&self.shared, &id);
         Ok(id)
     }
@@ -522,10 +747,27 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Runtime::TransferNotFound` when no transfer has that
-    /// identifier.
+    /// identifier, and `Runtime::NotPaired` when its device has been
+    /// forgotten. In the second case the transfer and its record are dropped
+    /// before the error is returned.
     pub fn retry(&self, transfer_id: String) -> Result<(), FerryError> {
         {
             let mut state = lock(&self.shared.state);
+            let row = state
+                .transfers
+                .get(&transfer_id)
+                .ok_or_else(|| failed("Runtime::TransferNotFound"))?;
+            // A transfer with no device behind it has nowhere to go, and a
+            // record left on disk is what brings a forgotten device back.
+            let paired = key_from_hex(&row.device_key_hex)
+                .is_some_and(|key| state.peers.get(&key).is_some());
+            if !paired {
+                state.transfers.remove(&transfer_id);
+                drop(state);
+                drop(remove_record(&self.shared, &transfer_id));
+                notify(&self.shared, Change::Transfers);
+                return Err(failed("Runtime::NotPaired"));
+            }
             let row = state
                 .transfers
                 .get_mut(&transfer_id)
@@ -539,7 +781,7 @@ impl Engine {
             row.state = TransferState::Queued;
             row.error = None;
         }
-        self.shared.listener.transfers_changed();
+        notify(&self.shared, Change::Transfers);
         transfer::spawn(&self.shared, &transfer_id);
         Ok(())
     }
@@ -548,11 +790,24 @@ impl Engine {
 impl Engine {
     /// Inject a Wi-Fi candidate, as if discovery had found it.
     ///
-    /// This is the seam the integration test uses, so pairing can be proved
-    /// without a working mDNS network. It is not exported to the apps.
+    /// The address is remembered the way a discovered address is, so a
+    /// transfer can dial it later. This is the seam the integration tests
+    /// use, so pairing and resuming can be proved without a working mDNS
+    /// network. It is not exported to the apps.
     #[doc(hidden)]
     pub fn offer_candidate(&self, addr: SocketAddr) {
+        remember_address(&self.shared, addr);
         add_candidate(&self.shared, &wifi_candidate(addr), addr);
+    }
+
+    /// How many transfer worker threads are running.
+    ///
+    /// The integration test needs it to prove that a hundred transfers do
+    /// not become a hundred threads. It is not exported to the apps.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn transfer_workers(&self) -> u32 {
+        u32::try_from(lock(&self.shared.state).workers).unwrap_or(u32::MAX)
     }
 
     /// The address this engine's listener is bound to, once it has started.
@@ -619,9 +874,28 @@ fn wake_the_listener(shared: &Shared) {
     drop(TcpStream::connect_timeout(&local, Duration::from_secs(2)));
 }
 
+/// Delete one transfer's record, and say so when it cannot be done.
+///
+/// A record that stays behind is not a small thing. Every start reads the
+/// records folder, so the transfer would come back from the dead.
+///
+/// # Errors
+///
+/// Returns `TransferError::Local` when the file is there and will not go.
+pub(crate) fn remove_record(shared: &Arc<Shared>, id: &str) -> Result<(), FerryError> {
+    match std::fs::remove_file(shared.record_path(id)) {
+        Ok(()) => Ok(()),
+        // A record that is already gone is the outcome asked for.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(failed("TransferError::Local")),
+    }
+}
+
 /// Read every transfer record left by an earlier run, as paused.
 ///
-/// This is what makes a transfer survive the app closing. See job 3.
+/// This is what makes a transfer survive the app closing. See job 3. A
+/// record written during a first pass comes back with the bytes that pass
+/// had already verified, so the file is not fetched again from the start.
 fn load_saved_transfers(shared: &Arc<Shared>) {
     let Ok(entries) = std::fs::read_dir(&shared.transfers_dir) else {
         return;
@@ -638,30 +912,53 @@ fn load_saved_transfers(shared: &Arc<Shared>) {
         let Some(key_hex) = id.split_once('-').map(|(key, _)| key.to_owned()) else {
             continue;
         };
-        let Ok(bytes) = std::fs::read(&path) else {
+        let Ok(Some(record)) = read_record(&path) else {
             continue;
         };
-        let Ok(record) = Transfer::decode(&bytes) else {
-            continue;
-        };
-        state.transfers.insert(
-            id.clone(),
-            TransferRow {
-                id,
-                device_key_hex: key_hex,
-                file_name: leaf_of(&record.destination),
-                source: record.source,
-                destination: record.destination,
-                bytes_total: record.manifest.length(),
-                bytes_done: 0,
-                state: TransferState::Paused,
-                transport: None,
-                error: None,
-                source_size: None,
-                source_mtime: None,
-                running: false,
-            },
-        );
+        state
+            .transfers
+            .insert(id.clone(), row_from_record(id, key_hex, &record));
+    }
+}
+
+/// The row one stored record becomes.
+fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow {
+    let (source, destination, bytes_total, bytes_done, source_size, source_mtime) = match record {
+        Record::FirstPass(pass) => (
+            pass.source.clone(),
+            pass.destination.clone(),
+            pass.source_size,
+            pass.bytes_done(),
+            Some(pass.source_size),
+            Some(pass.source_mtime),
+        ),
+        // A ready record's bytes are counted again by the resume itself,
+        // which reads the partial file back and hashes it.
+        Record::Ready(transfer) => (
+            transfer.source.clone(),
+            transfer.destination.clone(),
+            transfer.manifest.length(),
+            0,
+            None,
+            None,
+        ),
+    };
+    TransferRow {
+        id,
+        device_key_hex: key_hex,
+        file_name: leaf_of(&destination),
+        source,
+        destination,
+        bytes_total,
+        bytes_done,
+        state: TransferState::Paused,
+        transport: None,
+        error: None,
+        source_size,
+        source_mtime,
+        running: false,
+        attempt_after: None,
+        backoff: BACKOFF_MIN,
     }
 }
 
@@ -703,10 +1000,12 @@ fn handle_inbound(shared: &Arc<Shared>, pending: Pending) {
         return;
     }
 
-    let Some(peer) = choose_peer(shared, remote) else {
-        drop(pending);
-        return;
-    };
+    // With no stored peer there is nobody this connection could be. The
+    // handshake still runs, against a key nobody holds, so that a device
+    // with no peer and a device with one peer look the same from outside.
+    // Dropping the connection here instead would tell a stranger which of
+    // the two this device is.
+    let peer = choose_peer(shared, remote).unwrap_or_else(|| nobody(shared));
     // A refused handshake is the design working: whoever called does not
     // hold a key this device paired with. Nothing to report.
     if let Ok(connection) = pending.connect(&shared.key, &peer) {
@@ -714,10 +1013,22 @@ fn handle_inbound(shared: &Arc<Shared>, pending: Pending) {
     }
 }
 
+/// A key no caller can hold the other half of.
+///
+/// A fresh key pair is thrown away as soon as its public half is taken, so
+/// the handshake that follows cannot succeed. If the system gives no random
+/// bytes, this device's own public key is used instead, which no caller
+/// holds the private half of either.
+fn nobody(shared: &Arc<Shared>) -> PublicKey {
+    StaticKey::generate().map_or_else(|_| shared.key.public(), |key| key.public())
+}
+
 /// Run the pairing handshake as the side that accepted the connection.
 fn accept_pairing(shared: &Arc<Shared>, pending: Pending, remote: SocketAddr) {
     match pending.pair(&shared.key) {
-        Ok(connection) => hold_pairing(shared, connection, remote, true),
+        // A refused hold means another pairing is already showing its code.
+        // The person is looking at that one, so nothing is reported here.
+        Ok(connection) => drop(hold_pairing(shared, connection, remote, true)),
         Err(error) => report_pairing_failure(shared, &error),
     }
 }
@@ -738,25 +1049,40 @@ fn report_pairing_failure(shared: &Arc<Shared>, error: &ferry_core::tcp::TcpErro
 /// Dial one candidate and run the pairing handshake as the initiator.
 fn dial_for_pairing(shared: &Arc<Shared>, addr: SocketAddr) {
     match tcp::pair(addr, &shared.key) {
-        Ok(connection) => hold_pairing(shared, connection, addr, false),
-        Err(error) => report_pairing_failure(shared, &error),
+        Ok(connection) => {
+            // A refused hold means the pairing moved on while this dial ran.
+            // The connection then goes away with the value.
+            drop(hold_pairing(shared, connection, addr, false));
+        }
+        Err(error) => {
+            lock(&shared.state).pairing.dialing = false;
+            report_pairing_failure(shared, &error);
+        }
     }
 }
 
 /// Show the code and hold the connection until someone confirms.
+///
+/// # Errors
+///
+/// Returns `Runtime::PairingBusy` when something is already held, or when
+/// pairing has moved on. Nothing is shown in that case, because a second
+/// code would replace the one the person is comparing.
 fn hold_pairing(
     shared: &Arc<Shared>,
     connection: PairedConnection,
     addr: SocketAddr,
     accepted: bool,
-) {
+) -> Result<(), FerryError> {
     let code = connection.paired.code.to_string();
     {
         let mut state = lock(&shared.state);
-        if !state.pairing.is_running() {
-            // Pairing was cancelled while the handshake ran. Nothing is
-            // stored, so the connection goes away with this value.
-            return;
+        if !accepted {
+            // This dial is finished, whether or not its code is shown.
+            state.pairing.dialing = false;
+        }
+        if !state.pairing.is_open_to_pairing() {
+            return Err(failed("Runtime::PairingBusy"));
         }
         state.pairing.held = Some(HeldPairing {
             connection,
@@ -765,6 +1091,15 @@ fn hold_pairing(
         });
     }
     shared.set_pairing(&PairingState::Code { code });
+    Ok(())
+}
+
+/// Report a failed pairing, unless pairing has already moved on.
+fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
+    if !lock(&shared.state).pairing.is_running() {
+        return;
+    }
+    shared.set_pairing(&PairingState::Failed { error });
 }
 
 /// Exchange names, store the peer, and report the new device.
@@ -775,33 +1110,36 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
         accepted,
     } = held;
     let peer_key = connection.paired.peer;
-    let mut stream = connection.paired.stream;
 
-    let name = match exchange_hello(&mut stream, &shared.display_name) {
-        Ok(name) => name,
+    let (name, stream) = match hello_with_deadline(shared, connection.paired.stream) {
+        Ok(pair) => pair,
         Err(error) => {
-            shared.set_pairing(&PairingState::Failed {
-                error: crate::errors::from_rpc(&error),
-            });
+            fail_pairing(shared, error);
             return;
         }
     };
 
+    // The watchdog may have given up while the names crossed. A pairing that
+    // already reported Failed must not store a device or report Confirmed
+    // after it.
+    if !lock(&shared.state).pairing.is_running() {
+        return;
+    }
+
     let key_hex = hex_of(&peer_key);
-    let device = {
-        let mut state = lock(&shared.state);
-        state.peers.add(Peer {
+    if let Err(error) = save_peers(shared, |store| {
+        store.add(Peer {
             key: peer_key,
             name: name.clone(),
             paired_unix_secs: now_unix_secs(),
         });
-        if let Err(error) = state.peers.save() {
-            state.peers.remove(&peer_key);
-            let error = from_peer(&error);
-            drop(state);
-            shared.set_pairing(&PairingState::Failed { error });
-            return;
-        }
+    }) {
+        fail_pairing(shared, error);
+        return;
+    }
+
+    let device = {
+        let mut state = lock(&shared.state);
         let live = state.live_mut(&key_hex);
         live.last_addr = Some(addr);
         live.last_seen_unix_secs = Some(now_unix_secs());
@@ -809,13 +1147,14 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
     };
 
     let Some(device) = device else {
-        shared.set_pairing(&PairingState::Failed {
-            error: failed("Runtime::NotPaired"),
-        });
+        fail_pairing(shared, failed("Runtime::NotPaired"));
         return;
     };
+    if !lock(&shared.state).pairing.is_running() {
+        return;
+    }
     shared.set_pairing(&PairingState::Confirmed { device });
-    shared.listener.devices_changed();
+    notify(shared, Change::Devices);
 
     if accepted {
         // The side that accepted keeps serving on this stream. The side that
@@ -825,13 +1164,65 @@ fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
         // Names were exchanged a few lines above, so this serves the stream
         // as it stands. A second hello would sit waiting for one the other
         // side already sent.
+        let allowed = register_serving(shared, &key_hex, addr);
         serve_named_stream(
             shared,
             stream,
             peer_key,
             transport_for_inbound(shared, addr),
             name,
+            &allowed,
         );
+    }
+}
+
+/// Exchange names on another thread, and give up after a short wait.
+///
+/// The other device may confirm slowly, or never. Its stream cannot be woken
+/// from outside, so a name exchange that waits inside a read would hold this
+/// thread until the idle timeout in `tcp.rs`, five minutes away. `stop`
+/// joins this thread, so that was `stop`'s wait too. Running the exchange
+/// beside this thread bounds both: the wait ends on its own deadline, and at
+/// once when the engine stops.
+///
+/// The stream is wrapped so that the thread left behind ends quickly as
+/// well, instead of holding a socket for five minutes.
+///
+/// # Errors
+///
+/// Returns an `RpcError` code when the exchange fails, and
+/// `TcpError::Timeout` when it does not finish in time.
+fn hello_with_deadline(
+    shared: &Arc<Shared>,
+    stream: SecureStream,
+) -> Result<(String, StopAware<SecureStream>), FerryError> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let my_name = shared.display_name.clone();
+    let stopping = Arc::clone(&shared.stopping);
+    // Not joined. It ends when the exchange ends, or when the wrapper below
+    // fails the next read because the engine is stopping.
+    drop(std::thread::spawn(move || {
+        let mut stream = StopAware::new(stream, stopping);
+        let outcome = exchange_hello(&mut stream, &my_name).map(|name| (name, stream));
+        drop(sender.send(outcome));
+    }));
+
+    let deadline = Instant::now() + FINISH_PAIRING_DEADLINE;
+    loop {
+        match receiver.recv_timeout(FINISH_PAIRING_TICK) {
+            Ok(Ok(both)) => return Ok(both),
+            Ok(Err(error)) => return Err(from_rpc(&error)),
+            // The thread went away without an answer, which only a panic
+            // does. There is no name and no stream to carry on with.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(failed("FrameError::Io"));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if shared.stopping() || Instant::now() >= deadline {
+                    return Err(failed("TcpError::Timeout"));
+                }
+            }
+        }
     }
 }
 
@@ -853,7 +1244,17 @@ fn pairing_watchdog(shared: &Arc<Shared>) {
             return;
         }
     }
-    if lock(&shared.state).pairing.is_running() {
+    // The held connection is taken out under the same lock that reads the
+    // state, so a confirm that arrives a moment later finds nothing to
+    // confirm.
+    let running = {
+        let mut state = lock(&shared.state);
+        let running = state.pairing.is_running();
+        state.pairing.held = None;
+        state.pairing.dialing = false;
+        running
+    };
+    if running {
         shared.set_pairing(&PairingState::Failed {
             error: failed("Runtime::PairingTimeout"),
         });
@@ -895,14 +1296,31 @@ fn transport_for_inbound(shared: &Arc<Shared>, remote: SocketAddr) -> Transport 
     }
 }
 
+/// Put this connection's off switch where `forget` and `stop` can reach it.
+///
+/// This happens as soon as the handshake proves who is calling, and before
+/// the names are exchanged. A peer that finishes the handshake and then
+/// holds its `hello` back for five minutes would otherwise be out of reach:
+/// `forget` would find no switch to flip, and the connection would start
+/// serving files afterwards.
+///
+/// The switch starts off if the engine is already stopping, so a connection
+/// that arrives during `stop` serves nothing.
+fn register_serving(shared: &Arc<Shared>, key_hex: &str, addr: SocketAddr) -> Arc<AtomicBool> {
+    let allowed = Arc::new(AtomicBool::new(!shared.stopping()));
+    let mut state = lock(&shared.state);
+    let live = state.live_mut(key_hex);
+    live.last_addr = Some(addr);
+    live.serving.push(Arc::clone(&allowed));
+    allowed
+}
+
 /// Exchange names, then serve the shared root until the connection ends.
 fn serve_connection(shared: &Arc<Shared>, connection: Connection, peer: PublicKey) {
     let transport = transport_for_inbound(shared, connection.remote);
-    lock(&shared.state)
-        .live_mut(&hex_of(&peer))
-        .last_addr
-        .replace(connection.remote);
-    serve_stream(shared, connection.stream, peer, transport);
+    let key_hex = hex_of(&peer);
+    let allowed = register_serving(shared, &key_hex, connection.remote);
+    serve_stream(shared, connection.stream, peer, transport, &allowed);
 }
 
 /// Serve the shared root on one stream, and keep the device list honest.
@@ -911,11 +1329,13 @@ fn serve_stream(
     mut stream: impl std::io::Read + std::io::Write,
     peer: PublicKey,
     transport: Transport,
+    allowed: &Arc<AtomicBool>,
 ) {
     let Ok(name) = exchange_hello(&mut stream, &shared.display_name) else {
+        release_serving(shared, &hex_of(&peer), allowed);
         return;
     };
-    serve_named_stream(shared, stream, peer, transport, name);
+    serve_named_stream(shared, stream, peer, transport, name, allowed);
 }
 
 /// Serve the shared root on a stream whose names were already exchanged.
@@ -925,46 +1345,60 @@ fn serve_named_stream(
     peer: PublicKey,
     transport: Transport,
     name: String,
+    allowed: &Arc<AtomicBool>,
 ) {
     let key_hex = hex_of(&peer);
-    let allowed = Arc::new(AtomicBool::new(true));
-    {
+    let renamed = {
         let mut state = lock(&shared.state);
-        // A name the peer changed since pairing is stored, so the list stays
-        // current without another pairing.
-        if let Some(stored) = state.peers.get(&peer)
-            && stored.name != name
-        {
-            let paired_unix_secs = stored.paired_unix_secs;
-            state.peers.add(Peer {
-                key: peer,
-                name,
-                paired_unix_secs,
-            });
-            drop(state.peers.save());
-        }
+        // The handshake proved that the caller held a paired key at that
+        // moment. `forget` may have run in the short gap before this
+        // connection's switch was registered, and a switch registered after
+        // that starts on. So the list is asked once more here, now that the
+        // switch is in place for any later `forget` to flip.
+        let Some(stored) = state.peers.get(&peer) else {
+            drop(state);
+            release_serving(shared, &key_hex, allowed);
+            return;
+        };
+        let name_changed = stored.name != name;
+        let paired_unix_secs = stored.paired_unix_secs;
         let live = state.live_mut(&key_hex);
         live.reachable_via = Some(transport);
-        live.serving.push(Arc::clone(&allowed));
+        // A name the peer changed since pairing is stored, so the list stays
+        // current without another pairing.
+        name_changed.then_some(Peer {
+            key: peer,
+            name,
+            paired_unix_secs,
+        })
+    };
+    if let Some(peer) = renamed {
+        // Outside the lock. Writing the list calls `fsync`, and any peer can
+        // ask for this by sending a name of its own choosing.
+        drop(save_peers(shared, |store| store.add(peer)));
     }
-    shared.listener.devices_changed();
+    notify(shared, Change::Devices);
 
     let Some(fs) = shared.shared_fs() else {
+        release_serving(shared, &key_hex, allowed);
         return;
     };
-    let guarded = GuardedFs::new(fs, Arc::clone(&allowed));
+    let guarded = GuardedFs::new(fs, Arc::clone(allowed));
     // A connection that ends is the ordinary outcome. The error, if any, has
     // nowhere useful to go: the person did not ask for this connection.
     drop(serve(&mut stream, &guarded));
 
-    {
-        let mut state = lock(&shared.state);
-        let live = state.live_mut(&key_hex);
-        live.reachable_via = None;
-        live.last_seen_unix_secs = Some(now_unix_secs());
-        live.serving.retain(|switch| !Arc::ptr_eq(switch, &allowed));
-    }
-    shared.listener.devices_changed();
+    release_serving(shared, &key_hex, allowed);
+    notify(shared, Change::Devices);
+}
+
+/// Take this connection's switch back once it has finished.
+fn release_serving(shared: &Arc<Shared>, key_hex: &str, allowed: &Arc<AtomicBool>) {
+    let mut state = lock(&shared.state);
+    let live = state.live_mut(key_hex);
+    live.reachable_via = None;
+    live.last_seen_unix_secs = Some(now_unix_secs());
+    live.serving.retain(|switch| !Arc::ptr_eq(switch, allowed));
 }
 
 /// Watch mDNS for the whole session.
@@ -992,14 +1426,17 @@ fn browse_loop(shared: &Arc<Shared>) {
     }
 }
 
+/// Keep an address worth dialing later, newest first.
+fn remember_address(shared: &Arc<Shared>, addr: SocketAddr) {
+    let mut state = lock(&shared.state);
+    state.discovered.retain(|known| *known != addr);
+    state.discovered.insert(0, addr);
+    state.discovered.truncate(MAX_DISCOVERED);
+}
+
 /// Record an address discovery found, and offer it while pairing.
 fn on_discovered(shared: &Arc<Shared>, instance: &str, addr: SocketAddr) {
-    {
-        let mut state = lock(&shared.state);
-        state.discovered.retain(|known| *known != addr);
-        state.discovered.insert(0, addr);
-        state.discovered.truncate(MAX_DISCOVERED);
-    }
+    remember_address(shared, addr);
     let shown = PairingCandidate {
         id: format!("wifi:{instance}"),
         transport: Transport::Wifi,
@@ -1026,10 +1463,19 @@ fn last_four(text: &str) -> String {
 }
 
 /// Put one candidate in front of the person, if pairing is still open.
+///
+/// The list is capped, and the change is reported at most once a second. The
+/// whole list crosses the boundary with every report, so a network that
+/// answers a thousand times must not become a thousand reports of a thousand
+/// candidates each.
 fn add_candidate(shared: &Arc<Shared>, shown: &PairingCandidate, addr: SocketAddr) {
-    let candidates = {
+    {
         let mut state = lock(&shared.state);
         if !state.pairing.is_open_to_pairing() {
+            return;
+        }
+        let known = state.pairing.candidates.contains_key(&shown.id);
+        if !known && state.pairing.candidates.len() >= MAX_CANDIDATES {
             return;
         }
         state.pairing.candidates.insert(
@@ -1039,9 +1485,8 @@ fn add_candidate(shared: &Arc<Shared>, shown: &PairingCandidate, addr: SocketAdd
                 addr,
             },
         );
-        state.candidate_list()
-    };
-    shared.set_pairing(&PairingState::Found { candidates });
+    }
+    notify(shared, Change::Found);
 }
 
 /// Ask `adb` what is plugged in, every three seconds.

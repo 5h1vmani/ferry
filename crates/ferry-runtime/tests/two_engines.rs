@@ -1,12 +1,29 @@
 //! Two engines in one process, pairing and moving a file.
 //!
-//! This is the acceptance gate for the engine. It runs the phone's side and
-//! the Mac's side of every step: pairing with a code both sides show, a
-//! device list that survives the pairing, a real file pulled across a real
-//! socket, and a stop that returns quickly.
+//! This is the happy path of the acceptance gate. It runs the phone's side
+//! and the Mac's side of every step that works: pairing with a code both
+//! sides show, a device list that survives the pairing, a real file pulled
+//! across a real socket, a forget that clears the device and its records,
+//! and a stop that returns quickly. It also proves the three refusals the
+//! app relies on: an unknown transfer, an unpaired device, and a path that
+//! climbs out of the shared root.
 //!
 //! No test sleeps and hopes. Every wait is a condition variable with a
 //! generous deadline, so a slow machine makes the test slower, never flaky.
+//!
+//! # What this file does not cover
+//!
+//! Everything that goes wrong lives in `engine_paths.rs`: a stop in the
+//! middle of a transfer, a confirm on one side only, a forget while a peer
+//! is connected, a first pass cut short and resumed after a restart, a
+//! candidate picked twice, a confirm after the pairing watchdog gave up, a
+//! link that breaks and comes back, a device that is not reachable, and a
+//! second engine on one data folder. That file also builds peers by hand,
+//! which is the only way to test a peer that misbehaves.
+//!
+//! Neither file covers USB, which needs `adb`, a cable and a phone, nor real
+//! mDNS, because a test machine may sit on a network that refuses multicast.
+//! Both are in `docs/manual-checks.md`.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex};
