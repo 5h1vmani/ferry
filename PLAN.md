@@ -273,16 +273,33 @@ Costs that do not apply here:
 - Google Play Console, 25 US dollars once. Only needed for a Play Store
   listing.
 
-One possible cost. If a free Apple personal team cannot provision App Group
-and File Provider entitlements, the File Provider route needs the paid Apple
-program. The order 0 spike answers this. If the answer is no, the WebDAV route
-is free and still gives a Finder mount.
+One known cost, and it arrives late.
+
+Apple's capability table marks **FileProvider Testing Mode** and **FSKit
+Module** as unavailable to a free personal team. Both need the paid Apple
+Developer Program. **App Groups** is free, which contradicts most guides
+written before 2025.
+
+So phase 4 costs 99 US dollars a year, and everything up to it costs nothing.
+The WebDAV Finder mount in phase 2 needs no entitlement at all.
+
+A free personal team also issues a real Apple Development certificate that
+lasts about a year and renews itself. That is what phase 1 needs for Keychain
+key storage, so no payment is required for that either.
+
+Source: <https://developer.apple.com/help/account/reference/supported-capabilities-macos>,
+read 10 September 2026.
 
 ## 8. Open questions
 
 1. Can a free Apple personal team provision App Group and File Provider
-   entitlements on macOS 26? Still open. It needs an Apple ID signed into
-   Xcode, which needs a password. It no longer blocks phase 2.
+   entitlements on macOS 26? Answered from Apple's own capability table, read
+   on 10 September 2026. App Groups is free. FileProvider Testing Mode is not,
+   and neither is FSKit Module. So phase 4 costs 99 US dollars a year, and
+   nothing before it does. A free personal team also gets a real Apple
+   Development certificate that lasts about a year, which is what phase 1 needs
+   for key storage.
+   <https://developer.apple.com/help/account/reference/supported-capabilities-macos>
 2. Does macOS mount a WebDAV server well enough to browse a phone? Answered.
    Yes. It mounts, it browses, and it fetches ranges rather than whole files.
    It is chatty, it writes `.DS_Store`, and it sends open-ended ranges. All

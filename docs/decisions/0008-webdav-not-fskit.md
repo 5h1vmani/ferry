@@ -67,9 +67,16 @@ Revisit FSKit if someone publishes a working network-backed FSKit filesystem,
 or if Apple confirms a fix. The technology is right for this job. It is the
 current state of it that is not.
 
-## What is still unknown
+## A second reason, found later
 
-Whether a free Apple personal team can provision the FSKit entitlement. The
-entitlement is `com.apple.developer.fskit.fsmodule`, and it does not appear on
-Apple's list of capabilities that need a request. That does not settle the free
-team question. It does not matter until FSKit is worth revisiting.
+A free Apple personal team cannot use FSKit at all.
+
+Apple's own capability table lists **FSKit Module** with no mark in the free
+"Apple Developer" column. It is available only to the paid Apple Developer
+Program and to Developer ID.
+<https://developer.apple.com/help/account/reference/supported-capabilities-macos>,
+read 10 September 2026.
+
+So FSKit costs 99 US dollars a year before it can be tried at all. That was not
+known when this record was written, and it makes the decision easier rather
+than harder.
