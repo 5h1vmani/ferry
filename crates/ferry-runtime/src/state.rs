@@ -18,8 +18,8 @@ use ferry_core::peers::PeerStore;
 use ferry_core::tcp::PairedConnection;
 
 use crate::{
-    DeviceInfo, DeviceKind, Direction, FerryError, PairingCandidate, PairingState, TransferState,
-    Transport,
+    DeviceInfo, DeviceKind, Direction, FerryError, Origin, PairingCandidate, PairingState,
+    TransferState, Transport,
 };
 
 /// How long a Wi-Fi success still counts in `available_transports`, once no
@@ -264,6 +264,8 @@ pub(crate) struct TransferRow {
     /// This transfer's own bytes per second, over the last two seconds.
     /// Meaningless once the state is not `Active`; `info` hides it then.
     pub(crate) speed_bytes_per_sec: Option<u64>,
+    /// Which batch this transfer belongs to, if `pull_folder` created it.
+    pub(crate) batch_id: Option<String>,
 }
 
 /// The chunk count a size implies, and how many of those chunks are
@@ -306,8 +308,117 @@ impl TransferRow {
                 .flatten(),
             chunks_total,
             chunks_verified,
+            batch_id: self.batch_id.clone(),
         }
     }
+}
+
+/// One batch, as the engine tracks it.
+///
+/// Only what does not change once the batch is made lives here: see
+/// `batch.rs` for how this is stored. Aggregates — files done, bytes,
+/// state, speed, and ended — are computed fresh from the live transfer rows
+/// every time the app asks. See [`BatchRow::info`].
+#[derive(Debug, Clone)]
+pub(crate) struct BatchRow {
+    /// The identifier the app was given. It also names the record file, and
+    /// carries the device key as the text before its first `-`, the same
+    /// way a transfer id does.
+    pub(crate) id: String,
+    /// Which device the files come from.
+    pub(crate) device_key_hex: String,
+    /// The remote path as given to `pull_folder`.
+    pub(crate) label: String,
+    /// Which way every transfer in this batch moves its file.
+    pub(crate) direction: Direction,
+    /// Why this batch exists.
+    pub(crate) origin: Origin,
+    /// When `pull_folder` created this batch.
+    pub(crate) started_unix_secs: i64,
+    /// The transfer ids this batch covers, in the order they were queued.
+    pub(crate) transfer_ids: Vec<String>,
+}
+
+impl BatchRow {
+    /// The view of this batch that crosses the boundary.
+    ///
+    /// `files_total` is the length of `transfer_ids` itself: it is a stored
+    /// fact, not an aggregate, so it never shrinks when a finished
+    /// transfer's row does not survive a restart. Every other aggregate
+    /// field is computed only from the transfer ids that currently name a
+    /// row in `transfers`.
+    pub(crate) fn info(&self, transfers: &BTreeMap<String, TransferRow>) -> crate::BatchInfo {
+        let rows: Vec<&TransferRow> = self
+            .transfer_ids
+            .iter()
+            .filter_map(|id| transfers.get(id))
+            .collect();
+        let files_total = u32::try_from(self.transfer_ids.len()).unwrap_or(u32::MAX);
+        let files_done = u32::try_from(
+            rows.iter()
+                .filter(|row| row.state == TransferState::Done)
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        let bytes_total = rows.iter().map(|row| row.bytes_total).sum();
+        let bytes_done = rows.iter().map(|row| row.bytes_done).sum();
+        let state = worst_batch_state(&rows);
+        let speed_bytes_per_sec = rows
+            .iter()
+            .any(|row| row.state == TransferState::Active)
+            .then(|| {
+                rows.iter()
+                    .filter(|row| row.state == TransferState::Active)
+                    .filter_map(|row| row.speed_bytes_per_sec)
+                    .sum()
+            });
+        let still_moving = rows.iter().any(|row| {
+            matches!(
+                row.state,
+                TransferState::Queued | TransferState::Active | TransferState::Paused
+            )
+        });
+        let ended_unix_secs = if still_moving {
+            None
+        } else {
+            rows.iter()
+                .filter_map(|row| row.ended_unix_secs)
+                .max()
+                .or(Some(self.started_unix_secs))
+        };
+        crate::BatchInfo {
+            id: self.id.clone(),
+            device_key_hex: self.device_key_hex.clone(),
+            label: self.label.clone(),
+            files_total,
+            files_done,
+            bytes_total,
+            bytes_done,
+            state,
+            direction: self.direction,
+            origin: self.origin,
+            speed_bytes_per_sec,
+            started_unix_secs: self.started_unix_secs,
+            ended_unix_secs,
+        }
+    }
+}
+
+/// The worst state among a batch's transfers: `Failed`, then `Paused`, then
+/// `Active`, then `Queued`, then `Done`. No transfers at all is `Done`, the
+/// same answer a batch with zero files gives for the same reason.
+fn worst_batch_state(rows: &[&TransferRow]) -> TransferState {
+    for candidate in [
+        TransferState::Failed,
+        TransferState::Paused,
+        TransferState::Active,
+        TransferState::Queued,
+    ] {
+        if rows.iter().any(|row| row.state == candidate) {
+            return candidate;
+        }
+    }
+    TransferState::Done
 }
 
 /// Everything the engine knows, behind one mutex.
@@ -328,6 +439,8 @@ pub(crate) struct State {
     pub(crate) pairing: Pairing,
     /// Every transfer, by identifier.
     pub(crate) transfers: BTreeMap<String, TransferRow>,
+    /// Every batch, by identifier.
+    pub(crate) batches: BTreeMap<String, BatchRow>,
     /// The transfers waiting for a worker, oldest first.
     pub(crate) queue: VecDeque<String>,
     /// How many transfer workers are running.
@@ -353,6 +466,7 @@ impl State {
             live: BTreeMap::new(),
             pairing: Pairing::idle(),
             transfers: BTreeMap::new(),
+            batches: BTreeMap::new(),
             queue: VecDeque::new(),
             workers: 0,
             forwards: Vec::new(),

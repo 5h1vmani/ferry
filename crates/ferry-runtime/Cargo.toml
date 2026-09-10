@@ -27,3 +27,7 @@ zeroize = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# Only for the recursive lister's unit tests, which walk MemoryFs so the two
+# bounds in docs/engine-contract.md, batch D, item 2, can be proven without a
+# network. See crates/ferry-runtime/src/folder.rs.
+ferry-core = { path = "../ferry-core", features = ["testing"] }

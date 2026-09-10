@@ -326,6 +326,11 @@
       "why": "{detail}",
       "todo": "Check the settings."
     },
+    "Runtime::FolderTooLarge": {
+      "stopped": "The folder was not copied.",
+      "why": "It holds more than 10,000 files, or is nested more than 32 folders deep.",
+      "todo": "Copy a smaller folder, or open it and copy fewer files at a time."
+    },
     "Runtime::NameTooLong": {
       "stopped": "The name was refused.",
       "why": "It is longer than 64 bytes.",

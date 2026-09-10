@@ -43,9 +43,9 @@ use crate::{Direction, FerryError};
 
 /// The version byte every record starts with.
 ///
-/// Version 1 held no start time, end time, or direction. A version 1 record
-/// still loads: see [`decode_meta`].
-const FORMAT_VERSION: u8 = 2;
+/// Version 1 held no start time, end time, or direction. Version 2 added
+/// those three but held no batch id. Both still load: see [`decode_meta`].
+const FORMAT_VERSION: u8 = 3;
 
 /// The stage byte of a record written during the first pass.
 const STAGE_FIRST_PASS: u8 = 0;
@@ -95,6 +95,10 @@ pub(crate) struct Meta {
     pub(crate) ended_unix_secs: Option<i64>,
     /// Which way the transfer moves the file.
     pub(crate) direction: Direction,
+    /// Which batch this transfer belongs to, if `pull_folder` created it.
+    /// A version 1 or version 2 record held no field for this and loads
+    /// with `None`.
+    pub(crate) batch_id: Option<String>,
 }
 
 /// One transfer record, in whichever stage it is.
@@ -210,17 +214,28 @@ fn encode_meta(e: &mut Encoder, meta: &Meta) {
         Direction::Pull => 0,
         Direction::Push => 1,
     });
+    match &meta.batch_id {
+        Some(id) => {
+            e.u8(1);
+            e.text(id);
+        }
+        None => {
+            e.u8(0);
+        }
+    }
 }
 
-/// Read [`Meta`] back, or supply what a version 1 record never wrote:
+/// Read [`Meta`] back, or supply what an older record never wrote:
 /// `fallback_started_unix_secs` for the start time, no end time, and
-/// [`Direction::Pull`].
+/// [`Direction::Pull`] for a version 1 record; no batch id for a version 1
+/// or version 2 record.
 fn decode_meta(d: &mut Decoder<'_>, version: u8, fallback_started_unix_secs: i64) -> Option<Meta> {
     if version == 1 {
         return Some(Meta {
             started_unix_secs: fallback_started_unix_secs,
             ended_unix_secs: None,
             direction: Direction::Pull,
+            batch_id: None,
         });
     }
     let started_unix_secs = i64::from_be_bytes(d.fixed::<8>().ok()?);
@@ -233,10 +248,20 @@ fn decode_meta(d: &mut Decoder<'_>, version: u8, fallback_started_unix_secs: i64
         1 => Direction::Push,
         _ => return None,
     };
+    // A version 2 record predates the batch id and carries no bytes for it.
+    let batch_id = if version >= 3 {
+        match d.u8().ok()? {
+            0 => None,
+            _ => Some(d.text(limits::MAX_PATH_LEN).ok()?.to_owned()),
+        }
+    } else {
+        None
+    };
     Some(Meta {
         started_unix_secs,
         ended_unix_secs,
         direction,
+        batch_id,
     })
 }
 
@@ -352,6 +377,14 @@ mod tests {
             started_unix_secs: 1_700_000_000,
             ended_unix_secs: None,
             direction: Direction::Pull,
+            batch_id: None,
+        }
+    }
+
+    fn meta_with_batch(batch_id: &str) -> Meta {
+        Meta {
+            batch_id: Some(batch_id.to_owned()),
+            ..meta()
         }
     }
 
@@ -462,6 +495,70 @@ mod tests {
             i64::try_from(mtime).expect("the mtime fits in an i64"),
             "its start time is the record file's modification time"
         );
+    }
+
+    #[test]
+    fn a_records_batch_id_survives_a_round_trip() {
+        let dir = temp_dir("batch-id");
+        let file = dir.join("six.bin");
+        let record = Record::FirstPass(
+            meta_with_batch("device-abc"),
+            FirstPass {
+                source: path("holiday.bin"),
+                destination: path("photos/holiday.bin"),
+                source_size: 8 * 1024 * 1024,
+                source_mtime: -12,
+                chunk_size: 1024 * 1024,
+                chunks_done: 2,
+            },
+        );
+        write_record(&file, &record).expect("the record should be written");
+        let read = read_record(&file)
+            .expect("the record should be readable")
+            .expect("the file is there");
+        let Record::FirstPass(loaded_meta, _) = read else {
+            panic!("expected a first pass record");
+        };
+        assert_eq!(
+            loaded_meta.batch_id,
+            Some("device-abc".to_owned()),
+            "the batch id comes back with the record"
+        );
+    }
+
+    #[test]
+    fn a_version_2_record_loads_with_no_batch_id() {
+        // A hand-built version 2 record: the format before this batch added
+        // a batch id. This is the shape a record batch B's build leaves.
+        let dir = temp_dir("v2");
+        let file = dir.join("seven.bin");
+        let mut e = Encoder::new();
+        e.u8(2); // FORMAT_VERSION, before this batch
+        e.u8(0); // STAGE_FIRST_PASS
+        e.text("holiday.bin");
+        e.text("photos/holiday.bin");
+        e.u64(8 * 1024 * 1024);
+        e.fixed(&(-12i64).to_be_bytes());
+        e.u32(1024 * 1024);
+        e.u32(2);
+        // Meta, as version 2 wrote it: start, end flag, direction. No batch
+        // id bytes follow.
+        e.fixed(&1_700_000_000i64.to_be_bytes());
+        e.u8(0); // no end time
+        e.u8(0); // Direction::Pull
+        fs::write(&file, e.finish()).expect("the hand-built record should write");
+
+        let read = read_record(&file)
+            .expect("a version 2 record should still load")
+            .expect("the file is there");
+        let Record::FirstPass(loaded_meta, _) = read else {
+            panic!("expected a first pass record");
+        };
+        assert_eq!(
+            loaded_meta.batch_id, None,
+            "a version 2 record predates the batch id"
+        );
+        assert_eq!(loaded_meta.started_unix_secs, 1_700_000_000);
     }
 
     #[test]

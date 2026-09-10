@@ -1022,6 +1022,162 @@ fn a_record_for_a_device_that_is_not_paired_is_dropped() {
 }
 
 // ---------------------------------------------------------------------------
+// Batch D, item 2: a batch survives a restart, and forget removes its file.
+// ---------------------------------------------------------------------------
+
+/// Pair two real engines, the way `stop_returns_when_only_one_side_confirmed`
+/// does. `pull_folder` needs a real `list`, which the hand-built `Peer` in
+/// this file does not answer, so this test cannot use `pair_with_peer`.
+fn pair_two_engines(phone: &Side, mac: &Side) -> String {
+    phone.engine.set_reachable(true);
+    phone.engine.start_pairing();
+    mac.engine.start_pairing();
+    let phone_addr = loopback_addr(phone);
+    mac.engine.offer_candidate(phone_addr);
+    mac.inbox.wait_pairing("a candidate", is_found);
+    mac.engine
+        .pick_candidate(format!("wifi:{phone_addr}"))
+        .expect("the injected candidate should be pickable");
+    mac.inbox.wait_pairing("the Mac's code", is_code);
+    phone.inbox.wait_pairing("the phone's code", is_code);
+    mac.engine.confirm_pairing(true);
+    phone.engine.confirm_pairing(true);
+    mac.inbox.wait_pairing("the Mac's confirm", is_confirmed);
+    phone
+        .inbox
+        .wait_pairing("the phone's confirm", is_confirmed);
+    mac.engine.devices()[0].key_hex.clone()
+}
+
+#[test]
+fn a_restart_keeps_a_batchs_grouping() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    std::fs::create_dir(phone.shared_root().join("Camera")).expect("a folder for the camera roll");
+    std::fs::write(
+        phone.shared_root().join("Camera/big.bin"),
+        sample_bytes(mib(8)),
+    )
+    .expect("the phone's shared folder should accept a file");
+
+    // `pull_folder`'s own listing dial never wraps its stream in `Cut`, only
+    // a transfer attempt's dial does (`transfer::attempt`), so the cut armed
+    // here waits untouched through the listing and lands on the one file's
+    // own dial, the same technique `an_interrupted_first_pass_resumes_after_a_restart`
+    // uses through a hand-built peer.
+    mac.engine.set_cut(2 * MIB);
+
+    let batch_id = mac
+        .engine
+        .pull_folder(phone_key, "Root/Camera".to_owned())
+        .expect("the folder copy should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = batch_id.clone();
+    poll_until("the transfer to pause after the cut", move || {
+        engine.transfers().iter().any(|t| {
+            t.batch_id.as_deref() == Some(wanted.as_str()) && t.state == TransferState::Paused
+        })
+    });
+
+    let before_ids: Vec<String> = mac
+        .engine
+        .transfers()
+        .into_iter()
+        .filter(|t| t.batch_id.as_deref() == Some(batch_id.as_str()))
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(
+        before_ids.len(),
+        1,
+        "the one file queued is the one transfer"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+
+    // A new engine on the same folders, as if the app had been restarted.
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        mac.key.clone(),
+        mac.data.path(),
+        mac.shared.path(),
+        mac.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+
+    let batch = engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the batch should still be listed after a restart");
+    assert_eq!(
+        batch.state,
+        TransferState::Paused,
+        "the batch's one surviving transfer is still paused"
+    );
+    let after_ids: Vec<String> = engine
+        .transfers()
+        .into_iter()
+        .filter(|t| t.batch_id.as_deref() == Some(batch.id.as_str()))
+        .map(|t| t.id)
+        .collect();
+    assert_eq!(
+        after_ids, before_ids,
+        "the same transfer ids are still grouped under the batch"
+    );
+
+    engine.stop();
+}
+
+#[test]
+fn forget_removes_the_devices_batch_file() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    std::fs::create_dir(phone.shared_root().join("Camera")).expect("a folder for the camera roll");
+    std::fs::write(phone.shared_root().join("Camera/a.bin"), sample_bytes(1024))
+        .expect("the phone's shared folder should accept a file");
+
+    let batch_id = mac
+        .engine
+        .pull_folder(phone_key.clone(), "Root/Camera".to_owned())
+        .expect("the folder copy should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = batch_id.clone();
+    poll_until("the batch to finish", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted && b.state == TransferState::Done)
+    });
+
+    let batch_file = mac.data.path().join("batches").join(&batch_id);
+    assert!(batch_file.exists(), "the batch record should be on disk");
+
+    mac.engine
+        .forget(phone_key)
+        .expect("a paired device can be forgotten");
+    assert!(
+        !batch_file.exists(),
+        "forget removes the device's batch files under data_dir/batches/"
+    );
+    assert!(
+        mac.engine.batches().is_empty(),
+        "the forgotten device's batches must leave the list"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 7: no callback after stop returned.
 // ---------------------------------------------------------------------------
 

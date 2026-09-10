@@ -183,8 +183,10 @@
 uniffi::setup_scaffolding!();
 
 mod access;
+mod batch;
 mod engine;
 pub mod errors;
+mod folder;
 mod guard;
 mod notify;
 mod record;
@@ -363,6 +365,62 @@ pub struct TransferInfo {
     pub chunks_total: u32,
     /// How many chunks have a verified hash so far.
     pub chunks_verified: u32,
+    /// Which batch this transfer belongs to, if `pull_folder` created it.
+    /// `None` for a transfer a single `pull` created.
+    pub batch_id: Option<String>,
+}
+
+/// Why a batch exists.
+///
+/// `docs/engine-contract.md`, batch D, item 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Origin {
+    /// A person asked for it.
+    Manual,
+    /// Ferry decided, under item 14's rule. Never emitted until item 14.
+    Automatic,
+}
+
+/// One group of transfers made by one [`Engine::pull_folder`] call, as the
+/// Files section shows it.
+///
+/// `docs/engine-contract.md`, batch D, item 2. Only what does not change
+/// once the batch is made is stored on disk. Every other field here —
+/// `files_done`, the byte counts, `state`, `speed_bytes_per_sec`, and
+/// `ended_unix_secs` — is computed fresh from the transfers named on the
+/// batch, every time the app asks.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct BatchInfo {
+    /// Stable for the life of the batch, across restarts.
+    pub id: String,
+    /// Which device the files come from.
+    pub device_key_hex: String,
+    /// The remote path as given: `"Internal storage/DCIM/Camera"`.
+    pub label: String,
+    /// How many files this batch covers.
+    pub files_total: u32,
+    /// How many of those files are `Done`.
+    pub files_done: u32,
+    /// The sum of `bytes_total` over its transfers.
+    pub bytes_total: u64,
+    /// The sum of `bytes_done` over its transfers.
+    pub bytes_done: u64,
+    /// The worst state among its transfers: `Failed`, then `Paused`, then
+    /// `Active`, then `Queued`, then `Done`. A batch with no files is `Done`.
+    pub state: TransferState,
+    /// Which way every transfer in this batch moves its file.
+    pub direction: Direction,
+    /// Why this batch exists.
+    pub origin: Origin,
+    /// The sum over its active transfers. `None` while none are active.
+    pub speed_bytes_per_sec: Option<u64>,
+    /// When `pull_folder` created this batch.
+    pub started_unix_secs: i64,
+    /// The latest end time among its transfers, once none is `Queued`,
+    /// `Active`, or `Paused`. `None` while one still is. A `retry` clears
+    /// this the same way it clears that one transfer's own end time. A
+    /// batch with no files carries `started_unix_secs` here.
+    pub ended_unix_secs: Option<i64>,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

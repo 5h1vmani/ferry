@@ -12,7 +12,7 @@ use ferry_core::chunk::ChunkSize;
 use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
-use ferry_core::ops::FileKind;
+use ferry_core::ops::{FileKind, OpError};
 use ferry_core::path::{PathError, RemotePath};
 // Aliased: `crate::DeviceKind` is the boundary enum `Config` and `DeviceInfo`
 // carry; this is `ferry-core`'s own, which `hello` and `PeerStore` speak.
@@ -23,21 +23,24 @@ use ferry_core::session::SessionId;
 use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
 use zeroize::Zeroize;
 
+use crate::batch::{self, BatchRecord};
 use crate::errors::{
-    bad_config, failed, from_chunk_size, from_noise, from_path, from_peer, from_roots, from_rpc,
-    from_tcp,
+    bad_config, failed, from_chunk_size, from_noise, from_op, from_path, from_peer, from_roots,
+    from_rpc, from_tcp,
 };
+use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{GuardedFs, RootsHandle, RootsState, StopAware};
 use crate::notify::{Change, Notify};
 use crate::record::{Record, read_record};
 use crate::state::{
-    Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward, hex_of,
+    BatchRow, Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward, hex_of,
     key_from_hex, lock, now_unix_secs,
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
-    Config, DeviceInfo, DeviceKind, Direction, EngineListener, Entry, EntryKind, FerryError,
-    KeyPair, PairingCandidate, PairingState, Root, Status, TransferInfo, TransferState, Transport,
+    BatchInfo, Config, DeviceInfo, DeviceKind, Direction, EngineListener, Entry, EntryKind,
+    FerryError, KeyPair, Origin, PairingCandidate, PairingState, Root, Status, TransferInfo,
+    TransferState, Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -122,6 +125,8 @@ pub(crate) struct Shared {
     pub(crate) kind: CoreDeviceKind,
     /// Where transfer records live.
     pub(crate) transfers_dir: PathBuf,
+    /// Where batch records live.
+    pub(crate) batches_dir: PathBuf,
     /// The port to bind, or zero for any free port.
     pub(crate) listen_port: u16,
     /// Everything mutable.
@@ -220,6 +225,11 @@ impl Shared {
     /// Where one transfer's record is stored.
     pub(crate) fn record_path(&self, id: &str) -> PathBuf {
         self.transfers_dir.join(format!("{id}.bin"))
+    }
+
+    /// Where one batch's record is stored.
+    pub(crate) fn batch_path(&self, id: &str) -> PathBuf {
+        self.batches_dir.join(id)
     }
 
     /// Report a pairing state to the app and remember it.
@@ -451,6 +461,9 @@ impl Engine {
         let transfers_dir = data_dir.join("transfers");
         std::fs::create_dir_all(&transfers_dir)
             .map_err(|_| bad_config("The transfers folder could not be made."))?;
+        let batches_dir = data_dir.join("batches");
+        std::fs::create_dir_all(&batches_dir)
+            .map_err(|_| bad_config("The batches folder could not be made."))?;
 
         let kind: CoreDeviceKind = config.kind.into();
         // A version 1 peer file predates the kind byte, so every peer in it
@@ -472,6 +485,7 @@ impl Engine {
             display_name: config.display_name.clone(),
             kind,
             transfers_dir,
+            batches_dir,
             listen_port: config.listen_port,
             state: Mutex::new(State::new(peers)),
             wake: Condvar::new(),
@@ -494,6 +508,7 @@ impl Engine {
         });
 
         load_saved_transfers(&shared);
+        load_saved_batches(&shared);
         Ok(Arc::new(Self { shared }))
     }
 
@@ -747,6 +762,7 @@ impl Engine {
         })?;
 
         let gone: Vec<String>;
+        let gone_batches: Vec<String>;
         {
             let mut state = lock(&self.shared.state);
             if let Some(live) = state.live.remove(&key_hex) {
@@ -763,10 +779,24 @@ impl Engine {
             for id in &gone {
                 state.transfers.remove(id);
             }
+            gone_batches = state
+                .batches
+                .values()
+                .filter(|batch| batch.device_key_hex == key_hex)
+                .map(|batch| batch.id.clone())
+                .collect();
+            for id in &gone_batches {
+                state.batches.remove(id);
+            }
         }
         let mut trouble = None;
         for id in &gone {
             if let Err(error) = remove_record(&self.shared, id) {
+                trouble = Some(error);
+            }
+        }
+        for id in &gone_batches {
+            if let Err(error) = remove_batch(&self.shared, id) {
                 trouble = Some(error);
             }
         }
@@ -888,6 +918,17 @@ impl Engine {
             .collect()
     }
 
+    /// Every batch this engine has grouped, across every device.
+    #[must_use]
+    pub fn batches(&self) -> Vec<BatchInfo> {
+        let state = lock(&self.shared.state);
+        state
+            .batches
+            .values()
+            .map(|batch| batch.info(&state.transfers))
+            .collect()
+    }
+
     /// Fetch one file from a paired device into the shared root.
     ///
     /// Returns the transfer identifier. The work runs on its own thread and
@@ -955,6 +996,7 @@ impl Engine {
                     ended_unix_secs: None,
                     direction: Direction::Pull,
                     speed_bytes_per_sec: None,
+                    batch_id: None,
                 },
             );
             id
@@ -963,6 +1005,140 @@ impl Engine {
         notify(&self.shared, Change::Transfers);
         transfer::spawn(&self.shared, &id);
         Ok(id)
+    }
+
+    /// Copy a whole folder into one batch.
+    ///
+    /// Lists `remote_path` recursively over the connection, using the same
+    /// paging `list` uses, then creates the batch and queues one transfer
+    /// per file found, in listing order. Blocks until the listing is done,
+    /// so the app calls it off the main thread, the same way it calls
+    /// `list`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `PathError` code when the path is refused,
+    /// `Runtime::NotPaired` when the device is not stored,
+    /// `Runtime::NotStarted` before [`Engine::start`] has run,
+    /// `Runtime::NotReachable` when no dial succeeds, an `OpError` code when
+    /// the peer refuses the folder itself, and `Runtime::FolderTooLarge` at
+    /// more than 10,000 files or more than 32 levels of nesting. Nothing is
+    /// queued when this returns an error.
+    pub fn pull_folder(
+        &self,
+        device_key_hex: String,
+        remote_path: String,
+    ) -> Result<String, FerryError> {
+        let source = RemotePath::parse(&remote_path).map_err(from_path)?;
+        if source.is_root() {
+            return Err(from_path(PathError::Empty));
+        }
+        let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+        {
+            let state = lock(&self.shared.state);
+            if !state.started {
+                return Err(failed("Runtime::NotStarted"));
+            }
+            if state.peers.get(&key).is_none() {
+                return Err(failed("Runtime::NotPaired"));
+            }
+        }
+
+        let (stream, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
+        mark_reachable(&self.shared, &device_key_hex, addr, via);
+        let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
+        exchange_hello(&mut stream, &self.shared.display_name, self.shared.kind)
+            .map_err(|error| from_rpc(&error))?;
+        let mut client = Client::new(stream);
+
+        let lister = RemoteLister::new(&mut client);
+        let found_files =
+            folder::list_recursive(&lister, &source).map_err(|error| match error {
+                ListRecursiveError::TooLarge => failed("Runtime::FolderTooLarge"),
+                ListRecursiveError::Op(OpError::Internal) => lister
+                    .take_failure()
+                    .map_or_else(|| from_op(OpError::Internal), |rpc| from_rpc(&rpc)),
+                ListRecursiveError::Op(op) => from_op(op),
+            })?;
+
+        let leaf = leaf_of(&source);
+        let prefix = format!("{}/", source.as_str());
+        let started_unix_secs = now_unix_secs();
+
+        // Every row is built before anything touches state, so a failure
+        // part way through — only `SessionId::generate` starving of
+        // randomness can cause one — leaves nothing behind, matching
+        // "creates nothing" for the bounds above.
+        let mut rows: Vec<TransferRow> = Vec::with_capacity(found_files.len());
+        for full_path in &found_files {
+            let relative = full_path
+                .as_str()
+                .strip_prefix(&prefix)
+                .unwrap_or(full_path.as_str());
+            let destination =
+                RemotePath::parse(&format!("{leaf}/{relative}")).map_err(from_path)?;
+            let session =
+                SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
+            let id = format!("{device_key_hex}-{session}");
+            let file_name = leaf_of(&destination);
+            rows.push(TransferRow {
+                id,
+                device_key_hex: device_key_hex.clone(),
+                file_name,
+                source: full_path.clone(),
+                destination,
+                bytes_total: 0,
+                bytes_done: 0,
+                state: TransferState::Queued,
+                transport: None,
+                error: None,
+                source_size: None,
+                source_mtime: None,
+                running: false,
+                attempt_after: None,
+                backoff: BACKOFF_MIN,
+                started_unix_secs,
+                ended_unix_secs: None,
+                direction: Direction::Pull,
+                speed_bytes_per_sec: None,
+                // Filled in below, once the batch id exists.
+                batch_id: None,
+            });
+        }
+
+        let batch_session =
+            SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
+        let batch_id = format!("{device_key_hex}-{batch_session}");
+        for row in &mut rows {
+            row.batch_id = Some(batch_id.clone());
+        }
+        let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+        let batch_row = BatchRow {
+            id: batch_id.clone(),
+            device_key_hex: device_key_hex.clone(),
+            label: remote_path,
+            direction: Direction::Pull,
+            origin: Origin::Manual,
+            started_unix_secs,
+            transfer_ids: ids.clone(),
+        };
+        batch::write_batch(
+            &self.shared.batch_path(&batch_id),
+            &BatchRecord::of(&batch_row),
+        )?;
+
+        {
+            let mut state = lock(&self.shared.state);
+            state.batches.insert(batch_id.clone(), batch_row);
+            for row in rows {
+                state.transfers.insert(row.id.clone(), row);
+            }
+        }
+        notify(&self.shared, Change::Transfers);
+        for id in &ids {
+            transfer::spawn(&self.shared, id);
+        }
+        Ok(batch_id)
     }
 
     /// List every entry in one folder on a paired device.
@@ -1256,6 +1432,19 @@ pub(crate) fn remove_record(shared: &Arc<Shared>, id: &str) -> Result<(), FerryE
     }
 }
 
+/// Delete one batch's record, and say so when it cannot be done.
+///
+/// # Errors
+///
+/// Returns `TransferError::Local` when the file is there and will not go.
+fn remove_batch(shared: &Arc<Shared>, id: &str) -> Result<(), FerryError> {
+    match std::fs::remove_file(shared.batch_path(id)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(failed("TransferError::Local")),
+    }
+}
+
 /// Read every transfer record left by an earlier run, as paused.
 ///
 /// This is what makes a transfer survive the app closing. See job 3. A
@@ -1335,6 +1524,59 @@ fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow 
         ended_unix_secs: None,
         direction: meta.direction,
         speed_bytes_per_sec: None,
+        batch_id: meta.batch_id.clone(),
+    }
+}
+
+/// Read every batch record left by an earlier run.
+///
+/// Runs after `load_saved_transfers`, so a batch's transfer ids can be
+/// checked against what actually survived. A batch none of whose transfer
+/// ids name a surviving row is dropped, and its file removed: the same rule
+/// a single finished transfer already follows on its own, since its record
+/// is deleted the moment it becomes `Done`. See `load_saved_transfers`.
+fn load_saved_batches(shared: &Arc<Shared>) {
+    let Ok(entries) = std::fs::read_dir(&shared.batches_dir) else {
+        return;
+    };
+    let mut to_remove: Vec<PathBuf> = Vec::new();
+    {
+        let mut state = lock(&shared.state);
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(id) = path.file_name().and_then(|s| s.to_str()).map(str::to_owned) else {
+                continue;
+            };
+            let Some(key_hex) = id.split_once('-').map(|(key, _)| key.to_owned()) else {
+                continue;
+            };
+            let Some(record) = batch::read_batch(&path) else {
+                continue;
+            };
+            let survives = record
+                .transfer_ids
+                .iter()
+                .any(|transfer_id| state.transfers.contains_key(transfer_id));
+            if survives {
+                state.batches.insert(
+                    id.clone(),
+                    BatchRow {
+                        id,
+                        device_key_hex: key_hex,
+                        label: record.label,
+                        direction: record.direction,
+                        origin: record.origin,
+                        started_unix_secs: record.started_unix_secs,
+                        transfer_ids: record.transfer_ids,
+                    },
+                );
+            } else {
+                to_remove.push(path);
+            }
+        }
+    }
+    for path in to_remove {
+        drop(std::fs::remove_file(path));
     }
 }
 

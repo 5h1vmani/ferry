@@ -313,6 +313,9 @@ struct Plan {
     /// Which way this transfer moves the file. Written into every record
     /// this attempt writes.
     direction: Direction,
+    /// Which batch this transfer belongs to, if `pull_folder` created it.
+    /// Written into every record this attempt writes.
+    batch_id: Option<String>,
 }
 
 /// Read the plan for one transfer out of the state.
@@ -330,6 +333,7 @@ fn plan_for(shared: &Arc<Shared>, id: &str) -> Option<Plan> {
         suffix: id.rsplit('-').next().unwrap_or(id).to_owned(),
         started_unix_secs: row.started_unix_secs,
         direction: row.direction,
+        batch_id: row.batch_id.clone(),
     })
 }
 
@@ -484,6 +488,7 @@ fn first_pass<S: Read + Write>(
             started_unix_secs: plan.started_unix_secs,
             ended_unix_secs: None,
             direction: plan.direction,
+            batch_id: plan.batch_id.clone(),
         },
         builder: ManifestBuilder::new(chunk),
     };
