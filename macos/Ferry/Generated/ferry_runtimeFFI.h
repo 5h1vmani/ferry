@@ -323,6 +323,11 @@ void uniffi_ferry_runtime_fn_method_engine_cancel_pairing(uint64_t ptr, RustCall
 void uniffi_ferry_runtime_fn_method_engine_confirm_pairing(uint64_t ptr, int8_t accept, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_DELETE
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_DELETE
+void uniffi_ferry_runtime_fn_method_engine_delete(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_DEVICES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_DEVICES
 RustBuffer uniffi_ferry_runtime_fn_method_engine_devices(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -341,6 +346,11 @@ void uniffi_ferry_runtime_fn_method_engine_forget_network(uint64_t ptr, RustBuff
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_LIST
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_LIST
 RustBuffer uniffi_ferry_runtime_fn_method_engine_list(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MKDIR
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MKDIR
+void uniffi_ferry_runtime_fn_method_engine_mkdir(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MOUNT_START
@@ -381,6 +391,16 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_push(uint64_t ptr, RustBuffer d
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PUSH_FILES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PUSH_FILES
 RustBuffer uniffi_ferry_runtime_fn_method_engine_push_files(uint64_t ptr, RustBuffer device_key_hex, RustBuffer local_paths, RustBuffer remote_folder, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_READ_AT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_READ_AT
+RustBuffer uniffi_ferry_runtime_fn_method_engine_read_at(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, uint64_t offset, uint32_t len, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RENAME
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RENAME
+void uniffi_ferry_runtime_fn_method_engine_rename(uint64_t ptr, RustBuffer device_key_hex, RustBuffer from, RustBuffer to, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RETRY
@@ -443,6 +463,11 @@ void uniffi_ferry_runtime_fn_method_engine_start(uint64_t ptr, RustCallStatus *_
 void uniffi_ferry_runtime_fn_method_engine_start_pairing_with(uint64_t ptr, RustBuffer method, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STAT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STAT
+RustBuffer uniffi_ferry_runtime_fn_method_engine_stat(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STATUS
 RustBuffer uniffi_ferry_runtime_fn_method_engine_status(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -458,6 +483,11 @@ void uniffi_ferry_runtime_fn_method_engine_stop(uint64_t ptr, RustCallStatus *_N
 RustBuffer uniffi_ferry_runtime_fn_method_engine_transfers(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_TRUNCATE
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_TRUNCATE
+void uniffi_ferry_runtime_fn_method_engine_truncate(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, uint64_t len, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_TRUST_NETWORK
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_TRUST_NETWORK
 void uniffi_ferry_runtime_fn_method_engine_trust_network(uint64_t ptr, RustBuffer name, RustCallStatus *_Nonnull out_status
@@ -466,6 +496,11 @@ void uniffi_ferry_runtime_fn_method_engine_trust_network(uint64_t ptr, RustBuffe
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_TRUSTED_NETWORKS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_TRUSTED_NETWORKS
 RustBuffer uniffi_ferry_runtime_fn_method_engine_trusted_networks(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_WRITE_AT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_WRITE_AT
+void uniffi_ferry_runtime_fn_method_engine_write_at(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, uint64_t offset, RustBuffer bytes, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_INIT_CALLBACK_VTABLE_ENGINELISTENER
@@ -787,6 +822,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_confirm_pairing(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_DELETE
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_DELETE
+uint16_t uniffi_ferry_runtime_checksum_method_engine_delete(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_DEVICES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_DEVICES
 uint16_t uniffi_ferry_runtime_checksum_method_engine_devices(void
@@ -808,6 +849,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_forget_network(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_LIST
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_LIST
 uint16_t uniffi_ferry_runtime_checksum_method_engine_list(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_MKDIR
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_MKDIR
+uint16_t uniffi_ferry_runtime_checksum_method_engine_mkdir(void
     
 );
 #endif
@@ -856,6 +903,18 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_push(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PUSH_FILES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PUSH_FILES
 uint16_t uniffi_ferry_runtime_checksum_method_engine_push_files(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_READ_AT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_READ_AT
+uint16_t uniffi_ferry_runtime_checksum_method_engine_read_at(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_RENAME
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_RENAME
+uint16_t uniffi_ferry_runtime_checksum_method_engine_rename(void
     
 );
 #endif
@@ -931,6 +990,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_start_pairing_with(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_STAT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_STAT
+uint16_t uniffi_ferry_runtime_checksum_method_engine_stat(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_STATUS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_STATUS
 uint16_t uniffi_ferry_runtime_checksum_method_engine_status(void
@@ -949,6 +1014,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_transfers(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_TRUNCATE
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_TRUNCATE
+uint16_t uniffi_ferry_runtime_checksum_method_engine_truncate(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_TRUST_NETWORK
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_TRUST_NETWORK
 uint16_t uniffi_ferry_runtime_checksum_method_engine_trust_network(void
@@ -958,6 +1029,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_trust_network(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_TRUSTED_NETWORKS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_TRUSTED_NETWORKS
 uint16_t uniffi_ferry_runtime_checksum_method_engine_trusted_networks(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_WRITE_AT
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_WRITE_AT
+uint16_t uniffi_ferry_runtime_checksum_method_engine_write_at(void
     
 );
 #endif

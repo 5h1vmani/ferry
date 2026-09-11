@@ -666,6 +666,22 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func confirmPairing(accept: Bool) 
     
     /**
+     * Delete one file, or one empty folder, on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The wire has no recursive
+     * delete, so a folder with anything in it is refused with
+     * `OpError::NotEmpty`. A caller that wants the folder gone walks it
+     * and deletes the leaves first, as the `WebDAV` bridge does.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::NotEmpty` for a folder that
+     * still holds something, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    func delete(deviceKeyHex: String, remotePath: String) throws 
+    
+    /**
      * Every paired device, with what is known about it right now.
      */
     func devices()  -> [DeviceInfo]
@@ -700,10 +716,14 @@ public protocol EngineProtocol: AnyObject, Sendable {
     /**
      * List every entry in one folder on a paired device.
      *
-     * Dials the device, then pages through the server's cursor until it
-     * reports no more entries, and returns them in the order the server
-     * sent them. This blocks for one round trip per page, so the app must
-     * call it off the main thread.
+     * Borrows one of the device's four pooled connections, then pages
+     * through the server's cursor until it reports no more entries, and
+     * returns them in the order the server sent them. This blocks for one
+     * round trip per page, so the app must call it off the main thread.
+     *
+     * `docs/engine-contract.md`, item 19: the pool is the engine's, shared
+     * with the `WebDAV` bridge, so two listings in a row reuse one
+     * connection rather than dialling twice.
      *
      * # Errors
      *
@@ -717,6 +737,20 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * `next_cursor` that never advances.
      */
     func list(deviceKeyHex: String, remotePath: String) throws  -> [Entry]
+    
+    /**
+     * Make one folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. Makes one level only: the parent
+     * must already exist, or the peer answers `OpError::NotFound`.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::AlreadyExists` when something is
+     * already there, and `OpError::PermissionDenied` when the peer's root
+     * is not writable.
+     */
+    func mkdir(deviceKeyHex: String, remotePath: String) throws 
     
     /**
      * Starts serving one device's shared roots over `WebDAV` on a random
@@ -846,6 +880,37 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * peer.
      */
     func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: String) throws  -> String
+    
+    /**
+     * Read a byte range from a file on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
+     * one mebibyte. A longer ask is clamped, not refused, so the caller
+     * gets a short read, which is an ordinary read result: fewer bytes
+     * than asked for also means the end of the file.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::IsADirectory` when the path
+     * names a folder.
+     */
+    func readAt(deviceKeyHex: String, remotePath: String, offset: UInt64, len: UInt32) throws  -> Data
+    
+    /**
+     * Move or rename a file or folder on a paired device, within one root.
+     *
+     * `docs/engine-contract.md`, item 19. Across two roots the peer
+     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
+     * bridge turns into 502.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
+     * roots, `OpError::AlreadyExists` when something is already at `to`,
+     * and `OpError::PermissionDenied` when the peer's root is not
+     * writable.
+     */
+    func rename(deviceKeyHex: String, from: String, to: String) throws 
     
     /**
      * Restart a failed transfer from its resume point.
@@ -1001,6 +1066,20 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func startPairingWith(method: PairingMethod) 
     
     /**
+     * Describe one file or folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
+     * answers `queryDocument` with this. Blocks for one round trip, so the
+     * app calls it off the main thread, as it does [`Engine::list`].
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::NotFound` for a path that
+     * names no file.
+     */
+    func stat(deviceKeyHex: String, remotePath: String) throws  -> Entry
+    
+    /**
      * Everything this engine currently is: whether it accepts connections,
      * what port it listens on, and whether `adb` was found.
      */
@@ -1021,6 +1100,19 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func transfers()  -> [TransferInfo]
     
     /**
+     * Set a file's length on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's provider truncates
+     * to zero when it opens a document in a truncating mode.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    func truncate(deviceKeyHex: String, remotePath: String, len: UInt64) throws 
+    
+    /**
      * Add a Wi-Fi network name to the trusted list.
      *
      * A name already trusted is not an error and changes nothing.
@@ -1037,6 +1129,22 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * Every trusted Wi-Fi network name, oldest first.
      */
     func trustedNetworks()  -> [String]
+    
+    /**
+     * Write a byte range to a file on a paired device, creating the file
+     * when it does not exist.
+     *
+     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
+     * bytes, one mebibyte, in one call is refused before anything reaches
+     * the wire, so a refused call writes nothing.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
+     * longer than one mebibyte, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    func writeAt(deviceKeyHex: String, remotePath: String, offset: UInt64, bytes: Data) throws 
     
 }
 /**
@@ -1207,6 +1315,30 @@ open func confirmPairing(accept: Bool)  {try! rustCall() {
 }
     
     /**
+     * Delete one file, or one empty folder, on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The wire has no recursive
+     * delete, so a folder with anything in it is refused with
+     * `OpError::NotEmpty`. A caller that wants the folder gone walks it
+     * and deletes the leaves first, as the `WebDAV` bridge does.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::NotEmpty` for a folder that
+     * still holds something, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+open func delete(deviceKeyHex: String, remotePath: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_delete(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Every paired device, with what is known about it right now.
      */
 open func devices() -> [DeviceInfo]  {
@@ -1262,10 +1394,14 @@ open func forgetNetwork(name: String)throws   {try rustCallWithError(FfiConverte
     /**
      * List every entry in one folder on a paired device.
      *
-     * Dials the device, then pages through the server's cursor until it
-     * reports no more entries, and returns them in the order the server
-     * sent them. This blocks for one round trip per page, so the app must
-     * call it off the main thread.
+     * Borrows one of the device's four pooled connections, then pages
+     * through the server's cursor until it reports no more entries, and
+     * returns them in the order the server sent them. This blocks for one
+     * round trip per page, so the app must call it off the main thread.
+     *
+     * `docs/engine-contract.md`, item 19: the pool is the engine's, shared
+     * with the `WebDAV` bridge, so two listings in a row reuse one
+     * connection rather than dialling twice.
      *
      * # Errors
      *
@@ -1287,6 +1423,28 @@ open func list(deviceKeyHex: String, remotePath: String)throws  -> [Entry]  {
         FfiConverterString.lower(remotePath),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Make one folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. Makes one level only: the parent
+     * must already exist, or the peer answers `OpError::NotFound`.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::AlreadyExists` when something is
+     * already there, and `OpError::PermissionDenied` when the peer's root
+     * is not writable.
+     */
+open func mkdir(deviceKeyHex: String, remotePath: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_mkdir(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -1484,6 +1642,57 @@ open func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: St
         FfiConverterString.lower(remoteFolder),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Read a byte range from a file on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
+     * one mebibyte. A longer ask is clamped, not refused, so the caller
+     * gets a short read, which is an ordinary read result: fewer bytes
+     * than asked for also means the end of the file.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::IsADirectory` when the path
+     * names a folder.
+     */
+open func readAt(deviceKeyHex: String, remotePath: String, offset: UInt64, len: UInt32)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_read_at(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),
+        FfiConverterUInt64.lower(offset),
+        FfiConverterUInt32.lower(len),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Move or rename a file or folder on a paired device, within one root.
+     *
+     * `docs/engine-contract.md`, item 19. Across two roots the peer
+     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
+     * bridge turns into 502.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
+     * roots, `OpError::AlreadyExists` when something is already at `to`,
+     * and `OpError::PermissionDenied` when the peer's root is not
+     * writable.
+     */
+open func rename(deviceKeyHex: String, from: String, to: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_rename(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(from),
+        FfiConverterString.lower(to),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -1725,6 +1934,29 @@ open func startPairingWith(method: PairingMethod)  {try! rustCall() {
 }
     
     /**
+     * Describe one file or folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
+     * answers `queryDocument` with this. Blocks for one round trip, so the
+     * app calls it off the main thread, as it does [`Engine::list`].
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::NotFound` for a path that
+     * names no file.
+     */
+open func stat(deviceKeyHex: String, remotePath: String)throws  -> Entry  {
+    return try  FfiConverterTypeEntry_lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_stat(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Everything this engine currently is: whether it accepts connections,
      * what port it listens on, and whether `adb` was found.
      */
@@ -1765,6 +1997,28 @@ open func transfers() -> [TransferInfo]  {
 }
     
     /**
+     * Set a file's length on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's provider truncates
+     * to zero when it opens a document in a truncating mode.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+open func truncate(deviceKeyHex: String, remotePath: String, len: UInt64)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_truncate(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),
+        FfiConverterUInt64.lower(len),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Add a Wi-Fi network name to the trusted list.
      *
      * A name already trusted is not an error and changes nothing.
@@ -1794,6 +2048,32 @@ open func trustedNetworks() -> [String]  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Write a byte range to a file on a paired device, creating the file
+     * when it does not exist.
+     *
+     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
+     * bytes, one mebibyte, in one call is refused before anything reaches
+     * the wire, so a refused call writes nothing.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
+     * longer than one mebibyte, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+open func writeAt(deviceKeyHex: String, remotePath: String, offset: UInt64, bytes: Data)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_write_at(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),
+        FfiConverterUInt64.lower(offset),
+        FfiConverterData.lower(bytes),uniffiCallStatus
+    )
+}
 }
     
 
@@ -5136,6 +5416,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 48275) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_delete() != 25057) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_devices() != 18169) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5145,7 +5428,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_forget_network() != 51909) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_list() != 16273) {
+    if (uniffi_ferry_runtime_checksum_method_engine_list() != 44634) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_mkdir() != 27483) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_mount_start() != 53865) {
@@ -5170,6 +5456,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_push_files() != 64808) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_read_at() != 57683) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_rename() != 24592) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {
@@ -5208,6 +5500,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() != 19085) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_stat() != 54510) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_status() != 3994) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5217,10 +5512,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_transfers() != 21287) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_truncate() != 23969) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_trust_network() != 27441) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_trusted_networks() != 41313) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_write_at() != 44780) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 19972) {

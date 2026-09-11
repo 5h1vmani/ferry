@@ -727,6 +727,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_confirm_pairing(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_delete(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_devices(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_forget(
@@ -734,6 +736,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ferry_runtime_checksum_method_engine_forget_network(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_list(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_mkdir(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_mount_start(
     ): Int
@@ -750,6 +754,10 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ferry_runtime_checksum_method_engine_push(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_push_files(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_read_at(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_rename(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_retry(
     ): Int
@@ -775,15 +783,21 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_start_pairing_with(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_stat(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_status(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_stop(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_transfers(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_truncate(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_trust_network(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_trusted_networks(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_write_at(
     ): Int
     external fun uniffi_ferry_runtime_checksum_constructor_engine_new(
     ): Int
@@ -830,6 +844,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_confirm_pairing(`ptr`: Long,`accept`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_delete(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_devices(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_forget(`ptr`: Long,`keyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -838,6 +854,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_list(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_mkdir(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_mount_start(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_mount_stop(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -854,6 +872,10 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_push_files(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`localPaths`: RustBuffer.ByValue,`remoteFolder`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_read_at(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`offset`: Long,`len`: Int,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_rename(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`from`: RustBuffer.ByValue,`to`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_retry(`ptr`: Long,`transferId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_retry_batch(`ptr`: Long,`batchId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -878,16 +900,22 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_start_pairing_with(`ptr`: Long,`method`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_stat(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_stop(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_transfers(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_truncate(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`len`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_trust_network(`ptr`: Long,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_trusted_networks(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_write_at(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`offset`: Long,`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_init_callback_vtable_enginelistener(`vtable`: UniffiVTableCallbackInterfaceEngineListener,
     ): Unit
     external fun uniffi_ferry_runtime_fn_func_generate_key(uniffi_out_err: UniffiRustCallStatus, 
@@ -1034,6 +1062,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() and 0xFFFF) != 48275) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_delete() and 0xFFFF) != 25057) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_devices() and 0xFFFF) != 18169) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1043,7 +1074,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_forget_network() and 0xFFFF) != 51909) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_list() and 0xFFFF) != 16273) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_list() and 0xFFFF) != 44634) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_mkdir() and 0xFFFF) != 27483) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_mount_start() and 0xFFFF) != 53865) {
@@ -1068,6 +1102,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_push_files() and 0xFFFF) != 64808) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_read_at() and 0xFFFF) != 57683) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_rename() and 0xFFFF) != 24592) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_retry() and 0xFFFF) != 46891) {
@@ -1106,6 +1146,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() and 0xFFFF) != 19085) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_stat() and 0xFFFF) != 54510) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_status() and 0xFFFF) != 3994) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1115,10 +1158,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_transfers() and 0xFFFF) != 21287) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_truncate() and 0xFFFF) != 23969) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_trust_network() and 0xFFFF) != 27441) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_trusted_networks() and 0xFFFF) != 41313) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_write_at() and 0xFFFF) != 44780) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_constructor_engine_new() and 0xFFFF) != 19972) {
@@ -1658,6 +1707,22 @@ public interface EngineInterface {
     fun `confirmPairing`(`accept`: kotlin.Boolean)
     
     /**
+     * Delete one file, or one empty folder, on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The wire has no recursive
+     * delete, so a folder with anything in it is refused with
+     * `OpError::NotEmpty`. A caller that wants the folder gone walks it
+     * and deletes the leaves first, as the `WebDAV` bridge does.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::NotEmpty` for a folder that
+     * still holds something, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    fun `delete`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String)
+    
+    /**
      * Every paired device, with what is known about it right now.
      */
     fun `devices`(): List<DeviceInfo>
@@ -1692,10 +1757,14 @@ public interface EngineInterface {
     /**
      * List every entry in one folder on a paired device.
      *
-     * Dials the device, then pages through the server's cursor until it
-     * reports no more entries, and returns them in the order the server
-     * sent them. This blocks for one round trip per page, so the app must
-     * call it off the main thread.
+     * Borrows one of the device's four pooled connections, then pages
+     * through the server's cursor until it reports no more entries, and
+     * returns them in the order the server sent them. This blocks for one
+     * round trip per page, so the app must call it off the main thread.
+     *
+     * `docs/engine-contract.md`, item 19: the pool is the engine's, shared
+     * with the `WebDAV` bridge, so two listings in a row reuse one
+     * connection rather than dialling twice.
      *
      * # Errors
      *
@@ -1709,6 +1778,20 @@ public interface EngineInterface {
      * `next_cursor` that never advances.
      */
     fun `list`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): List<Entry>
+    
+    /**
+     * Make one folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. Makes one level only: the parent
+     * must already exist, or the peer answers `OpError::NotFound`.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::AlreadyExists` when something is
+     * already there, and `OpError::PermissionDenied` when the peer's root
+     * is not writable.
+     */
+    fun `mkdir`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String)
     
     /**
      * Starts serving one device's shared roots over `WebDAV` on a random
@@ -1838,6 +1921,37 @@ public interface EngineInterface {
      * peer.
      */
     fun `pushFiles`(`deviceKeyHex`: kotlin.String, `localPaths`: List<kotlin.String>, `remoteFolder`: kotlin.String): kotlin.String
+    
+    /**
+     * Read a byte range from a file on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
+     * one mebibyte. A longer ask is clamped, not refused, so the caller
+     * gets a short read, which is an ordinary read result: fewer bytes
+     * than asked for also means the end of the file.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::IsADirectory` when the path
+     * names a folder.
+     */
+    fun `readAt`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `offset`: kotlin.ULong, `len`: kotlin.UInt): kotlin.ByteArray
+    
+    /**
+     * Move or rename a file or folder on a paired device, within one root.
+     *
+     * `docs/engine-contract.md`, item 19. Across two roots the peer
+     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
+     * bridge turns into 502.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
+     * roots, `OpError::AlreadyExists` when something is already at `to`,
+     * and `OpError::PermissionDenied` when the peer's root is not
+     * writable.
+     */
+    fun `rename`(`deviceKeyHex`: kotlin.String, `from`: kotlin.String, `to`: kotlin.String)
     
     /**
      * Restart a failed transfer from its resume point.
@@ -1993,6 +2107,20 @@ public interface EngineInterface {
     fun `startPairingWith`(`method`: PairingMethod)
     
     /**
+     * Describe one file or folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
+     * answers `queryDocument` with this. Blocks for one round trip, so the
+     * app calls it off the main thread, as it does [`Engine::list`].
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::NotFound` for a path that
+     * names no file.
+     */
+    fun `stat`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): Entry
+    
+    /**
      * Everything this engine currently is: whether it accepts connections,
      * what port it listens on, and whether `adb` was found.
      */
@@ -2013,6 +2141,19 @@ public interface EngineInterface {
     fun `transfers`(): List<TransferInfo>
     
     /**
+     * Set a file's length on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's provider truncates
+     * to zero when it opens a document in a truncating mode.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    fun `truncate`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `len`: kotlin.ULong)
+    
+    /**
      * Add a Wi-Fi network name to the trusted list.
      *
      * A name already trusted is not an error and changes nothing.
@@ -2029,6 +2170,22 @@ public interface EngineInterface {
      * Every trusted Wi-Fi network name, oldest first.
      */
     fun `trustedNetworks`(): List<kotlin.String>
+    
+    /**
+     * Write a byte range to a file on a paired device, creating the file
+     * when it does not exist.
+     *
+     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
+     * bytes, one mebibyte, in one call is refused before anything reaches
+     * the wire, so a refused call writes nothing.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
+     * longer than one mebibyte, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    fun `writeAt`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `offset`: kotlin.ULong, `bytes`: kotlin.ByteArray)
     
     companion object
 }
@@ -2270,6 +2427,35 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * Delete one file, or one empty folder, on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The wire has no recursive
+     * delete, so a folder with anything in it is refused with
+     * `OpError::NotEmpty`. A caller that wants the folder gone walks it
+     * and deletes the leaves first, as the `WebDAV` bridge does.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::NotEmpty` for a folder that
+     * still holds something, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    @Throws(FerryException::class)override fun `delete`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_delete(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`remotePath`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Every paired device, with what is known about it right now.
      */override fun `devices`(): List<DeviceInfo> {
             return FfiConverterSequenceTypeDeviceInfo.lift(
@@ -2339,10 +2525,14 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     /**
      * List every entry in one folder on a paired device.
      *
-     * Dials the device, then pages through the server's cursor until it
-     * reports no more entries, and returns them in the order the server
-     * sent them. This blocks for one round trip per page, so the app must
-     * call it off the main thread.
+     * Borrows one of the device's four pooled connections, then pages
+     * through the server's cursor until it reports no more entries, and
+     * returns them in the order the server sent them. This blocks for one
+     * round trip per page, so the app must call it off the main thread.
+     *
+     * `docs/engine-contract.md`, item 19: the pool is the engine's, shared
+     * with the `WebDAV` bridge, so two listings in a row reuse one
+     * connection rather than dialling twice.
      *
      * # Errors
      *
@@ -2368,6 +2558,33 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Make one folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. Makes one level only: the parent
+     * must already exist, or the peer answers `OpError::NotFound`.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::AlreadyExists` when something is
+     * already there, and `OpError::PermissionDenied` when the peer's root
+     * is not writable.
+     */
+    @Throws(FerryException::class)override fun `mkdir`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_mkdir(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`remotePath`),_status)
+}
+    }
+    
     
 
     
@@ -2604,6 +2821,67 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Read a byte range from a file on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
+     * one mebibyte. A longer ask is clamped, not refused, so the caller
+     * gets a short read, which is an ordinary read result: fewer bytes
+     * than asked for also means the end of the file.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::IsADirectory` when the path
+     * names a folder.
+     */
+    @Throws(FerryException::class)override fun `readAt`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `offset`: kotlin.ULong, `len`: kotlin.UInt): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_read_at(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`remotePath`),
+        FfiConverterULong.lower(`offset`),
+        FfiConverterUInt.lower(`len`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Move or rename a file or folder on a paired device, within one root.
+     *
+     * `docs/engine-contract.md`, item 19. Across two roots the peer
+     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
+     * bridge turns into 502.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
+     * roots, `OpError::AlreadyExists` when something is already at `to`,
+     * and `OpError::PermissionDenied` when the peer's root is not
+     * writable.
+     */
+    @Throws(FerryException::class)override fun `rename`(`deviceKeyHex`: kotlin.String, `from`: kotlin.String, `to`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_rename(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`from`),
+        FfiConverterString.lower(`to`),_status)
+}
+    }
+    
     
 
     
@@ -2901,6 +3179,34 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * Describe one file or folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
+     * answers `queryDocument` with this. Blocks for one round trip, so the
+     * app calls it off the main thread, as it does [`Engine::list`].
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::NotFound` for a path that
+     * names no file.
+     */
+    @Throws(FerryException::class)override fun `stat`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): Entry {
+            return FfiConverterTypeEntry.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_stat(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`remotePath`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
      * Everything this engine currently is: whether it accepts connections,
      * what port it listens on, and whether `adb` was found.
      */override fun `status`(): Status {
@@ -2953,6 +3259,33 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * Set a file's length on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's provider truncates
+     * to zero when it opens a document in a truncating mode.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    @Throws(FerryException::class)override fun `truncate`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `len`: kotlin.ULong)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_truncate(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`remotePath`),
+        FfiConverterULong.lower(`len`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Add a Wi-Fi network name to the trusted list.
      *
      * A name already trusted is not an error and changes nothing.
@@ -2990,6 +3323,37 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Write a byte range to a file on a paired device, creating the file
+     * when it does not exist.
+     *
+     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
+     * bytes, one mebibyte, in one call is refused before anything reaches
+     * the wire, so a refused call writes nothing.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
+     * longer than one mebibyte, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    @Throws(FerryException::class)override fun `writeAt`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String, `offset`: kotlin.ULong, `bytes`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_write_at(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`remotePath`),
+        FfiConverterULong.lower(`offset`),
+        FfiConverterByteArray.lower(`bytes`),_status)
+}
+    }
+    
     
 
     

@@ -145,6 +145,20 @@
 //!     /// cursor on its own and returns every entry. Blocks for the round
 //!     /// trip, so the app calls it off the main thread.
 //!     pub fn list(&self, device_key_hex: String, remote_path: String) -> Result<Vec<Entry>, FerryError>;
+//!     /// One entry on a paired device. The phone's file picker answers
+//!     /// `queryDocument` with it.
+//!     pub fn stat(&self, device_key_hex: String, remote_path: String) -> Result<Entry, FerryError>;
+//!     /// At most 1 MiB. A longer ask is clamped, not refused.
+//!     pub fn read_at(&self, device_key_hex: String, remote_path: String, offset: u64, len: u32) -> Result<Vec<u8>, FerryError>;
+//!     /// Creates the file when it does not exist. More than 1 MiB in one
+//!     /// call is refused with `Runtime::WriteTooLarge`.
+//!     pub fn write_at(&self, device_key_hex: String, remote_path: String, offset: u64, bytes: Vec<u8>) -> Result<(), FerryError>;
+//!     pub fn truncate(&self, device_key_hex: String, remote_path: String, len: u64) -> Result<(), FerryError>;
+//!     pub fn mkdir(&self, device_key_hex: String, remote_path: String) -> Result<(), FerryError>;
+//!     /// A file, or an empty folder. The wire has no recursive delete.
+//!     pub fn delete(&self, device_key_hex: String, remote_path: String) -> Result<(), FerryError>;
+//!     /// Within one root, as the bridge allows.
+//!     pub fn rename(&self, device_key_hex: String, from: String, to: String) -> Result<(), FerryError>;
 //!     /// Copy a whole folder. Lists it over the connection, then queues one
 //!     /// transfer per file under a new batch. Blocks until the listing is
 //!     /// done, so the app calls it off the main thread, as it does `list`.
