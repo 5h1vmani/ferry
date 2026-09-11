@@ -1733,6 +1733,64 @@ fn a_push_to_a_peer_that_stores_nothing_fails_within_a_bounded_number_of_attempt
     peer.close();
 }
 
+/// H2: a push's stored record is trusted only while the local file still
+/// matches the size and modified time recorded when its manifest was
+/// built. Editing the file between two attempts of the same push must
+/// land the edited bytes, not the stale ones the first attempt's manifest
+/// described.
+#[test]
+fn editing_the_local_file_between_two_attempts_lands_the_edited_bytes() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+    mac.engine.set_backoff(Duration::from_secs(2));
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("a.bin");
+    let original = sample_bytes(mib(3));
+    std::fs::write(&local_path, &original).expect("the local file should write");
+    let local_path_text = local_path.to_string_lossy().into_owned();
+
+    // Cut partway through the first attempt's sending: well past `build`
+    // writing its Record::Ready for the original bytes, and well short of
+    // landing the whole file.
+    mac.engine.set_cut(MIB);
+
+    let id = mac
+        .engine
+        .push(
+            phone_key.clone(),
+            local_path_text.clone(),
+            "Root/a.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+
+    wait_transfer(
+        &mac,
+        &id,
+        "the cut attempt to fail and wait to retry",
+        |t| t.state == TransferState::Paused,
+    );
+
+    // Edited between attempts: different content and a different size,
+    // neither of which the first attempt's manifest describes any more.
+    let edited = sample_bytes(mib(2) + 12_345);
+    std::fs::write(&local_path, &edited).expect("the edited file should write");
+
+    wait_transfer(&mac, &id, "the retried push to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    assert_eq!(
+        std::fs::read(phone.shared_root().join("a.bin")).expect("a.bin should have landed"),
+        edited,
+        "the push must land the edited bytes, not the stale ones from the first attempt"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
 // ---------------------------------------------------------------------------
 // Finding 6: one engine per data folder, and no record for a device that is
 // not paired.

@@ -386,12 +386,47 @@ pub(crate) fn attempt<S: Read + Write>(
 
 /// Read the stored record, or build one from the local file. See the module
 /// documentation for why a push has no `FirstPass` stage of its own.
+///
+/// H2: a stored record is only trusted while the local file still matches
+/// the size and modified time it had when that record's manifest was
+/// built. A person can edit the file between two attempts of the same
+/// push; a manifest built from what it used to be would describe bytes
+/// that are no longer there, so it is rebuilt from what is on disk now
+/// instead, the same as a push's very first attempt.
 fn load_or_build(shared: &Arc<Shared>, id: &str, plan: &Plan) -> Result<Transfer, Outcome> {
     match read_record(&shared.record_path(id)) {
-        Ok(Some(Record::Ready(_meta, transfer))) => Ok(transfer),
+        Ok(Some(Record::Ready(_meta, transfer))) => {
+            if local_file_changed(shared, id, &plan.source)? {
+                build(shared, id, plan)
+            } else {
+                Ok(transfer)
+            }
+        }
         Ok(Some(Record::FirstPass(..)) | None) => build(shared, id, plan),
         Err(error) => Err(Outcome::Fatal(error)),
     }
+}
+
+/// Whether the local file at `source` no longer matches the size and
+/// modified time this row's own `build` last recorded for it.
+fn local_file_changed(
+    shared: &Arc<Shared>,
+    id: &str,
+    source: &RemotePath,
+) -> Result<bool, Outcome> {
+    let (fs, leaf) = open_local(source)?;
+    let entry = fs
+        .stat(&leaf)
+        .map_err(|error| Outcome::Fatal(from_op(error)))?;
+    let (stored_size, stored_mtime) = {
+        let state = lock(&shared.state);
+        let row = state.transfers.get(id);
+        (
+            row.and_then(|row| row.source_size),
+            row.and_then(|row| row.source_mtime),
+        )
+    };
+    Ok(stored_size != Some(entry.size) || stored_mtime != Some(entry.modified_unix_secs))
 }
 
 /// Open the local file, build its manifest, and store the record. Purely
