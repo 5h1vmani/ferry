@@ -12,13 +12,6 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import app.ferry.engine.FerryEngine
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.launch
 
 // The foreground service that keeps the phone reachable, and the
 // notification that says so.
@@ -32,24 +25,20 @@ import kotlinx.coroutines.launch
 //
 // The off state is a state of this service, not its absence. docs-v2/ia.md,
 // Presence, both platforms, promises a notification with "Not advertising"
-// and a "Start advertising" action, so a person who tapped Stop from the
-// shade — or turned the switch off inside the app — has a way back without
-// opening Ferry. The service ends only when the engine cannot start, or the
-// process itself dies; toggling advertising off never stops it.
+// and a "Start advertising" action. Tapping Stop from the shade, or
+// turning the switch off inside the app, both leave a way back without
+// opening Ferry. The service ends only when the engine cannot start, or
+// the process itself dies. Toggling advertising off never stops it.
+//
+// The notification never shows the quiet-on-this-network line. Both its
+// lines show only in Settings, Networks: docs-v2/ia.md, Presence, both
+// platforms.
 //
 // The service type is dataSync. Android 15 and later limit a dataSync
 // foreground service to six hours in a day, after which the system stops
 // it. The Pixel 3 XL this build targets runs Android 12, which has no such
 // limit, so nothing here works around it yet.
 class ReachableService : Service() {
-    // Wi-Fi presence can turn off after this service is already running:
-    // the phone can walk onto an untrusted network mid-advertise. This
-    // scope's one job re-posts the notification on every such change, so
-    // it says the same thing PresenceControl does without a person having
-    // to reopen the app to see it. Cancelled in onDestroy.
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private var watchJob: Job? = null
-
     // True while the phone advertises. False in the off state, which this
     // service holds rather than ending.
     private var advertising = false
@@ -90,13 +79,10 @@ class ReachableService : Service() {
         )
         running = true
         FerryEngine.setReachable(true)
-        watchWifiPresence()
         return START_STICKY
     }
 
     override fun onDestroy() {
-        watchJob?.cancel()
-        scope.cancel()
         FerryEngine.setReachable(false)
         running = false
         // The activity can have finished while this service kept running.
@@ -108,24 +94,6 @@ class ReachableService : Service() {
             FerryEngine.stop()
         }
         super.onDestroy()
-    }
-
-    // Re-posts the notification whenever Wi-Fi presence changes, so the
-    // quiet line appears and disappears without the phone leaving and
-    // rejoining a foreground service. Started once per run of this
-    // service, not once per onStartCommand.
-    private fun watchWifiPresence() {
-        if (watchJob != null) {
-            return
-        }
-        watchJob = scope.launch {
-            FerryEngine.wifiPresence.collect { updateNotification() }
-        }
-    }
-
-    private fun updateNotification() {
-        val manager = getSystemService(NotificationManager::class.java) ?: return
-        manager.notify(NOTIFICATION_ID, buildNotification())
     }
 
     private fun createChannel() {
@@ -146,10 +114,6 @@ class ReachableService : Service() {
     //
     // The device is named rather than called "your phone", because a person
     // reading this may have two.
-    //
-    // A second line appears while Wi-Fi presence is off: advertising is on,
-    // but this network is not trusted, so nothing is actually reachable on
-    // it. PresenceControl states the same fact with the same string.
     private fun buildNotification(): Notification {
         val open = PendingIntent.getActivity(
             this,
@@ -184,7 +148,7 @@ class ReachableService : Service() {
             Intent(this, ReachableService::class.java).setAction(ACTION_STOP_ADVERTISING),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val builder = Notification.Builder(this, CHANNEL_ID)
+        return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_advertising, Build.MODEL))
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setOngoing(true)
@@ -196,10 +160,7 @@ class ReachableService : Service() {
                     stop,
                 ).build(),
             )
-        if (!FerryEngine.wifiPresence.value) {
-            builder.setContentText(getString(R.string.presence_quiet_on_network))
-        }
-        return builder.build()
+            .build()
     }
 
     companion object {
@@ -220,8 +181,8 @@ class ReachableService : Service() {
 
         // Sent whether the tap came from the app's own switch or the
         // notification's own action: both mean the same thing, off. This
-        // does not stop the service — the off state is a state of it, not
-        // its absence — so the notification stays, with a way back.
+        // does not stop the service. The off state is a state of it, not
+        // its absence, so the notification stays, with a way back.
         fun turnOff(context: Context) {
             context.startService(
                 Intent(context, ReachableService::class.java).setAction(ACTION_STOP_ADVERTISING),
