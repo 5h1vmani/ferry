@@ -20,9 +20,9 @@ struct AutomaticSection: View {
         Section(S.automatic.section) {
             VStack(alignment: .leading, spacing: FerrySpace.s1) {
                 Toggle(S.automatic.copyNewPhotos(from: deviceName), isOn: binding)
-                    // TODO(engine 14): no auto copy exists, so the switch
-                    // is disabled rather than shown as off-but-available,
-                    // which would be a small lie about what Ferry can do.
+                    // `isSupported` is false only before the engine has
+                    // started, so the switch is disabled rather than shown
+                    // as off-but-available for that one moment.
                     .disabled(!autoCopy.isSupported)
 
                 // The rule is stated, not implied. This is the sentence

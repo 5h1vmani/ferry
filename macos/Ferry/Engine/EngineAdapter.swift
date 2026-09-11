@@ -6,12 +6,11 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// Two items in docs/engine-contract.md have no field in the engine yet: 12
-// and 14. Each one is marked `TODO(engine N)`, where N is its item number,
-// and each has a default here that is honest: a missing count is absent,
-// not zero, and a missing sentence is left out, not guessed. That is the
-// three-part rule from docs/voice.md applied to the boundary rather than to
-// prose.
+// One item in docs/engine-contract.md has no field in the engine yet: 12.
+// It is marked `TODO(engine 12)`, and has a default here that is honest: a
+// missing count is absent, not zero, and a missing sentence is left out, not
+// guessed. That is the three-part rule from docs/voice.md applied to the
+// boundary rather than to prose.
 //
 //   grep -rn "TODO(engine" macos/
 //
@@ -169,20 +168,28 @@ enum EngineAdapter {
         }
     }
 
-    /// Job 7's switch and its three lines.
+    /// Job 7's switch and its three lines, from the engine's own `AutoCopy`.
     ///
-    /// TODO(engine 14): `auto_copy` does not exist. The section renders
-    /// with the switch off and disabled, which states the truth: Ferry
-    /// cannot do this yet. It does not render as off-but-available, which
-    /// would be a small lie.
-    static func autoCopy(forDevice keyHex: String, downloadDir: String) -> AutoCopySnapshot {
+    /// `docs/engine-contract.md`, item 14. `isSupported` is always true now
+    /// that the engine has the field: the switch is only ever disabled by
+    /// a device not being paired, which the screen that shows it never
+    /// reaches for.
+    static func autoCopy(_ info: AutoCopy) -> AutoCopySnapshot {
         AutoCopySnapshot(
-            isEnabled: false,
-            source: "DCIM",
-            destination: downloadDir,
-            lastRun: nil,
-            isSupported: false
+            isEnabled: info.enabled,
+            source: info.source,
+            destination: info.destination,
+            lastRun: lastRun(unixSecs: info.lastRunUnixSecs, files: info.lastRunFiles),
+            isSupported: true
         )
+    }
+
+    /// "Last copied 43 files, 2 hours ago." `nil` before the first run:
+    /// `lastRunUnixSecs` and `lastRunFiles` are `Some` together or not at
+    /// all, so either standing in for the other never happens.
+    private static func lastRun(unixSecs: Int64?, files: UInt32?) -> String? {
+        guard let unixSecs, let files else { return nil }
+        return S.automatic.lastRun(files: Int(files), relative: FerryFormat.relative(unixSecs: unixSecs))
     }
 
     // MARK: - Presence

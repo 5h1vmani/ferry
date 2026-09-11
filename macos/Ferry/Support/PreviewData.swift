@@ -150,13 +150,11 @@ enum PreviewData {
         SharedRootSnapshot(name: "Downloads", path: "/Users/yantram/Downloads", isWritable: true),
     ]
 
-    /// Job 7 turned on and having run. The engine cannot do this yet
-    /// (docs/engine-contract.md, item 14), so the preview is the only place
-    /// this state can be seen.
+    /// Job 7 turned on and having run (docs/engine-contract.md, item 14).
     static let autoCopyOn = AutoCopySnapshot(
         isEnabled: true,
-        source: "DCIM",
-        destination: "/Users/yantram/Downloads/Ferry",
+        source: "Internal storage/DCIM",
+        destination: "/Users/yantram/Downloads/DCIM",
         lastRun: S.automatic.lastRun(files: 43, relative: "2 hours ago"),
         isSupported: true
     )

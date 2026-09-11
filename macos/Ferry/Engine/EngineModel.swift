@@ -231,9 +231,13 @@ final class EngineModel: ObservableObject {
         EngineAdapter.mount(deviceInfos.first { $0.keyHex == keyHex })
     }
 
-    /// Job 7's switch and its lines, for one device.
+    /// Job 7's switch and its lines, for one device. Reads the engine
+    /// fresh on every call, the same as `accessLog(forDevice:)`: caching
+    /// `deviceInfos` would show a run's last count only as stale as the
+    /// last `devices_changed` callback happened to be.
     func autoCopy(forDevice keyHex: String) -> AutoCopySnapshot {
-        EngineAdapter.autoCopy(forDevice: keyHex, downloadDir: downloadPath)
+        guard let engine else { return .unsupported }
+        return EngineAdapter.autoCopy(engine.autoCopy(deviceKeyHex: keyHex))
     }
 
     /// The access log for one device, grouped by day, newest first. Capped
@@ -254,10 +258,19 @@ final class EngineModel: ObservableObject {
 
     // MARK: - Automatic, job 7
 
-    /// TODO(engine 14): `set_auto_copy` does not exist, so the switch is
-    /// disabled in the view and this does nothing. It is here so that the
-    /// view's shape does not change when the engine gains it.
+    /// Turns job 7's switch on or off for one device.
+    ///
+    /// No engine restart, and no `Task.detached`: `set_auto_copy` only
+    /// persists the choice and, when it turns the switch on for a reachable
+    /// device, starts a run on a thread of the engine's own. Neither blocks
+    /// this call.
     func setAutoCopy(forDevice keyHex: String, enabled: Bool) {
+        guard let engine else { return }
+        do {
+            try engine.setAutoCopy(deviceKeyHex: keyHex, enabled: enabled)
+        } catch {
+            report(error)
+        }
     }
 
     // MARK: - The Finder mount, item 6
