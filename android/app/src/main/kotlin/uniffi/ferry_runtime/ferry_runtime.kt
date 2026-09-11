@@ -731,6 +731,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_forget(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_forget_network(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_list(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_mount_start(
@@ -761,6 +763,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_mount_path(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_set_network(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_reachable(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_roots(
@@ -776,6 +780,10 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ferry_runtime_checksum_method_engine_stop(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_transfers(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_trust_network(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_trusted_networks(
     ): Int
     external fun uniffi_ferry_runtime_checksum_constructor_engine_new(
     ): Int
@@ -826,6 +834,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_forget(`ptr`: Long,`keyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_forget_network(`ptr`: Long,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_list(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_mount_start(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -856,6 +866,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_mount_path(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_set_network(`ptr`: Long,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_reachable(`ptr`: Long,`on`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_roots(`ptr`: Long,`roots`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -871,6 +883,10 @@ internal object UniffiLib {
     external fun uniffi_ferry_runtime_fn_method_engine_stop(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_transfers(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_trust_network(`ptr`: Long,`name`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_trusted_networks(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_init_callback_vtable_enginelistener(`vtable`: UniffiVTableCallbackInterfaceEngineListener,
     ): Unit
@@ -1024,6 +1040,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_forget() and 0xFFFF) != 37454) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_forget_network() and 0xFFFF) != 51909) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_list() and 0xFFFF) != 16273) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1069,6 +1088,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_mount_path() and 0xFFFF) != 64178) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_network() and 0xFFFF) != 41065) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_reachable() and 0xFFFF) != 6511) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1091,6 +1113,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_transfers() and 0xFFFF) != 21287) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_trust_network() and 0xFFFF) != 27441) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_trusted_networks() and 0xFFFF) != 41313) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_constructor_engine_new() and 0xFFFF) != 19972) {
@@ -1651,6 +1679,17 @@ public interface EngineInterface {
     fun `forget`(`keyHex`: kotlin.String)
     
     /**
+     * Remove a Wi-Fi network name from the trusted list.
+     *
+     * A name that is not trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `TransferError::Local` when local storage refuses the write.
+     */
+    fun `forgetNetwork`(`name`: kotlin.String)
+    
+    /**
      * List every entry in one folder on a paired device.
      *
      * Dials the device, then pages through the server's cursor until it
@@ -1870,6 +1909,18 @@ public interface EngineInterface {
     fun `setMountPath`(`deviceKeyHex`: kotlin.String, `path`: kotlin.String?)
     
     /**
+     * The app reports the name of the Wi-Fi network it is on, or `None`
+     * when it cannot read one: Wi-Fi off, the location permission refused,
+     * or the name unknown.
+     *
+     * Called after [`Engine::start`] and on every change. Idempotent: the
+     * same name twice writes nothing and reports nothing.
+     *
+     * `docs/engine-contract.md`, item 18.
+     */
+    fun `setNetwork`(`name`: kotlin.String?)
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
@@ -1960,6 +2011,24 @@ public interface EngineInterface {
      * Every transfer, as the app shows them.
      */
     fun `transfers`(): List<TransferInfo>
+    
+    /**
+     * Add a Wi-Fi network name to the trusted list.
+     *
+     * A name already trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NetworkName` for an empty name, a name over 32
+     * bytes, or a 33rd name. Returns `TransferError::Local` when local
+     * storage refuses the write.
+     */
+    fun `trustNetwork`(`name`: kotlin.String)
+    
+    /**
+     * Every trusted Wi-Fi network name, oldest first.
+     */
+    fun `trustedNetworks`(): List<kotlin.String>
     
     companion object
 }
@@ -2238,6 +2307,29 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         it,
         
         FfiConverterString.lower(`keyHex`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Remove a Wi-Fi network name from the trusted list.
+     *
+     * A name that is not trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `TransferError::Local` when local storage refuses the write.
+     */
+    @Throws(FerryException::class)override fun `forgetNetwork`(`name`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_forget_network(
+        it,
+        
+        FfiConverterString.lower(`name`),_status)
 }
     }
     
@@ -2658,6 +2750,29 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * The app reports the name of the Wi-Fi network it is on, or `None`
+     * when it cannot read one: Wi-Fi off, the location permission refused,
+     * or the name unknown.
+     *
+     * Called after [`Engine::start`] and on every change. Idempotent: the
+     * same name twice writes nothing and reports nothing.
+     *
+     * `docs/engine-contract.md`, item 18.
+     */override fun `setNetwork`(`name`: kotlin.String?)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_set_network(
+        it,
+        
+        FfiConverterOptionalString.lower(`name`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
@@ -2828,6 +2943,47 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     callWithHandle {
     uniffiRustCall() { _status ->
     UniffiLib.uniffi_ferry_runtime_fn_method_engine_transfers(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Add a Wi-Fi network name to the trusted list.
+     *
+     * A name already trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NetworkName` for an empty name, a name over 32
+     * bytes, or a 33rd name. Returns `TransferError::Local` when local
+     * storage refuses the write.
+     */
+    @Throws(FerryException::class)override fun `trustNetwork`(`name`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_trust_network(
+        it,
+        
+        FfiConverterString.lower(`name`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Every trusted Wi-Fi network name, oldest first.
+     */override fun `trustedNetworks`(): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_trusted_networks(
         it,
         _status)
 }
@@ -3800,6 +3956,16 @@ data class Status (
      * Whether `adb` was found when the engine started.
      */
     var `adbPresent`: kotlin.Boolean
+    , 
+    /**
+     * The Wi-Fi network name the app last set. `None` when unknown.
+     */
+    var `network`: kotlin.String?
+    , 
+    /**
+     * True while this device advertises, browses, and accepts over Wi-Fi.
+     */
+    var `wifiPresence`: kotlin.Boolean
     
 ){
     
@@ -3819,19 +3985,25 @@ public object FfiConverterTypeStatus: FfiConverterRustBuffer<Status> {
             FfiConverterBoolean.read(buf),
             FfiConverterUShort.read(buf),
             FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
     override fun allocationSize(value: Status) = (
             FfiConverterBoolean.allocationSize(value.`reachable`) +
             FfiConverterUShort.allocationSize(value.`listenPort`) +
-            FfiConverterBoolean.allocationSize(value.`adbPresent`)
+            FfiConverterBoolean.allocationSize(value.`adbPresent`) +
+            FfiConverterOptionalString.allocationSize(value.`network`) +
+            FfiConverterBoolean.allocationSize(value.`wifiPresence`)
     )
 
     override fun write(value: Status, buf: ByteBuffer) {
             FfiConverterBoolean.write(value.`reachable`, buf)
             FfiConverterUShort.write(value.`listenPort`, buf)
             FfiConverterBoolean.write(value.`adbPresent`, buf)
+            FfiConverterOptionalString.write(value.`network`, buf)
+            FfiConverterBoolean.write(value.`wifiPresence`, buf)
     }
 }
 

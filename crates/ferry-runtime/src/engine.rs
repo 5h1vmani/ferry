@@ -998,6 +998,8 @@ impl Engine {
             reachable: state.reachable,
             listen_port: state.listen_addr.map_or(0, |addr| addr.port()),
             adb_present: self.shared.adb.is_some(),
+            network: state.network.clone(),
+            wifi_presence: networks::wifi_presence(&state),
         }
     }
 

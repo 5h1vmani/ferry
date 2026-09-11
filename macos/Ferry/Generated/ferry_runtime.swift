@@ -687,6 +687,17 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func forget(keyHex: String) throws 
     
     /**
+     * Remove a Wi-Fi network name from the trusted list.
+     *
+     * A name that is not trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `TransferError::Local` when local storage refuses the write.
+     */
+    func forgetNetwork(name: String) throws 
+    
+    /**
      * List every entry in one folder on a paired device.
      *
      * Dials the device, then pages through the server's cursor until it
@@ -906,6 +917,18 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func setMountPath(deviceKeyHex: String, path: String?) throws 
     
     /**
+     * The app reports the name of the Wi-Fi network it is on, or `None`
+     * when it cannot read one: Wi-Fi off, the location permission refused,
+     * or the name unknown.
+     *
+     * Called after [`Engine::start`] and on every change. Idempotent: the
+     * same name twice writes nothing and reports nothing.
+     *
+     * `docs/engine-contract.md`, item 18.
+     */
+    func setNetwork(name: String?) 
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
@@ -996,6 +1019,24 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * Every transfer, as the app shows them.
      */
     func transfers()  -> [TransferInfo]
+    
+    /**
+     * Add a Wi-Fi network name to the trusted list.
+     *
+     * A name already trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NetworkName` for an empty name, a name over 32
+     * bytes, or a 33rd name. Returns `TransferError::Local` when local
+     * storage refuses the write.
+     */
+    func trustNetwork(name: String) throws 
+    
+    /**
+     * Every trusted Wi-Fi network name, oldest first.
+     */
+    func trustedNetworks()  -> [String]
     
 }
 /**
@@ -1196,6 +1237,24 @@ open func forget(keyHex: String)throws   {try rustCallWithError(FfiConverterType
     uniffi_ferry_runtime_fn_method_engine_forget(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(keyHex),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Remove a Wi-Fi network name from the trusted list.
+     *
+     * A name that is not trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `TransferError::Local` when local storage refuses the write.
+     */
+open func forgetNetwork(name: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_forget_network(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),uniffiCallStatus
     )
 }
 }
@@ -1541,6 +1600,25 @@ open func setMountPath(deviceKeyHex: String, path: String?)throws   {try rustCal
 }
     
     /**
+     * The app reports the name of the Wi-Fi network it is on, or `None`
+     * when it cannot read one: Wi-Fi off, the location permission refused,
+     * or the name unknown.
+     *
+     * Called after [`Engine::start`] and on every change. Idempotent: the
+     * same name twice writes nothing and reports nothing.
+     *
+     * `docs/engine-contract.md`, item 18.
+     */
+open func setNetwork(name: String?)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_network(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Advertise over mDNS and accept connections, or stop doing both.
      *
      * Turning this off does not close connections that are already serving.
@@ -1681,6 +1759,38 @@ open func transfers() -> [TransferInfo]  {
     return try!  FfiConverterSequenceTypeTransferInfo.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_ferry_runtime_fn_method_engine_transfers(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Add a Wi-Fi network name to the trusted list.
+     *
+     * A name already trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NetworkName` for an empty name, a name over 32
+     * bytes, or a 33rd name. Returns `TransferError::Local` when local
+     * storage refuses the write.
+     */
+open func trustNetwork(name: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_trust_network(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Every trusted Wi-Fi network name, oldest first.
+     */
+open func trustedNetworks() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_trusted_networks(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -3008,6 +3118,14 @@ public struct Status: Equatable, Hashable {
      * Whether `adb` was found when the engine started.
      */
     public var adbPresent: Bool
+    /**
+     * The Wi-Fi network name the app last set. `None` when unknown.
+     */
+    public var network: String?
+    /**
+     * True while this device advertises, browses, and accepts over Wi-Fi.
+     */
+    public var wifiPresence: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3020,10 +3138,18 @@ public struct Status: Equatable, Hashable {
          */listenPort: UInt16, 
         /**
          * Whether `adb` was found when the engine started.
-         */adbPresent: Bool) {
+         */adbPresent: Bool, 
+        /**
+         * The Wi-Fi network name the app last set. `None` when unknown.
+         */network: String?, 
+        /**
+         * True while this device advertises, browses, and accepts over Wi-Fi.
+         */wifiPresence: Bool) {
         self.reachable = reachable
         self.listenPort = listenPort
         self.adbPresent = adbPresent
+        self.network = network
+        self.wifiPresence = wifiPresence
     }
 
     
@@ -3044,7 +3170,9 @@ public struct FfiConverterTypeStatus: FfiConverterRustBuffer {
             try Status(
                 reachable: FfiConverterBool.read(from: &buf), 
                 listenPort: FfiConverterUInt16.read(from: &buf), 
-                adbPresent: FfiConverterBool.read(from: &buf)
+                adbPresent: FfiConverterBool.read(from: &buf), 
+                network: FfiConverterOptionString.read(from: &buf), 
+                wifiPresence: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -3052,6 +3180,8 @@ public struct FfiConverterTypeStatus: FfiConverterRustBuffer {
         FfiConverterBool.write(value.reachable, into: &buf)
         FfiConverterUInt16.write(value.listenPort, into: &buf)
         FfiConverterBool.write(value.adbPresent, into: &buf)
+        FfiConverterOptionString.write(value.network, into: &buf)
+        FfiConverterBool.write(value.wifiPresence, into: &buf)
     }
 }
 
@@ -5012,6 +5142,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_forget() != 37454) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_forget_network() != 51909) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_list() != 16273) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5057,6 +5190,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_set_mount_path() != 64178) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_set_network() != 41065) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_set_reachable() != 6511) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5079,6 +5215,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_transfers() != 21287) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_trust_network() != 27441) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_trusted_networks() != 41313) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 19972) {

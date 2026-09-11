@@ -465,6 +465,58 @@ fn a_refused_network_name_says_why() {
 }
 
 // ---------------------------------------------------------------------------
+// What `status()` reports.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn setting_the_network_turns_wifi_presence_off_and_on() {
+    let side = build("Yayati");
+
+    let before = side.engine.status();
+    assert!(!before.reachable, "an engine starts unreachable");
+    assert!(!before.wifi_presence, "unreachable means no presence");
+    assert_eq!(before.network, None, "the app has set no name yet");
+
+    side.engine.set_reachable(true);
+    assert!(
+        side.engine.status().wifi_presence,
+        "reachable with an empty trusted list is present, as before item 18"
+    );
+
+    side.engine
+        .trust_network("Home".to_owned())
+        .expect("a plain name should be trusted");
+    assert!(
+        !side.engine.status().wifi_presence,
+        "an unknown network with a non-empty list is off"
+    );
+
+    side.engine.set_network(Some("Cafe".to_owned()));
+    let cafe = side.engine.status();
+    assert_eq!(cafe.network, Some("Cafe".to_owned()));
+    assert!(!cafe.wifi_presence, "a network that is not trusted is off");
+
+    side.engine.set_network(Some("Home".to_owned()));
+    let home = side.engine.status();
+    assert_eq!(home.network, Some("Home".to_owned()));
+    assert!(home.wifi_presence, "a trusted network is on");
+
+    side.engine.set_network(None);
+    let unknown = side.engine.status();
+    assert_eq!(unknown.network, None, "the name went back to unknown");
+    assert!(!unknown.wifi_presence, "an unknown name is off again");
+
+    side.engine.set_network(Some("Home".to_owned()));
+    side.engine.set_reachable(false);
+    assert!(
+        !side.engine.status().wifi_presence,
+        "the reachable switch still turns everything off"
+    );
+
+    side.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // What a pairing records.
 // ---------------------------------------------------------------------------
 
@@ -489,6 +541,13 @@ fn pairing_trusts_the_network_on_both_sides() {
         phone.engine.trusted_networks(),
         names(&["Home"]),
         "the phone trusts the network it paired on"
+    );
+
+    // The phone is reachable and on a network it now trusts, so it stays
+    // present once pairing has ended.
+    assert!(
+        phone.engine.status().wifi_presence,
+        "the network the pairing recorded keeps the phone present"
     );
 
     mac.engine.stop();

@@ -132,12 +132,24 @@ enum PreviewData {
     static let transferGroups = EngineAdapter.groups(transfers: transfers, batches: [])
 
     static let advertising = EngineAdapter.presence(
-        status: Status(reachable: true, listenPort: 53317, adbPresent: true),
+        status: Status(
+            reachable: true,
+            listenPort: 53317,
+            adbPresent: true,
+            network: "Home",
+            wifiPresence: true
+        ),
         devices: devices
     )
 
     static let notAdvertising = EngineAdapter.presence(
-        status: Status(reachable: false, listenPort: 53317, adbPresent: true),
+        status: Status(
+            reachable: false,
+            listenPort: 53317,
+            adbPresent: true,
+            network: "Home",
+            wifiPresence: false
+        ),
         devices: []
     )
 

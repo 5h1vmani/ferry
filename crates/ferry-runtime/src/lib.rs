@@ -345,6 +345,10 @@ pub struct Status {
     pub listen_port: u16,
     /// Whether `adb` was found when the engine started.
     pub adb_present: bool,
+    /// The Wi-Fi network name the app last set. `None` when unknown.
+    pub network: Option<String>,
+    /// True while this device advertises, browses, and accepts over Wi-Fi.
+    pub wifi_presence: bool,
 }
 
 /// Where the `WebDAV` bridge for one device answers, and the credentials to
