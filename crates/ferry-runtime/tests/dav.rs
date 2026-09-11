@@ -1037,10 +1037,7 @@ fn the_thirty_third_idle_connection_is_closed_at_once() {
         .list(phone_key_hex.clone(), String::new())
         .expect("listing should succeed");
 
-    let endpoint = mac
-        .engine
-        .mount_start(phone_key_hex)
-        .expect("mount_start");
+    let endpoint = mac.engine.mount_start(phone_key_hex).expect("mount_start");
     let addr: SocketAddr = format!("127.0.0.1:{}", port_of(&endpoint.url))
         .parse()
         .expect("a loopback address");

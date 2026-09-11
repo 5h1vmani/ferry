@@ -681,7 +681,11 @@ fn get_file(
         end.saturating_sub(start) + 1
     };
 
-    let status = if ranged { "206 Partial Content" } else { "200 OK" };
+    let status = if ranged {
+        "206 Partial Content"
+    } else {
+        "200 OK"
+    };
     let mut headers = vec![
         ("Content-Length", len.to_string()),
         ("Content-Type", "application/octet-stream".to_owned()),
