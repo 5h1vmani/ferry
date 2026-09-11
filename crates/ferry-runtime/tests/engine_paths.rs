@@ -39,7 +39,7 @@ use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
-    AccessVerb, Config, DeviceKind as RuntimeDeviceKind, Direction, Engine, EngineListener,
+    AccessVerb, Actor, Config, DeviceKind as RuntimeDeviceKind, Direction, Engine, EngineListener,
     FerryError, KeyPair, PairingState, Root, TransferState, generate_key,
 };
 
@@ -2373,6 +2373,61 @@ fn access_log_entries_survive_a_restart() {
         after_read.device_key_hex, before_read.device_key_hex,
         "the device survives the restart"
     );
+
+    engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Finding E1: stop must not lose an entry still pending when it runs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_operation_served_just_before_stop_is_in_the_log_after_a_restart() {
+    let phone = build("Pixel 3 XL");
+    phone.engine.set_reachable(true);
+    std::fs::write(phone.shared_root().join("note.txt"), b"hello")
+        .expect("the shared folder should accept a file");
+    let peer = start_peer(&phone.key, sample_bytes(16));
+    pair_with_peer(&phone, &peer);
+    peer.close();
+
+    let connection = tcp::connect(
+        loopback_addr(&phone),
+        &static_key(&peer.key),
+        &public_key(&phone.key),
+    )
+    .expect("a paired peer should be able to connect");
+    let mut stream = connection.stream;
+    exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange runs");
+    let mut client = Client::new(stream);
+    let path = RemotePath::parse("Root/note.txt").expect("a valid path");
+    client.read(&path, 0, 5).expect("a paired peer may read");
+
+    // No sleep here: the read's entry is still pending in the roll-up, five
+    // seconds short of its own idle timeout, and the connection is still
+    // open. `stop` must still write it out rather than lose it.
+    phone.engine.stop();
+
+    // A new engine on the same folder, as if the app had been restarted.
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Pixel 3 XL",
+        phone.key.clone(),
+        phone.data.path(),
+        phone.shared.path(),
+        phone.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+    engine.start().expect("the engine should start");
+
+    let found = engine.access_log(None, 10);
+    let entry = found
+        .iter()
+        .find(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+        .expect("the read served just before stop should still be in the log");
+    assert_eq!(entry.path, "Root/note.txt");
+    assert_eq!(entry.bytes, Some(5));
 
     engine.stop();
 }

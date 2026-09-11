@@ -42,7 +42,12 @@
 //! # Where it is wired in
 //!
 //! `engine.rs` opens the store at `start` from `data_dir`, holds the
-//! [`RollUp`] behind a mutex, and drops it at `stop`. `guard.rs` calls
+//! [`RollUp`] behind a mutex, and, at `stop`, once every thread `stop` can
+//! join has finished, takes it out, calls [`RollUp::finalize_all`] on it,
+//! and drops it. That covers whatever a serving thread left pending too: a
+//! serving thread is never joined (`lib.rs`, "a serving thread cannot be
+//! woken"), so `finalize_all` is what keeps its last, still-pending entry
+//! from being lost rather than a join ever waiting for it. `guard.rs` calls
 //! [`RollUp::touch`] as actor [`Actor::Peer`] for a served connection, and
 //! `engine.rs` and `transfer.rs` call it as actor [`Actor::This`] for `list`,
 //! a transfer attempt's reads, and `pull_folder`. The boundary's
@@ -792,6 +797,26 @@ impl RollUp {
     /// flag either way.
     pub(crate) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
+    }
+
+    /// Finalise every pending entry, on every connection, whatever its idle
+    /// time. Called once, at `stop`, right before the roll-up is dropped.
+    /// A calling-side operation always finalises itself in the same breath
+    /// it touches this roll-up, so it never leaves anything behind; what is
+    /// still pending here comes from a served connection whose thread `stop`
+    /// cannot join (`lib.rs`, "a serving thread cannot be woken") and that
+    /// has not yet gone idle or ended on its own. Quitting must not lose it.
+    ///
+    /// `now` names nothing this needs, for the same reason it names nothing
+    /// in [`RollUp::connection_ended`]: every pending entry already carries
+    /// its own first touch time to file under.
+    pub(crate) fn finalize_all(&mut self, now: i64) {
+        let _ = now;
+        for list in std::mem::take(&mut self.pending).into_values() {
+            for pending in &list {
+                finalize_pending(&mut self.store, &mut self.changed, pending);
+            }
+        }
     }
 }
 

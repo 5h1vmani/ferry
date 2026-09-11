@@ -808,7 +808,6 @@ impl Engine {
         }
         *lock(&self.shared.roots) = None;
         *lock(&self.shared.download_fs) = None;
-        *lock(&self.shared.access_log) = None;
 
         // The accept loop is blocked inside `accept`. A connection to our own
         // port is the only way to bring it back, since the listener has no
@@ -819,6 +818,15 @@ impl Engine {
         for handle in handles {
             // A thread that already panicked has nothing left to report to.
             drop(handle.join());
+        }
+
+        // A serving thread is never joined (`lib.rs`, "a serving thread
+        // cannot be woken"), so its own `connection_ended` call may never
+        // come. Taking the roll-up and finishing whatever it still has
+        // pending, rather than just dropping it, is what keeps an operation
+        // served in the moment before `stop` from being lost.
+        if let Some(mut rollup) = lock(&self.shared.access_log).take() {
+            rollup.finalize_all(now_unix_secs());
         }
 
         self.remove_forwards();
