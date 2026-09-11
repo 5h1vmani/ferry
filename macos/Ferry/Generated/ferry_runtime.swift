@@ -638,6 +638,14 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func accessLog(deviceKeyHex: String?, limit: UInt32)  -> [AccessEntry]
     
     /**
+     * Job 7: whether this device copies a paired device's camera folder to
+     * itself on its own, and what its last run did.
+     *
+     * `docs/engine-contract.md`, item 14. Always answers; see [`AutoCopy`].
+     */
+    func autoCopy(deviceKeyHex: String)  -> AutoCopy
+    
+    /**
      * Every batch this engine has grouped, across every device.
      */
     func batches()  -> [BatchInfo]
@@ -803,6 +811,17 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * given to `new`, unopened and unvalidated beyond being non-empty.
      */
     func roots()  -> [Root]
+    
+    /**
+     * Turns automatic copying on or off for one device.
+     *
+     * `docs/engine-contract.md`, item 14.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    func setAutoCopy(deviceKeyHex: String, enabled: Bool) throws 
     
     /**
      * Change where a pulled file lands.
@@ -1020,6 +1039,22 @@ open func accessLog(deviceKeyHex: String?, limit: UInt32) -> [AccessEntry]  {
             self.uniffiCloneHandle(),
         FfiConverterOptionString.lower(deviceKeyHex),
         FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Job 7: whether this device copies a paired device's camera folder to
+     * itself on its own, and what its last run did.
+     *
+     * `docs/engine-contract.md`, item 14. Always answers; see [`AutoCopy`].
+     */
+open func autoCopy(deviceKeyHex: String) -> AutoCopy  {
+    return try!  FfiConverterTypeAutoCopy_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_auto_copy(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
     )
 })
 }
@@ -1294,6 +1329,25 @@ open func roots() -> [Root]  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Turns automatic copying on or off for one device.
+     *
+     * `docs/engine-contract.md`, item 14.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+open func setAutoCopy(deviceKeyHex: String, enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_auto_copy(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -1660,6 +1714,125 @@ public func FfiConverterTypeAccessEntry_lift(_ buf: RustBuffer) throws -> Access
 #endif
 public func FfiConverterTypeAccessEntry_lower(_ value: AccessEntry) -> RustBuffer {
     return FfiConverterTypeAccessEntry.lower(value)
+}
+
+
+/**
+ * Job 7: whether this device copies a paired device's camera folder to
+ * itself on its own, and what its last run did.
+ *
+ * `docs/engine-contract.md`, item 14. `source` and `destination` are never
+ * stored: `source` is learned fresh from the peer's own roots each time a
+ * run starts, and is the placeholder `"DCIM"` until the first run has
+ * learned it; `destination` is always computed from the current download
+ * folder. [`Engine::auto_copy`] always answers, even for a device that is
+ * not paired.
+ */
+public struct AutoCopy: Equatable, Hashable {
+    /**
+     * Which device this describes.
+     */
+    public var deviceKeyHex: String
+    /**
+     * Whether the switch is on.
+     */
+    public var enabled: Bool
+    /**
+     * The peer folder watched, root-relative: `"Internal storage/DCIM"`.
+     */
+    public var source: String
+    /**
+     * Where copies land: `"<download_dir>/DCIM"`.
+     */
+    public var destination: String
+    /**
+     * When the last run ended, if one ever has.
+     */
+    public var lastRunUnixSecs: Int64?
+    /**
+     * How many files the last run copied, zero when it found nothing new.
+     * `Some` exactly when `last_run_unix_secs` is.
+     */
+    public var lastRunFiles: UInt32?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Which device this describes.
+         */deviceKeyHex: String, 
+        /**
+         * Whether the switch is on.
+         */enabled: Bool, 
+        /**
+         * The peer folder watched, root-relative: `"Internal storage/DCIM"`.
+         */source: String, 
+        /**
+         * Where copies land: `"<download_dir>/DCIM"`.
+         */destination: String, 
+        /**
+         * When the last run ended, if one ever has.
+         */lastRunUnixSecs: Int64?, 
+        /**
+         * How many files the last run copied, zero when it found nothing new.
+         * `Some` exactly when `last_run_unix_secs` is.
+         */lastRunFiles: UInt32?) {
+        self.deviceKeyHex = deviceKeyHex
+        self.enabled = enabled
+        self.source = source
+        self.destination = destination
+        self.lastRunUnixSecs = lastRunUnixSecs
+        self.lastRunFiles = lastRunFiles
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AutoCopy: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutoCopy: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutoCopy {
+        return
+            try AutoCopy(
+                deviceKeyHex: FfiConverterString.read(from: &buf), 
+                enabled: FfiConverterBool.read(from: &buf), 
+                source: FfiConverterString.read(from: &buf), 
+                destination: FfiConverterString.read(from: &buf), 
+                lastRunUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
+                lastRunFiles: FfiConverterOptionUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AutoCopy, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.deviceKeyHex, into: &buf)
+        FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterString.write(value.source, into: &buf)
+        FfiConverterString.write(value.destination, into: &buf)
+        FfiConverterOptionInt64.write(value.lastRunUnixSecs, into: &buf)
+        FfiConverterOptionUInt32.write(value.lastRunFiles, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoCopy_lift(_ buf: RustBuffer) throws -> AutoCopy {
+    return try FfiConverterTypeAutoCopy.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoCopy_lower(_ value: AutoCopy) -> RustBuffer {
+    return FfiConverterTypeAutoCopy.lower(value)
 }
 
 
@@ -3395,7 +3568,8 @@ public enum Origin: Equatable, Hashable {
      */
     case manual
     /**
-     * Ferry decided, under item 14's rule. Never emitted until item 14.
+     * Ferry decided, under item 14's rule. `auto_copy.rs` is the only
+     * place that ever builds one.
      */
     case automatic
 
@@ -4415,6 +4589,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_access_log() != 8085) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_auto_copy() != 42194) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_batches() != 62922) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4455,6 +4632,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_roots() != 12455) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_set_auto_copy() != 20032) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_set_download_dir() != 37682) {

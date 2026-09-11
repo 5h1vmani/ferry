@@ -303,6 +303,11 @@ uint64_t uniffi_ferry_runtime_fn_constructor_engine_new(RustBuffer config, uint6
 RustBuffer uniffi_ferry_runtime_fn_method_engine_access_log(uint64_t ptr, RustBuffer device_key_hex, uint32_t limit, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_AUTO_COPY
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_AUTO_COPY
+RustBuffer uniffi_ferry_runtime_fn_method_engine_auto_copy(uint64_t ptr, RustBuffer device_key_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_BATCHES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_BATCHES
 RustBuffer uniffi_ferry_runtime_fn_method_engine_batches(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -371,6 +376,11 @@ void uniffi_ferry_runtime_fn_method_engine_retry_batch(uint64_t ptr, RustBuffer 
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ROOTS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ROOTS
 RustBuffer uniffi_ferry_runtime_fn_method_engine_roots(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_AUTO_COPY
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_AUTO_COPY
+void uniffi_ferry_runtime_fn_method_engine_set_auto_copy(uint64_t ptr, RustBuffer device_key_hex, int8_t enabled, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_DOWNLOAD_DIR
@@ -718,6 +728,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_access_log(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_AUTO_COPY
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_AUTO_COPY
+uint16_t uniffi_ferry_runtime_checksum_method_engine_auto_copy(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_BATCHES
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_BATCHES
 uint16_t uniffi_ferry_runtime_checksum_method_engine_batches(void
@@ -799,6 +815,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_retry_batch(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ROOTS
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ROOTS
 uint16_t uniffi_ferry_runtime_checksum_method_engine_roots(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_AUTO_COPY
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_AUTO_COPY
+uint16_t uniffi_ferry_runtime_checksum_method_engine_set_auto_copy(void
     
 );
 #endif

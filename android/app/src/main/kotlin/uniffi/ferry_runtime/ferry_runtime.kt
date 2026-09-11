@@ -719,6 +719,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_access_log(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_auto_copy(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_batches(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_cancel_pairing(
@@ -746,6 +748,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ferry_runtime_checksum_method_engine_retry_batch(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_roots(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_set_auto_copy(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_download_dir(
     ): Int
@@ -804,6 +808,8 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_ferry_runtime_fn_method_engine_access_log(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_auto_copy(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_batches(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_cancel_pairing(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -832,6 +838,8 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_roots(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_set_auto_copy(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_download_dir(`ptr`: Long,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_mount_path(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -986,6 +994,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_access_log() and 0xFFFF) != 8085) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_auto_copy() and 0xFFFF) != 42194) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_batches() and 0xFFFF) != 62922) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1026,6 +1037,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_roots() and 0xFFFF) != 12455) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_auto_copy() and 0xFFFF) != 20032) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_download_dir() and 0xFFFF) != 37682) {
@@ -1567,6 +1581,14 @@ public interface EngineInterface {
     fun `accessLog`(`deviceKeyHex`: kotlin.String?, `limit`: kotlin.UInt): List<AccessEntry>
     
     /**
+     * Job 7: whether this device copies a paired device's camera folder to
+     * itself on its own, and what its last run did.
+     *
+     * `docs/engine-contract.md`, item 14. Always answers; see [`AutoCopy`].
+     */
+    fun `autoCopy`(`deviceKeyHex`: kotlin.String): AutoCopy
+    
+    /**
      * Every batch this engine has grouped, across every device.
      */
     fun `batches`(): List<BatchInfo>
@@ -1732,6 +1754,17 @@ public interface EngineInterface {
      * given to `new`, unopened and unvalidated beyond being non-empty.
      */
     fun `roots`(): List<Root>
+    
+    /**
+     * Turns automatic copying on or off for one device.
+     *
+     * `docs/engine-contract.md`, item 14.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    fun `setAutoCopy`(`deviceKeyHex`: kotlin.String, `enabled`: kotlin.Boolean)
     
     /**
      * Change where a pulled file lands.
@@ -2001,6 +2034,26 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         
         FfiConverterOptionalString.lower(`deviceKeyHex`),
         FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Job 7: whether this device copies a paired device's camera folder to
+     * itself on its own, and what its last run did.
+     *
+     * `docs/engine-contract.md`, item 14. Always answers; see [`AutoCopy`].
+     */override fun `autoCopy`(`deviceKeyHex`: kotlin.String): AutoCopy {
+            return FfiConverterTypeAutoCopy.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_auto_copy(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),_status)
 }
     }
     )
@@ -2341,6 +2394,30 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Turns automatic copying on or off for one device.
+     *
+     * `docs/engine-contract.md`, item 14.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    @Throws(FerryException::class)override fun `setAutoCopy`(`deviceKeyHex`: kotlin.String, `enabled`: kotlin.Boolean)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_set_auto_copy(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterBoolean.lower(`enabled`),_status)
+}
+    }
+    
     
 
     
@@ -2704,6 +2781,94 @@ public object FfiConverterTypeAccessEntry: FfiConverterRustBuffer<AccessEntry> {
             FfiConverterOptionalUInt.write(value.`entries`, buf)
             FfiConverterOptionalUInt.write(value.`files`, buf)
             FfiConverterLong.write(value.`atUnixSecs`, buf)
+    }
+}
+
+
+
+/**
+ * Job 7: whether this device copies a paired device's camera folder to
+ * itself on its own, and what its last run did.
+ *
+ * `docs/engine-contract.md`, item 14. `source` and `destination` are never
+ * stored: `source` is learned fresh from the peer's own roots each time a
+ * run starts, and is the placeholder `"DCIM"` until the first run has
+ * learned it; `destination` is always computed from the current download
+ * folder. [`Engine::auto_copy`] always answers, even for a device that is
+ * not paired.
+ */
+data class AutoCopy (
+    /**
+     * Which device this describes.
+     */
+    var `deviceKeyHex`: kotlin.String
+    , 
+    /**
+     * Whether the switch is on.
+     */
+    var `enabled`: kotlin.Boolean
+    , 
+    /**
+     * The peer folder watched, root-relative: `"Internal storage/DCIM"`.
+     */
+    var `source`: kotlin.String
+    , 
+    /**
+     * Where copies land: `"<download_dir>/DCIM"`.
+     */
+    var `destination`: kotlin.String
+    , 
+    /**
+     * When the last run ended, if one ever has.
+     */
+    var `lastRunUnixSecs`: kotlin.Long?
+    , 
+    /**
+     * How many files the last run copied, zero when it found nothing new.
+     * `Some` exactly when `last_run_unix_secs` is.
+     */
+    var `lastRunFiles`: kotlin.UInt?
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeAutoCopy: FfiConverterRustBuffer<AutoCopy> {
+    override fun read(buf: ByteBuffer): AutoCopy {
+        return AutoCopy(
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalUInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: AutoCopy) = (
+            FfiConverterString.allocationSize(value.`deviceKeyHex`) +
+            FfiConverterBoolean.allocationSize(value.`enabled`) +
+            FfiConverterString.allocationSize(value.`source`) +
+            FfiConverterString.allocationSize(value.`destination`) +
+            FfiConverterOptionalLong.allocationSize(value.`lastRunUnixSecs`) +
+            FfiConverterOptionalUInt.allocationSize(value.`lastRunFiles`)
+    )
+
+    override fun write(value: AutoCopy, buf: ByteBuffer) {
+            FfiConverterString.write(value.`deviceKeyHex`, buf)
+            FfiConverterBoolean.write(value.`enabled`, buf)
+            FfiConverterString.write(value.`source`, buf)
+            FfiConverterString.write(value.`destination`, buf)
+            FfiConverterOptionalLong.write(value.`lastRunUnixSecs`, buf)
+            FfiConverterOptionalUInt.write(value.`lastRunFiles`, buf)
     }
 }
 
@@ -3910,7 +4075,8 @@ enum class Origin {
      */
     MANUAL,
     /**
-     * Ferry decided, under item 14's rule. Never emitted until item 14.
+     * Ferry decided, under item 14's rule. `auto_copy.rs` is the only
+     * place that ever builds one.
      */
     AUTOMATIC;
 
