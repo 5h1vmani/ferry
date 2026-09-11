@@ -1970,6 +1970,302 @@ fn editing_the_local_file_between_two_attempts_lands_the_edited_bytes() {
 }
 
 // ---------------------------------------------------------------------------
+// H audit: push behaviours the audit found no test for.
+// ---------------------------------------------------------------------------
+
+/// A push survives a restart the same way a pull's first pass does: the
+/// stored record is picked up again on a fresh connection, rather than the
+/// person having to start over.
+#[test]
+fn a_push_survives_a_restart() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+    // Long enough that the cut attempt below is reliably still Paused, not
+    // already retried, by the time the poll below checks for it, even
+    // under a loaded test run.
+    mac.engine.set_backoff(Duration::from_secs(10));
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("a.bin");
+    let bytes = sample_bytes(mib(3));
+    std::fs::write(&local_path, &bytes).expect("the local file should write");
+
+    // Cut partway through sending, well past `build` writing its
+    // Record::Ready.
+    mac.engine.set_cut(MIB);
+
+    let id = mac
+        .engine
+        .push(
+            phone_key,
+            local_path.to_string_lossy().into_owned(),
+            "Root/a.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+
+    wait_transfer(
+        &mac,
+        &id,
+        "the cut attempt to fail and wait to retry",
+        |t| t.state == TransferState::Paused,
+    );
+
+    mac.engine.stop();
+
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        mac.key.clone(),
+        mac.data.path(),
+        mac.shared.path(),
+        mac.download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+
+    let found = engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the interrupted push should be listed again");
+    assert_eq!(found.state, TransferState::Paused);
+    assert_eq!(
+        found.direction,
+        Direction::Push,
+        "a push is still Direction::Push"
+    );
+
+    engine.offer_candidate(loopback_addr(&phone));
+    engine.start().expect("the engine should start");
+
+    let watching = Arc::clone(&engine);
+    let wanted = id.clone();
+    poll_until("the resumed push to finish", move || {
+        watching
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted && t.state == TransferState::Done)
+    });
+
+    assert_eq!(
+        std::fs::read(phone.shared_root().join("a.bin")).expect("a.bin should have landed"),
+        bytes
+    );
+
+    engine.stop();
+    phone.engine.stop();
+}
+
+/// `retry_batch` requeues a push the same way it requeues a pull: a batch
+/// with a failed transfer accepts the call and the failed row moves back
+/// to `Queued`.
+#[test]
+fn retry_batch_requeues_a_failed_push() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    let source = tempfile::tempdir().expect("a folder for the files being pushed");
+    let good_path = source.path().join("good.bin");
+    std::fs::write(&good_path, sample_bytes(16)).expect("good.bin should write");
+    // Never created: a missing local path fails this one file outright.
+    let missing_path = source.path().join("missing.bin");
+
+    let batch_id = mac
+        .engine
+        .push_files(
+            phone_key,
+            vec![
+                good_path.to_string_lossy().into_owned(),
+                missing_path.to_string_lossy().into_owned(),
+            ],
+            "Root".to_owned(),
+        )
+        .expect("push_files should be accepted; the missing file fails once attempted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = batch_id.clone();
+    poll_until("the batch to fail", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted && b.state == TransferState::Failed)
+    });
+
+    mac.engine
+        .retry_batch(batch_id.clone())
+        .expect("a batch with a failed transfer can be retried");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = batch_id.clone();
+    poll_until("retry_batch to requeue the failed push", move || {
+        engine.transfers().iter().any(|t| {
+            t.batch_id.as_deref() == Some(wanted.as_str()) && t.state == TransferState::Queued
+        })
+    });
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// A relative local path is refused before anything is queued: there is
+/// no root to make it relative to.
+#[test]
+fn a_relative_local_path_is_refused_before_anything_is_queued() {
+    let mac = build("Vamana");
+    let peer = start_peer(&mac.key, sample_bytes(16));
+    pair_with_peer(&mac, &peer);
+
+    let result = mac.engine.push(
+        key_hex(&peer.key),
+        "relative/path.bin".to_owned(),
+        "Root/a.bin".to_owned(),
+    );
+    assert_eq!(
+        code_of_error(&result.expect_err("a relative path has no root to strip")),
+        "OpError::NotFound"
+    );
+
+    mac.engine.stop();
+    peer.close();
+}
+
+/// A missing, a directory, and a symlinked local path each fail the queued
+/// push with the matching `OpError`, the same refusals `LocalFs` gives
+/// every other operation.
+#[test]
+fn a_bad_local_path_fails_the_queued_push_with_the_matching_op_error() {
+    let mac = build("Vamana");
+    let peer = start_peer(&mac.key, sample_bytes(16));
+    pair_with_peer(&mac, &peer);
+
+    let source = tempfile::tempdir().expect("a folder for the local paths");
+    let real_dir = source.path().join("a-directory");
+    std::fs::create_dir(&real_dir).expect("the directory should create");
+    let real_file = source.path().join("real.bin");
+    std::fs::write(&real_file, sample_bytes(16)).expect("the real file should write");
+    #[cfg(unix)]
+    let link = source.path().join("a-symlink");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&real_file, &link).expect("the symlink should create");
+
+    let cases: Vec<(&str, std::path::PathBuf, &str)> = {
+        let mut cases = vec![
+            (
+                "missing",
+                source.path().join("does-not-exist.bin"),
+                "OpError::NotFound",
+            ),
+            ("directory", real_dir, "OpError::IsADirectory"),
+        ];
+        #[cfg(unix)]
+        cases.push(("symlink", link, "OpError::Unsupported"));
+        cases
+    };
+
+    for (label, local_path, want_code) in cases {
+        let id = mac
+            .engine
+            .push(
+                key_hex(&peer.key),
+                local_path.to_string_lossy().into_owned(),
+                format!("Root/{label}.bin"),
+            )
+            .unwrap_or_else(|_| panic!("a {label} local path is queued, not refused up front"));
+        wait_transfer(&mac, &id, &format!("the {label} push to fail"), |t| {
+            t.state == TransferState::Failed
+        });
+        let info = mac
+            .engine
+            .transfers()
+            .into_iter()
+            .find(|t| t.id == id)
+            .expect("the failed transfer is still listed");
+        assert_eq!(
+            code_of_error(&info.error.expect("a failed transfer carries an error")),
+            want_code,
+            "a {label} local path must fail with {want_code}"
+        );
+    }
+
+    mac.engine.stop();
+    peer.close();
+}
+
+/// An empty file pushes and lands like any other: item 5's "an empty file
+/// still needs its partial to exist" path.
+#[test]
+fn pushing_an_empty_file_lands_it() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("empty.bin");
+    std::fs::write(&local_path, []).expect("an empty file should still write");
+
+    let id = mac
+        .engine
+        .push(
+            phone_key,
+            local_path.to_string_lossy().into_owned(),
+            "Root/empty.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+    wait_transfer(&mac, &id, "the empty push to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    assert_eq!(
+        std::fs::read(phone.shared_root().join("empty.bin")).expect("empty.bin should have landed"),
+        Vec::<u8>::new()
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// A push into a name a file already sits at on the peer replaces it: this
+/// is the person's own explicit destination, unlike job 7's automatic
+/// copies, which never overwrite anything (G5).
+#[test]
+fn a_push_over_an_existing_file_on_the_peer_replaces_it() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    std::fs::write(phone.shared_root().join("a.bin"), b"already here")
+        .expect("the existing file should write");
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("a.bin");
+    let bytes = sample_bytes(1024);
+    std::fs::write(&local_path, &bytes).expect("the local file should write");
+
+    let id = mac
+        .engine
+        .push(
+            phone_key,
+            local_path.to_string_lossy().into_owned(),
+            "Root/a.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+    wait_transfer(&mac, &id, "the push to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    assert_eq!(
+        std::fs::read(phone.shared_root().join("a.bin")).expect("a.bin should still be there"),
+        bytes,
+        "the push replaces the file already at that name"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 6: one engine per data folder, and no record for a device that is
 // not paired.
 // ---------------------------------------------------------------------------
