@@ -129,11 +129,18 @@ fun QrScanner(
         )
 
         onDispose {
+            // Set first: a frame already handed to the executor is still
+            // inside scanner.process(input) when this runs, and the latch
+            // is what stops it being raced against scanner.close() below.
+            sent[0] = true
             if (providerFuture.isDone) {
                 providerFuture.get().unbindAll()
             }
             analysis.clearAnalyzer()
-            scanner.close()
+            // Queued on the executor so it runs after any frame already
+            // in flight there, never from this thread while that frame
+            // might still be inside scanner.process().
+            executor.execute { scanner.close() }
             executor.shutdown()
         }
     }
