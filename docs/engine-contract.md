@@ -497,6 +497,30 @@ Test: `crates/ferry-runtime/tests/security_bounds.rs`. A ninth serving
 connection from one paired peer is refused while the first eight are
 still served.
 
+**16f. Two more caps on the local WebDAV bridge, `docs/audits/fable-security.md`
+finding 7.** Reaching this bridge takes no password at all, since it
+binds `127.0.0.1` only; a local process could open connections and send
+nothing, each holding a slot for the whole thirty second
+`CONNECTION_TIMEOUT`, and the bridge's own `MAX_LIVE_CONNECTIONS` of 32
+was the only thing bounding how many.
+
+- `FIRST_HEAD_TIMEOUT = 5`, in `dav/server.rs`. `handle_connection` reads
+  a connection's first request head under this timeout instead of the
+  full `CONNECTION_TIMEOUT`; once that head arrives, later requests on
+  the same kept-alive connection go back to `CONNECTION_TIMEOUT`, since
+  Finder holding a connection open between requests on purpose is not
+  what this bounds.
+- `MAX_UNAUTHENTICATED_CONNECTIONS = 4`, in `dav/server.rs`. Counted
+  separately from `MAX_LIVE_CONNECTIONS`, from accept until a request on
+  that connection first authorizes: a fifth connection that has not yet
+  proven a real password is refused at once, so a flood of silent or
+  unauthenticated connections cannot use up every slot Finder's own,
+  already-authenticated session needs.
+
+Test: `crates/ferry-runtime/tests/security_bounds.rs`. A fifth silent
+connection to the bridge is refused at once; once the first four have
+timed out, an authenticated connection is still served normally.
+
 ### 14. Automatic copying, job 7: built
 
 ```rust

@@ -234,7 +234,8 @@ fn is_timeout(error: &io::Error) -> bool {
 /// [`Listener::bind_with_timeout`]) still gets a short wait here too,
 /// instead of always waiting out the full two real seconds.
 fn wait_for_first_byte(stream: &TcpStream, handshake_deadline: Instant) -> Result<(), TcpError> {
-    let deadline = handshake_deadline.min(Instant::now() + Duration::from_secs(limits::FIRST_BYTE_TIMEOUT_SECS));
+    let deadline = handshake_deadline
+        .min(Instant::now() + Duration::from_secs(limits::FIRST_BYTE_TIMEOUT_SECS));
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
         return Err(TcpError::Timeout);

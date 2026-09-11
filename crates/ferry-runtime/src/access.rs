@@ -489,7 +489,9 @@ fn decode_day_file(bytes: &[u8]) -> Result<(Vec<StoredEntry>, usize), AccessLogE
 fn device_counts(entries: &[StoredEntry]) -> HashMap<String, u32> {
     let mut counts = HashMap::new();
     for entry in entries {
-        *counts.entry(entry.fields.device_key_hex.clone()).or_insert(0) += 1;
+        *counts
+            .entry(entry.fields.device_key_hex.clone())
+            .or_insert(0) += 1;
     }
     counts
 }

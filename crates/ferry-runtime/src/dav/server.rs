@@ -47,6 +47,32 @@ const MAX_LIVE_CONNECTIONS: u32 = 32;
 /// forever.
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// How long a connection may go before its first request head is fully
+/// read, in seconds, before this bridge gives up on it.
+///
+/// `docs/audits/fable-security.md`, finding 7: a connection that sends
+/// nothing used to hold a slot for the whole thirty second
+/// [`CONNECTION_TIMEOUT`]. `handle_connection` uses this instead, for the
+/// very first [`http::read_head`] call only; every request after that on
+/// the same kept-alive connection goes back to [`CONNECTION_TIMEOUT`],
+/// since Finder holding a connection open between requests on purpose is
+/// not what this bounds.
+const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The largest number of connections that may be open without yet having
+/// sent one request this bridge accepted as authorized, at once.
+///
+/// `docs/audits/fable-security.md`, finding 7: reaching this far takes no
+/// password, unlike a paired TCP connection, so a local process opening
+/// connections and never authenticating on any of them would otherwise be
+/// bounded only by [`MAX_LIVE_CONNECTIONS`], holding every slot Finder's
+/// own, already-authenticated connections need. `accept_loop` refuses a
+/// fifth such connection the same way it refuses a 33rd live one: at once,
+/// before its socket is even read from. A connection stops counting
+/// against this the moment `authorized` first accepts it, so an ordinary
+/// Finder session past its first request never sits here at all.
+const MAX_UNAUTHENTICATED_CONNECTIONS: u32 = 4;
+
 /// Reserves one live-connection slot, and gives it back when dropped.
 /// Mirrors `PendingSlot` in `ferry_core::tcp`: a slot can only be created
 /// while one is free, and dropping it is the only way to free one again,
@@ -68,6 +94,20 @@ fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlo
         })
         .ok()?;
     Some(ConnectionSlot(Arc::clone(connections)))
+}
+
+/// Reserves one of [`MAX_UNAUTHENTICATED_CONNECTIONS`] slots, or `None`
+/// when the bridge already holds that many connections that have not yet
+/// authenticated. Shares [`ConnectionSlot`] with
+/// [`reserve_connection_slot`]: both only ever decrement the counter they
+/// were built from, so the same guard works for either.
+fn reserve_unauth_slot(unauthenticated: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
+    unauthenticated
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            (current < MAX_UNAUTHENTICATED_CONNECTIONS).then_some(current + 1)
+        })
+        .ok()?;
+    Some(ConnectionSlot(Arc::clone(unauthenticated)))
 }
 
 /// One device's bridge state, shared by every connection thread serving
@@ -94,6 +134,11 @@ pub(crate) struct Bridge {
     /// Live connections right now, checked at accept against
     /// [`MAX_LIVE_CONNECTIONS`] (B3).
     connections: Arc<AtomicU32>,
+    /// Connections right now that have not yet sent one request this
+    /// bridge accepted as authorized, checked at accept against
+    /// [`MAX_UNAUTHENTICATED_CONNECTIONS`]. `docs/audits/fable-security.md`,
+    /// finding 7.
+    unauthenticated: Arc<AtomicU32>,
 }
 
 impl Bridge {
@@ -114,6 +159,7 @@ impl Bridge {
             prefetch: Prefetch::new(),
             locks: LockTable::new(),
             connections: Arc::new(AtomicU32::new(0)),
+            unauthenticated: Arc::new(AtomicU32::new(0)),
             device_key_hex,
             device_name,
             user,
@@ -158,7 +204,19 @@ pub(crate) fn accept_loop(
             drop(stream);
             continue;
         };
-        if stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+        // `docs/audits/fable-security.md`, finding 7: checked the same way
+        // and at the same point as the cap above, so an unauthenticated
+        // connection costs this bridge nothing beyond the accept itself
+        // once it is refused.
+        let Some(unauth_slot) = reserve_unauth_slot(&bridge.unauthenticated) else {
+            drop(stream);
+            continue;
+        };
+        // Finding 7: the read timeout starts at `FIRST_HEAD_TIMEOUT`, five
+        // seconds, rather than the full `CONNECTION_TIMEOUT`; the write
+        // timeout is unaffected, since the finding is about a connection
+        // that sends nothing, not one that stops reading.
+        if stream.set_read_timeout(Some(FIRST_HEAD_TIMEOUT)).is_err()
             || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
         {
             drop(stream);
@@ -177,7 +235,7 @@ pub(crate) fn accept_loop(
         // bridge down with it.
         let spawned = std::thread::Builder::new().spawn(move || {
             let _slot = slot;
-            handle_connection(&shared, &bridge, &stream);
+            handle_connection(&shared, &bridge, &stream, unauth_slot);
         });
         drop(spawned);
     }
@@ -185,16 +243,38 @@ pub(crate) fn accept_loop(
 
 /// Serves requests on one connection until it closes, a write fails, or a
 /// request breaks a bound `respond` cannot recover from.
-fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStream) {
+///
+/// `unauth_slot` is held until this connection's first request authorizes,
+/// which is when it is dropped, freeing the slot for another connection to
+/// use while this one keeps serving under its ordinary `connections` slot.
+/// `docs/audits/fable-security.md`, finding 7.
+fn handle_connection(
+    shared: &Arc<Shared>,
+    bridge: &Arc<Bridge>,
+    stream: &TcpStream,
+    unauth_slot: ConnectionSlot,
+) {
     let _ = stream.set_nodelay(true);
     let Ok(read_half) = stream.try_clone() else {
         return;
     };
     let mut reader = BufReader::new(read_half);
+    let mut unauth_slot = Some(unauth_slot);
+    let mut first_head = true;
     loop {
         let Ok(outcome) = http::read_head(&mut reader) else {
             return;
         };
+        if first_head {
+            first_head = false;
+            // The head, however many reads that took, arrived inside
+            // `FIRST_HEAD_TIMEOUT`. A later request on this same kept-alive
+            // connection, which Finder holds open between requests on
+            // purpose, gets the ordinary `CONNECTION_TIMEOUT` instead.
+            if stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err() {
+                return;
+            }
+        }
         let Ok(mut out) = stream.try_clone() else {
             return;
         };
@@ -209,7 +289,23 @@ fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStr
                 return;
             }
         };
-        match respond(shared, bridge, &head, &mut reader, &mut out) {
+        let mut authorized_now = false;
+        let outcome = respond(
+            shared,
+            bridge,
+            &head,
+            &mut reader,
+            &mut out,
+            &mut authorized_now,
+        );
+        if authorized_now {
+            // Drops the slot at once, whatever `outcome` turns out to be:
+            // credentials that check out are what finding 7 asks this cap
+            // to stop counting, even when this one request then fails for
+            // some other reason.
+            drop(unauth_slot.take());
+        }
+        match outcome {
             Ok(true) => {}
             Ok(false) | Err(_) => return,
         }
@@ -222,20 +318,27 @@ fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStr
 /// Answers one request: `Host` and Basic auth first, from the head alone,
 /// then the body and the verb.
 ///
-/// Returns whether this connection may serve another request. `Host` and
-/// auth failures close it: `docs/engine-contract.md`, item 6, I2, gives a
-/// `PUT` of a real file a body far larger than [`http::MAX_BODY_LEN`], so
-/// there is no bound this function could drain up to before answering
-/// without paying for whatever a stranger on loopback claims to be
-/// sending. Every other refusal keeps the connection open, once its own
-/// declared body (bounded to [`http::MAX_BODY_LEN`] the same way as I1)
-/// has actually been read.
+/// Returns whether this connection may serve another request, and sets
+/// `*authorized_now` to `true` the moment `authorized` accepts this
+/// request's credentials, whatever this call goes on to return: finding 7
+/// of `docs/audits/fable-security.md` cares only about whether this
+/// connection has ever proven a real password, not about this one
+/// request's own outcome.
+///
+/// `Host` and auth failures close it: `docs/engine-contract.md`, item 6,
+/// I2, gives a `PUT` of a real file a body far larger than
+/// [`http::MAX_BODY_LEN`], so there is no bound this function could drain
+/// up to before answering without paying for whatever a stranger on
+/// loopback claims to be sending. Every other refusal keeps the connection
+/// open, once its own declared body (bounded to [`http::MAX_BODY_LEN`] the
+/// same way as I1) has actually been read.
 fn respond(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     head: &http::RequestHead,
     reader: &mut impl BufRead,
     out: &mut impl Write,
+    authorized_now: &mut bool,
 ) -> io::Result<bool> {
     let expected_host = format!("127.0.0.1:{}", bridge.port);
     if head.header("host") != Some(expected_host.as_str()) {
@@ -253,6 +356,7 @@ fn respond(
         )?;
         return Ok(false);
     }
+    *authorized_now = true;
 
     // This bridge never speaks chunked transfer encoding: its body reading,
     // on every verb, trusts `Content-Length` alone. A request carrying

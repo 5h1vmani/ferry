@@ -17,8 +17,14 @@
 //!
 //! Finding 6 is a documentation fix, in `docs/protocol.md`, with no code and
 //! so no test.
+//!
+//! Finding 7's test needs a running `WebDAV` bridge, which
+//! `tests/common/mod.rs` already builds for `tests/dav.rs`; `mod common`
+//! below reuses it rather than copying it a third time.
 
-use std::io::{self, Read, Write};
+mod common;
+
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
@@ -33,11 +39,10 @@ use ferry_runtime::{
     PairingMethod, PairingState, Root, generate_key,
 };
 
+use common::{TestClient, build_side, loopback_addr as dav_loopback_addr, port_of};
+
 /// How long any wait may take before the test gives up.
 const PATIENCE: Duration = Duration::from_secs(5);
-
-/// How often a poll looks again.
-const POLL_TICK: Duration = Duration::from_millis(10);
 
 // ---------------------------------------------------------------------------
 // The listener one engine is given. Copied from `engine_paths.rs`.
@@ -106,37 +111,22 @@ impl EngineListener for Recorder {
     fn access_log_changed(&self) {}
 }
 
-/// Wait until `check` is true, looking again every few milliseconds.
-fn poll_until(what: &str, check: impl Fn() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while Instant::now() < deadline {
-        if check() {
-            return;
-        }
-        std::thread::sleep(POLL_TICK);
-    }
-    panic!("waited {PATIENCE:?} for {what}");
-}
-
 // ---------------------------------------------------------------------------
 // Engines under test. Copied from `engine_paths.rs`.
 // ---------------------------------------------------------------------------
 
 /// One engine, its inbox, and the folders it owns.
+///
+/// None of the tests below reads `_data`, `_shared`, or `_download`
+/// directly; each field only has to outlive the engine, so its temporary
+/// folder is not deleted while the engine still serves from it.
 struct Side {
     engine: Arc<Engine>,
     inbox: Arc<Inbox>,
     key: KeyPair,
-    data: tempfile::TempDir,
-    shared: tempfile::TempDir,
-    download: tempfile::TempDir,
-}
-
-impl Side {
-    /// The one root this side serves, named `"Root"`.
-    fn shared_root(&self) -> &Path {
-        self.shared.path()
-    }
+    _data: tempfile::TempDir,
+    _shared: tempfile::TempDir,
+    _download: tempfile::TempDir,
 }
 
 /// Build an engine on the given folders. It is not started.
@@ -189,9 +179,9 @@ fn build(name: &str) -> Side {
         engine,
         inbox,
         key,
-        data,
-        shared,
-        download,
+        _data: data,
+        _shared: shared,
+        _download: download,
     }
 }
 
@@ -257,8 +247,10 @@ fn pair_by_code(a: &Side, b: &Side) {
     b.inbox.wait_pairing("the dialling side's code", is_code);
     a.engine.confirm_pairing(true);
     b.engine.confirm_pairing(true);
-    a.inbox.wait_pairing("the waiting side to confirm", is_confirmed);
-    b.inbox.wait_pairing("the dialling side to confirm", is_confirmed);
+    a.inbox
+        .wait_pairing("the waiting side to confirm", is_confirmed);
+    b.inbox
+        .wait_pairing("the dialling side to confirm", is_confirmed);
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +292,7 @@ fn a_silent_connection_is_dropped_at_the_first_byte_deadline_and_pairing_still_w
         other => panic!("expected the silent connection to be closed, got {other:?}"),
     }
     assert!(
-        elapsed >= Duration::from_secs(2) - Duration::from_millis(200),
+        elapsed >= Duration::from_millis(1_800),
         "the silent connection was dropped too early, after {elapsed:?}"
     );
     assert!(
@@ -396,6 +388,115 @@ fn a_ninth_serving_connection_from_one_peer_is_refused() {
     }
 
     drop(held);
+}
+
+// ---------------------------------------------------------------------------
+// Finding 7: the local WebDAV bridge's first-head timeout and its cap on
+// unauthenticated connections.
+// ---------------------------------------------------------------------------
+
+/// A fifth silent connection to the bridge is refused at once, and once the
+/// first four have timed out and freed their slots, a real, authenticated
+/// connection is still served normally.
+///
+/// Before the fix, `ferry_runtime::dav::server` capped only the overall
+/// thirty-two live connections, so a fifth silent one would have been
+/// accepted the same as the first four, and held for the full thirty
+/// second `CONNECTION_TIMEOUT` instead of the five second
+/// `FIRST_HEAD_TIMEOUT` this fix adds.
+#[test]
+fn silent_connections_to_the_bridge_do_not_stop_an_authenticated_one() {
+    let mac_key = generate_key().expect("a fresh key pair");
+    let phone_key = generate_key().expect("a fresh key pair");
+    let mac = build_side(
+        "Mac",
+        RuntimeDeviceKind::Mac,
+        mac_key.clone(),
+        &[],
+        &phone_key,
+        "Phone",
+        RuntimeDeviceKind::Phone,
+    );
+    let phone = build_side(
+        "Phone",
+        RuntimeDeviceKind::Phone,
+        phone_key.clone(),
+        &[("note.txt", b"hi")],
+        &mac_key,
+        "Mac",
+        RuntimeDeviceKind::Mac,
+    );
+    phone.engine.set_reachable(true);
+    let phone_key_hex = mac
+        .engine
+        .devices()
+        .first()
+        .expect("build_side seeds each side with the other as a peer")
+        .key_hex
+        .clone();
+    mac.engine.offer_candidate(dav_loopback_addr(&phone));
+    mac.engine
+        .list(phone_key_hex.clone(), String::new())
+        .expect("listing should succeed, so the pool has a working connection");
+
+    let endpoint = mac
+        .engine
+        .mount_start(phone_key_hex)
+        .expect("mount_start should succeed once the phone is reachable");
+    let addr: SocketAddr = format!("127.0.0.1:{}", port_of(&endpoint.url))
+        .parse()
+        .expect("a loopback address");
+    let host = format!("127.0.0.1:{}", port_of(&endpoint.url));
+
+    // Four silent connections fill MAX_UNAUTHENTICATED_CONNECTIONS. A fifth
+    // must be refused at once: this is the assertion that fails without
+    // the fix, since nothing capped unauthenticated connections separately
+    // from the overall MAX_LIVE_CONNECTIONS of 32 before it.
+    let mut silent = Vec::new();
+    for _ in 0..4 {
+        silent.push(TcpStream::connect(addr).expect("the bridge should accept up to the cap"));
+    }
+    // A generous margin for the accept loop's own thread to reserve each
+    // slot; ordering alone already guarantees it happens before the fifth
+    // is looked at.
+    std::thread::sleep(Duration::from_millis(200));
+    let mut fifth =
+        TcpStream::connect(addr).expect("the accept itself is never refused, only serving is");
+    fifth
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("a read timeout can be set");
+    let mut buf = [0u8; 1];
+    match fifth.read(&mut buf) {
+        Ok(0) => {}
+        other => {
+            panic!("expected the fifth silent connection to be refused at once, got {other:?}")
+        }
+    }
+
+    // The four squatters above go silent past FIRST_HEAD_TIMEOUT, freeing
+    // their slots. This waits past that five second deadline, with a
+    // margin, but nowhere near the bridge's own thirty second
+    // CONNECTION_TIMEOUT, the number this fix pass shortened it from.
+    std::thread::sleep(Duration::from_secs(6));
+
+    let mut client = TestClient::connect(addr);
+    let response = client.request(
+        "OPTIONS",
+        "/",
+        &host,
+        Some((&endpoint.user, &endpoint.password)),
+        &[],
+        None,
+    );
+    assert_eq!(
+        response.status, 200,
+        "an authenticated request should still be served once the squatters time out"
+    );
+
+    drop(silent);
+    drop(fifth);
+    mac.engine.stop();
+    phone.engine.stop();
 }
 
 // ---------------------------------------------------------------------------
