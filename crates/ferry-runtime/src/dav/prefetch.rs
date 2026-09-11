@@ -1,6 +1,8 @@
 //! The prefetch thread: it reads the head of each file a listing named,
 //! so the first `GET` of a file Finder is about to open is already here.
 
+use crate::dav::errors::map_rpc_error;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,7 +13,7 @@ use crate::engine::{Shared, record_this};
 use crate::pool::{self};
 
 use crate::dav::heads::{self};
-use crate::dav::server::{Bridge, map_rpc_error};
+use crate::dav::server::Bridge;
 
 /// Reads the heads of one listing's images into the head cache, one
 /// listing at a time, until `running` clears.

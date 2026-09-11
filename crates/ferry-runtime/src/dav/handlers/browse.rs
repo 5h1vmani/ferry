@@ -1,6 +1,8 @@
 //! `PROPFIND` and `PROPPATCH`: what Finder asks for when it lists a
 //! folder, and the sidecar probes it asks for alongside.
 
+use crate::dav::errors::map_rpc_error;
+
 use crate::dav::handlers::map_write_error;
 
 use std::io::{self, Write};
@@ -17,7 +19,7 @@ use crate::guard::StopAware;
 
 use crate::dav::probes::{self};
 use crate::dav::put;
-use crate::dav::server::{Bridge, map_rpc_error, no_body, unavailable};
+use crate::dav::server::{Bridge, no_body, unavailable};
 use crate::dav::{http, xml};
 
 pub(crate) fn propfind_probe(

@@ -1,5 +1,7 @@
 //! `GET` and `HEAD`: reading a file, from the head cache or the wire.
 
+use crate::dav::errors::map_rpc_error;
+
 use std::io::{self, Write};
 use std::sync::Arc;
 
@@ -11,7 +13,7 @@ use crate::engine::{Shared, record_this};
 use crate::pool::{self};
 
 use crate::dav::http;
-use crate::dav::server::{Bridge, map_rpc_error, no_body};
+use crate::dav::server::{Bridge, no_body};
 
 pub(crate) fn get_probe(
     bridge: &Bridge,
