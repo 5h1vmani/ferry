@@ -534,6 +534,16 @@ Devices announce themselves over mDNS on the local network.
 Only the phone advertises. The Mac browses. This halves what is broadcast and
 keeps the Mac silent on untrusted networks.
 
+**Network trust.** A device trusts a Wi-Fi network by its name alone. A
+network with the same name as a trusted one is trusted too. Nothing else
+about the network is checked. A stranger could set up a copied network
+on purpose. Someone on that network reaches the same mDNS traffic and
+the same listening sockets as someone on the real one. They learn only
+the random mDNS name and the protocol version. They may attempt a
+handshake or a pairing request. They cannot read or write a file without
+pairing first. A real pairing still needs a person to compare a code, or
+scan a QR code, on both screens.
+
 Rules for the advertisement:
 
 - The instance name is random, not the device hostname. A default mDNS name
