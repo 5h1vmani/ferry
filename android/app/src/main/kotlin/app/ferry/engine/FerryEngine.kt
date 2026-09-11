@@ -3,6 +3,7 @@ package app.ferry.engine
 import android.content.Context
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,6 +18,7 @@ import uniffi.ferry_runtime.DeviceInfo
 import uniffi.ferry_runtime.DeviceKind
 import uniffi.ferry_runtime.Engine
 import uniffi.ferry_runtime.EngineListener
+import uniffi.ferry_runtime.Entry
 import uniffi.ferry_runtime.FerryException
 import uniffi.ferry_runtime.KeyPair
 import uniffi.ferry_runtime.PairingState
@@ -151,6 +153,9 @@ object FerryEngine {
                 // status, and status is one call for four facts.
                 readStatus(it)
             }
+            // A root's summary in the Files app is that device's
+            // reachability, so the picker is told whenever it changes.
+            notifyRoots()
         }
 
         override fun transfersChanged() {
@@ -179,6 +184,10 @@ object FerryEngine {
     // call that opens the shared root, so it is the one that has to wait.
     @Synchronized
     fun create(context: Context) {
+        // Kept for notifyRoots, which runs on an engine thread and has no
+        // context of its own. The application context outlives every
+        // activity, so holding it leaks nothing.
+        appContext = context.applicationContext
         if (engine != null) {
             return
         }
@@ -449,5 +458,76 @@ object FerryEngine {
             throw FerryException.Failed(KEY_RENAME_FAILED_CODE, null)
         }
         return fresh
+    }
+
+    // ---- The Mac's folders in the phone's Files app ----
+    //
+    // docs/engine-contract.md item 19, job 8. FerryDocumentsProvider is the
+    // only caller. It runs in this process on binder threads, which may
+    // block, and every call below blocks for at least one round trip.
+    //
+    // Each one is a passthrough. The engine's error is thrown on unchanged,
+    // because only the provider knows whether a refusal becomes an errno or
+    // a FileNotFoundException. Nothing here decides what a refusal means.
+
+    // The authority the manifest declares for FerryDocumentsProvider. The
+    // manifest holds the same text, because XML cannot read Kotlin.
+    const val DOCUMENTS_AUTHORITY = "app.ferry.documents"
+
+    // What a call made before the engine exists reports. It is the engine's
+    // own code for the same state, so the words are already in the table.
+    private const val NOT_STARTED_CODE = "Runtime::NotStarted"
+
+    // Set by create, so notifyRoots has a context on an engine thread.
+    @Volatile
+    private var appContext: Context? = null
+
+    // Every entry in one folder on a paired device. The empty path names
+    // that device's shared roots.
+    fun list(keyHex: String, remotePath: String): List<Entry> =
+        required().list(keyHex, remotePath)
+
+    // One file or folder on a paired device.
+    fun stat(keyHex: String, remotePath: String): Entry =
+        required().stat(keyHex, remotePath)
+
+    // At most one mebibyte. A longer ask is clamped by the engine, and a
+    // short answer means the end of the file.
+    fun readAt(keyHex: String, remotePath: String, offset: ULong, len: UInt): ByteArray =
+        required().readAt(keyHex, remotePath, offset, len)
+
+    // Creates the file when it does not exist. More than one mebibyte in
+    // one call is refused with Runtime::WriteTooLarge and writes nothing.
+    fun writeAt(keyHex: String, remotePath: String, offset: ULong, bytes: ByteArray) =
+        required().writeAt(keyHex, remotePath, offset, bytes)
+
+    // Sets a file's length. The provider truncates to zero on a truncating
+    // open mode.
+    fun truncate(keyHex: String, remotePath: String, len: ULong) =
+        required().truncate(keyHex, remotePath, len)
+
+    // Makes one folder. The parent must already exist.
+    fun mkdir(keyHex: String, remotePath: String) = required().mkdir(keyHex, remotePath)
+
+    // Deletes one file, or one empty folder.
+    fun delete(keyHex: String, remotePath: String) = required().delete(keyHex, remotePath)
+
+    // Moves or renames within one root.
+    fun rename(keyHex: String, from: String, to: String) = required().rename(keyHex, from, to)
+
+    // The engine, or the engine's own code for not being there yet. Every
+    // call above reaches the network, and there is no network before
+    // create has built the engine.
+    private fun required(): Engine =
+        engine ?: throw FerryException.Failed(NOT_STARTED_CODE, null)
+
+    // Tells the Files app that a root's summary has changed. Runs on an
+    // engine thread, from devicesChanged, and does nothing before create.
+    private fun notifyRoots() {
+        val context = appContext ?: return
+        context.contentResolver.notifyChange(
+            DocumentsContract.buildRootsUri(DOCUMENTS_AUTHORITY),
+            null,
+        )
     }
 }
