@@ -231,7 +231,7 @@ code instead", and it is the whole of the first version's pairing flow.
 | Choosing | Two controls: "Scan the Mac's code" **new** and "Use a pairing code instead". **new** Scanning is first because it is fewer steps when both devices are in reach, which is when pairing happens. |
 | Scanning | The camera, a 200pt frame, and one line: "Point the camera at the Mac's screen." **new** One control: "Use a pairing code instead". |
 | Camera refused | An ErrorBlock. "Pairing stopped. Ferry cannot use the camera. Grant camera access in Settings, or use a pairing code." **new** |
-| Scanned | "MacBook Pro found. Confirm on the Mac." **new** No control but Cancel: the Mac holds the next step. |
+| Scanned | The name the Mac sent, then "Is this your Mac?" **new** Two controls: Confirm and Cancel. The scan proved a key, not a name. |
 | Waiting, code method | "Pairing on. Open Ferry on the Mac." and the four character short code, under a line naming it: "This phone appears on the Mac as". **new** |
 | Code | The six digits. "Confirm this matches on the Mac." Confirm and Cancel. Below: "Pairing stops in 1:12." **new** |
 | Confirmed | The paired icon in `accent` for one second, then Devices. |

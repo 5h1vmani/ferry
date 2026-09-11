@@ -665,10 +665,13 @@ phone's `offer_scanned` parses the payload, refuses a non-Ferry payload,
 an expired one, or a key it already holds, dials the addresses in order,
 and runs `IK` as the initiator with the nonce and its hello in message
 one. The Mac then shows `Requested` with the phone's name and transport;
-`confirm_pairing(accept:)` answers it as it answers `Code`. The phone asks
-no second question: the scan was its answer. The nonce is single use and
-dies with the offer, so a photographed screen is useless two minutes
-later. Wi-Fi addresses only: over the cable the phone cannot reach the
+`confirm_pairing(accept:)` answers it as it answers `Code`. Both sides
+confirm by name. Once the names cross, the phone shows `Requested` with the
+Mac's name and waits for its own `confirm_pairing`, under the same two
+minute deadline. Each side stores the peer only after its own confirm, and
+the scanning side trusts the network only after that store. The nonce is
+single use and dies with the offer, so a photographed screen is useless two
+minutes later. Wi-Fi addresses only: over the cable the phone cannot reach the
 Mac. The code method stays exactly as it is.
 
 **Protocol.** `docs/protocol.md` section 4 gains the scan method and the
