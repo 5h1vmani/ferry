@@ -84,12 +84,30 @@ final class EngineModel: ObservableObject {
         let writable: Bool
     }
 
+    /// The versioned shape written under `rootsKey`. `version` lets a
+    /// future field change tell a stored value apart from a corrupt one
+    /// instead of guessing. `docs/audits/fable-engineering.md`, finding 3.
+    private struct StoredRoots: Codable {
+        let version: Int
+        let roots: [StoredRoot]
+    }
+
     private static let rootsKey = "sharedRoots"
+    private static let rootsVersion = 1
     private static let downloadPathKey = "downloadPath"
     private static let displayNameLimit = 64
 
     init() {
-        roots = EngineModel.storedRoots()
+        let stored = EngineModel.storedRoots()
+        roots = stored.roots
+        if stored.decodeFailed {
+            actionError = ThreePartError(
+                whatStopped: S.settings.rootsLoadFailedStopped,
+                why: S.settings.rootsLoadFailedWhy,
+                whatToDo: S.settings.rootsLoadFailedToDo,
+                canRetry: false
+            )
+        }
         downloadPath = EngineModel.storedDownloadPath()
     }
 
@@ -615,21 +633,39 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    private static func storedRoots() -> [SharedRootSnapshot] {
+    /// No stored value at all is a first run, so it returns the writable
+    /// defaults. A stored value that does not decode, whether corrupt or
+    /// from a shape this build no longer reads, never falls back to those
+    /// writable folders: that would silently share Desktop and Downloads
+    /// on a change nobody asked for. It returns an empty list instead and
+    /// says so through `decodeFailed`. `docs/audits/fable-engineering.md`,
+    /// finding 3.
+    private static func storedRoots() -> (roots: [SharedRootSnapshot], decodeFailed: Bool) {
+        guard let data = UserDefaults.standard.data(forKey: rootsKey) else {
+            return (defaultRoots(), false)
+        }
         guard
-            let data = UserDefaults.standard.data(forKey: rootsKey),
-            let stored = try? JSONDecoder().decode([StoredRoot].self, from: data),
-            !stored.isEmpty
+            let stored = try? JSONDecoder().decode(StoredRoots.self, from: data),
+            stored.version == rootsVersion
         else {
-            return defaultRoots()
+            return ([], true)
         }
-        return stored.map {
-            SharedRootSnapshot(name: $0.name, path: $0.path, isWritable: $0.writable)
+        guard !stored.roots.isEmpty else {
+            return (defaultRoots(), false)
         }
+        return (
+            stored.roots.map {
+                SharedRootSnapshot(name: $0.name, path: $0.path, isWritable: $0.writable)
+            },
+            false
+        )
     }
 
     private static func storeRoots(_ roots: [SharedRootSnapshot]) {
-        let stored = roots.map { StoredRoot(name: $0.name, path: $0.path, writable: $0.isWritable) }
+        let stored = StoredRoots(
+            version: rootsVersion,
+            roots: roots.map { StoredRoot(name: $0.name, path: $0.path, writable: $0.isWritable) }
+        )
         guard let data = try? JSONEncoder().encode(stored) else { return }
         UserDefaults.standard.set(data, forKey: rootsKey)
     }

@@ -433,6 +433,14 @@ enum S {
             String(format: rootAccessibilityFormat, name, path)
         }
 
+        /// The stored shared-root list did not decode. Not an engine
+        /// error, so its words are here and not in the generated table,
+        /// the same choice `keyStore` and `mount` make.
+        /// `docs/audits/fable-engineering.md`, finding 3.
+        static let rootsLoadFailedStopped = "The saved shared folders did not load."
+        static let rootsLoadFailedWhy = "The stored list does not match the format Ferry reads."
+        static let rootsLoadFailedToDo = "Choose folders to share again."
+
         // Networks. New in docs/engine-contract.md, item 18.
         static let networks = "Networks"
         static let trustThisNetwork = "Trust this network"
