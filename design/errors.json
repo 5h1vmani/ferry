@@ -34,17 +34,17 @@
     "ChunkSizeError::NotPowerOfTwo": {
       "stopped": "Ferry has a fault.",
       "why": "The chunk size is not one BLAKE3 accepts.",
-      "todo": "Report this. Nothing you did caused it."
+      "todo": "Restart Ferry."
     },
     "ChunkSizeError::TooLarge": {
       "stopped": "Ferry has a fault.",
       "why": "The chunk size is not one BLAKE3 accepts.",
-      "todo": "Report this. Nothing you did caused it."
+      "todo": "Restart Ferry."
     },
     "ChunkSizeError::TooSmall": {
       "stopped": "Ferry has a fault.",
       "why": "The chunk size is not one BLAKE3 accepts.",
-      "todo": "Report this. Nothing you did caused it."
+      "todo": "Restart Ferry."
     },
     "DiscoveryError::Mdns": {
       "stopped": "Wi-Fi discovery is unavailable.",
@@ -119,7 +119,7 @@
     "NoiseError::BadPattern": {
       "stopped": "Ferry has a fault.",
       "why": "An internal setting is wrong.",
-      "todo": "Report this. Nothing you did caused it."
+      "todo": "Restart Ferry."
     },
     "NoiseError::CommitmentMismatch": {
       "stopped": "Pairing stopped.",
