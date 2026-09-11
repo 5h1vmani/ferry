@@ -3,6 +3,7 @@ package app.ferry.engine
 import android.content.Context
 import android.os.Build
 import android.os.Environment
+import android.util.Log
 import android.provider.DocumentsContract
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +56,13 @@ object FerryEngine {
 
     // The engine's own files: the paired device list and transfer records.
     private const val DATA_DIR_NAME = "ferry"
+
+    // The engine writes no log of its own, so the one place a field
+    // failure can be read is here, through adb logcat.
+    private const val LOG_TAG = "Ferry"
+
+    private fun describe(e: FerryException): String =
+        (e as? FerryException.Failed)?.let { "${it.code} ${it.detail ?: ""}" } ?: e.toString()
 
     // The 64 byte key file: 32 private bytes, then 32 public bytes.
     private const val KEY_FILE_NAME = "device.key"
@@ -238,6 +246,7 @@ object FerryEngine {
             _error.value = null
         } catch (e: FerryException) {
             _error.value = e
+            Log.w(LOG_TAG, "engine could not be built: " + describe(e))
         }
     }
 
@@ -275,6 +284,7 @@ object FerryEngine {
             true
         } catch (e: FerryException) {
             _error.value = e
+            Log.w(LOG_TAG, "engine could not start: " + describe(e))
             false
         }
     }
