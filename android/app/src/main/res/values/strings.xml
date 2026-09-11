@@ -145,10 +145,12 @@
     <string name="access_verb_delete">deleted</string>
 
     <!-- An error code the generated table does not hold. That means
-         design/errors.json and the engine have drifted apart. -->
-    <string name="error_unknown_stopped">Ferry has a fault.</string>
-    <string name="error_unknown_why">It reported the code %1$s, which this version does not know.</string>
-    <string name="error_unknown_todo">Report this. Nothing you did caused it.</string>
+         design/errors.json and the engine have drifted apart. Same words
+         as the Mac's common.unknownError* in Strings.swift: one event,
+         one wording, on both platforms. -->
+    <string name="error_unknown_stopped">The action stopped.</string>
+    <string name="error_unknown_why">Ferry has no words for the code %1$s.</string>
+    <string name="error_unknown_todo">Report this code.</string>
 
     <!-- PairingCode, docs-v2/components.md. Digit words spell the code for
          a screen reader, one digit at a time, so it can be compared
