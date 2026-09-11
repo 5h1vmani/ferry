@@ -190,13 +190,18 @@ struct AutoCopySnapshot: Equatable {
     /// False while the engine has no auto copy at all, so the switch is
     /// shown disabled rather than pretending to work.
     let isSupported: Bool
+    /// True while a batch this device's run queued is still moving.
+    /// Derived by the engine, not stored (docs/engine-contract.md, item
+    /// 14).
+    let isRunning: Bool
 
     static let unsupported = AutoCopySnapshot(
         isEnabled: false,
         source: "DCIM",
         destination: "",
         lastRun: nil,
-        isSupported: false
+        isSupported: false,
+        isRunning: false
     )
 }
 

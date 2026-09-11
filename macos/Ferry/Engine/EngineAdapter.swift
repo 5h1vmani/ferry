@@ -180,7 +180,8 @@ enum EngineAdapter {
             source: info.source,
             destination: info.destination,
             lastRun: lastRun(unixSecs: info.lastRunUnixSecs, files: info.lastRunFiles),
-            isSupported: true
+            isSupported: true,
+            isRunning: info.running
         )
     }
 

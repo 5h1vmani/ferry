@@ -453,6 +453,9 @@ pub struct AutoCopy {
     pub destination: String,
     pub last_run_unix_secs: Option<i64>,
     pub last_run_files: Option<u32>,
+    /// Derived, not stored: a batch with `Origin::Automatic` for this
+    /// device that is not Done or Failed.
+    pub running: bool,
 }
 
 fn auto_copy(&self, device_key_hex: String) -> AutoCopy;
@@ -484,14 +487,14 @@ under any path. What remains is queued as one batch with
 `Origin::Automatic`, labelled with the source path. When the batch ends,
 `last_run_unix_secs` is the end time and `last_run_files` is the number of
 files it copied, zero when nothing was new. A run that finds nothing new
-still records a run. One way, additive, never deletes, never writes back.
+records a run and makes no batch; the Running state is `running`. One
+way, additive, never deletes, never writes back.
 
 **Errors.** `set_auto_copy` on an unknown device is `Runtime::NotPaired`.
 
 **The Mac.** The switch calls `set_auto_copy`. The section reads
-`AutoCopy` and formats `last_run_unix_secs` through `FerryFormat`. The
-Running state is derived: a batch with `Origin::Automatic` for that
-device that is not Done or Failed.
+`AutoCopy` and formats `last_run_unix_secs` through `FerryFormat`, and
+shows the Running state exactly when `running` is true.
 
 ### 5. Push: built
 

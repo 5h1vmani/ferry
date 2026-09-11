@@ -34,9 +34,17 @@ struct AutomaticSection: View {
                     .foregroundStyle(FerryColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                // A count and a time. Not "up to date", which is an
-                // adjective standing in for a number, and not a tick.
-                if let lastRun = autoCopy.lastRun {
+                // docs/ia.md, Automatic, the Running row: while a batch is
+                // moving files, this line says so and nothing more. Its
+                // own progress stays in Transfers, labelled "Automatic",
+                // so this section never repeats it.
+                if autoCopy.isRunning {
+                    Text(S.automatic.running)
+                        .font(FerryFont.caption)
+                        .foregroundStyle(FerryColor.textSecondary)
+                } else if let lastRun = autoCopy.lastRun {
+                    // A count and a time. Not "up to date", which is an
+                    // adjective standing in for a number, and not a tick.
                     Text(lastRun)
                         .font(FerryFont.caption)
                         .foregroundStyle(FerryColor.textSecondary)
@@ -62,6 +70,11 @@ struct AutomaticSection: View {
     Form {
         AutomaticSection(
             autoCopy: PreviewData.autoCopyOn,
+            deviceName: "Pixel 3 XL",
+            onChange: { _ in }
+        )
+        AutomaticSection(
+            autoCopy: PreviewData.autoCopyRunning,
             deviceName: "Pixel 3 XL",
             onChange: { _ in }
         )

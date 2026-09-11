@@ -536,6 +536,14 @@ pub struct AutoCopy {
     /// How many files the last run copied, zero when it found nothing new.
     /// `Some` exactly when `last_run_unix_secs` is.
     pub last_run_files: Option<u32>,
+    /// Whether a run is moving files right now.
+    ///
+    /// Derived, not stored: true while a batch with `Origin::Automatic` for
+    /// this device is not `Done` or `Failed`. A run that finds nothing new
+    /// records a run and makes no batch, so `running` is only ever true
+    /// while files are actually moving, never for the run's own listing and
+    /// skip-check.
+    pub running: bool,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

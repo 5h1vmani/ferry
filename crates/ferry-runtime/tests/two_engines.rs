@@ -775,6 +775,13 @@ fn turning_on_automatic_copying_copies_the_camera_folder_once() {
     mac.inbox.wait_until("the second run to finish", move || {
         engine.auto_copy(wanted.clone()).last_run_files == Some(0)
     });
+    // G8, docs/engine-contract.md item 14: "a run that finds nothing new
+    // records a run and makes no batch; the Running state is running."
+    // With no batch ever queued for this run, running must be false.
+    assert!(
+        !mac.engine.auto_copy(phone_key.clone()).running,
+        "a run that finds nothing new and makes no batch is not running"
+    );
 
     mac.engine.stop();
     phone.engine.stop();
@@ -822,6 +829,12 @@ fn a_second_reachability_transition_during_a_moving_batch_starts_no_second_run()
             })
         },
     );
+    // G8: `running` is derived from exactly the batch state just polled
+    // for above, so it must already agree with it.
+    assert!(
+        mac.engine.auto_copy(phone_key.clone()).running,
+        "a batch that is not Done or Failed means running is true"
+    );
 
     mac.engine
         .set_auto_copy(phone_key.clone(), true)
@@ -832,6 +845,10 @@ fn a_second_reachability_transition_during_a_moving_batch_starts_no_second_run()
     mac.inbox.wait_until("the run to finish", move || {
         engine.auto_copy(wanted.clone()).last_run_files == Some(1)
     });
+    assert!(
+        !mac.engine.auto_copy(phone_key.clone()).running,
+        "running is false again once the batch has ended"
+    );
 
     assert_eq!(
         std::fs::read(mac.download_root.join("DCIM/big.bin")).expect("big.bin should have landed"),

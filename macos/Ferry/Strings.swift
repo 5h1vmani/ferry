@@ -281,8 +281,11 @@ enum S {
             String(format: lastRunFormat, files, relative)
         }
 
-        /// Said plainly rather than showing a switch that does nothing.
-        static let notBuiltYet = "Ferry cannot copy on its own yet."
+        /// Shown in place of the last run line while a batch is moving
+        /// files. docs/ia.md, Automatic, the Running row: the batch's own
+        /// progress stays in Transfers, so this names the state and
+        /// nothing more.
+        static let running = "Running"
     }
 
     enum errorBlock {

@@ -156,7 +156,18 @@ enum PreviewData {
         source: "Internal storage/DCIM",
         destination: "/Users/yantram/Downloads/DCIM",
         lastRun: S.automatic.lastRun(files: 43, relative: "2 hours ago"),
-        isSupported: true
+        isSupported: true,
+        isRunning: false
+    )
+
+    /// Job 7 with a batch still moving, for previewing the Running line.
+    static let autoCopyRunning = AutoCopySnapshot(
+        isEnabled: true,
+        source: "Internal storage/DCIM",
+        destination: "/Users/yantram/Downloads/DCIM",
+        lastRun: S.automatic.lastRun(files: 43, relative: "2 hours ago"),
+        isSupported: true,
+        isRunning: true
     )
 
     /// Sample data for the pairing preview only. A real offer's payload

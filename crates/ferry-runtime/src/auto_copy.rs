@@ -263,10 +263,25 @@ fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
 /// an unknown device reads the same as one nobody has configured yet.
 pub(crate) fn get(shared: &Arc<Shared>, device_key_hex: &str) -> AutoCopy {
     let row = lock(&shared.auto_copy).get(device_key_hex);
-    let source_root = lock(&shared.state)
-        .live
-        .get(device_key_hex)
-        .and_then(|live| live.auto_copy_source_root.clone());
+    let (source_root, running) = {
+        let state = lock(&shared.state);
+        let source_root = state
+            .live
+            .get(device_key_hex)
+            .and_then(|live| live.auto_copy_source_root.clone());
+        // G8: derived, not stored. `docs/engine-contract.md` item 14: "a
+        // run that finds nothing new records a run and makes no batch; the
+        // Running state is `running`." So this is true only while a batch
+        // this device's run actually queued is still moving, never for the
+        // run's own listing and skip-check, and never past the batch's own
+        // end.
+        let running = state.batches.values().any(|batch| {
+            batch.device_key_hex == device_key_hex
+                && batch.origin == Origin::Automatic
+                && batch.info(&state.transfers).ended_unix_secs.is_none()
+        });
+        (source_root, running)
+    };
     let source = match source_root {
         Some(root) => format!("{root}/DCIM"),
         // Learned only once a run has asked the peer for its roots. Until
@@ -282,6 +297,7 @@ pub(crate) fn get(shared: &Arc<Shared>, device_key_hex: &str) -> AutoCopy {
         destination,
         last_run_unix_secs: row.and_then(|row| row.last_run_unix_secs),
         last_run_files: row.and_then(|row| row.last_run_files),
+        running,
     }
 }
 
