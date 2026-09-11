@@ -28,6 +28,7 @@ import uniffi.ferry_runtime.TransferInfo
 import uniffi.ferry_runtime.generateKey
 import uniffi.ferry_runtime.phonePort
 import java.io.File
+import java.io.FileOutputStream
 import uniffi.ferry_runtime.PairingMethod as EnginePairingMethod
 import app.ferry.model.PairingMethod as UiPairingMethod
 
@@ -527,8 +528,18 @@ object FerryEngine {
         fresh.`public`.copyInto(whole, KEY_PART_BYTES)
         // Written to a temporary name and renamed, so a crash part way
         // through leaves the old file whole rather than half a key.
+        //
+        // The temporary file is synced to disk before the rename. Without
+        // that, a power loss right after the rename can leave a zero
+        // length file at the final name on ext4 and f2fs, and the length
+        // check above then treats it as missing and generates a new key.
+        // This is the same fsync-then-rename shape record.rs's
+        // write_and_sync uses on the engine side.
         val temporary = File(context.filesDir, "$KEY_FILE_NAME.new")
-        temporary.writeBytes(whole)
+        FileOutputStream(temporary).use { out ->
+            out.write(whole)
+            out.fd.sync()
+        }
         if (!temporary.renameTo(file)) {
             // A failed rename here means the next launch finds no
             // device.key, generates another, and every paired Mac stops
