@@ -636,6 +636,9 @@ pub enum PairingState {
     Requested {
         /// The scanning phone's name, from its hello.
         name: String,
+        /// The scanning device's kind, from its hello. Shown as the
+        /// device's own icon, rather than assuming every scan is a phone.
+        kind: DeviceKind,
         /// How the phone reached this Mac. Always `Wifi`: QR pairing only
         /// dials the Wi-Fi addresses in the offer.
         transport: Transport,

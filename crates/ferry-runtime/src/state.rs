@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ferry_core::chunk::ChunkSize;
 use ferry_core::noise::{PublicKey, QR_NONCE_LEN, SecureStream};
 use ferry_core::path::RemotePath;
-use ferry_core::peers::PeerStore;
+use ferry_core::peers::{DeviceKind as CoreDeviceKind, PeerStore};
 use ferry_core::tcp::PairedConnection;
 
 use crate::{
@@ -166,10 +166,10 @@ pub(crate) struct HeldPairing {
 /// per `docs/engine-contract.md` item 12, so `finish_pairing` is always told
 /// `accepted: true` for one of these.
 ///
-/// The name and kind message one's hello carried are not stored here: they
-/// already did their one job, showing `PairingState::Requested`, by the time
-/// this is built, and `finish_pairing`'s own hello exchange reads them
-/// again once `confirm_pairing` runs.
+/// `name` and `kind` are message one's hello, kept so `finish_pairing` can
+/// check its own, later hello exchange against them: the two must agree on
+/// who this is, or the pairing fails the same way a bad hello anywhere else
+/// does.
 pub(crate) struct RequestedPairing {
     /// The encrypted channel, ready for `finish_pairing`'s hello exchange.
     pub(crate) stream: SecureStream,
@@ -177,6 +177,10 @@ pub(crate) struct RequestedPairing {
     pub(crate) peer: PublicKey,
     /// The address the phone dialed from.
     pub(crate) addr: SocketAddr,
+    /// The name message one's hello carried.
+    pub(crate) name: String,
+    /// The kind message one's hello carried.
+    pub(crate) kind: CoreDeviceKind,
 }
 
 /// Where pairing is, and what it is holding.
