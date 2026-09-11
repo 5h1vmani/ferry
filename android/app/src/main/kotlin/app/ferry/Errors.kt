@@ -75,6 +75,7 @@ object FerryErrors {
         "Runtime::AllFilesAccess" to Words("Ferry cannot read the shared folders.", "All files access is not granted.", "Grant all files access in Settings."),
         "Runtime::BadConfig" to Words("Ferry could not start.", "{detail}", "Check the settings."),
         "Runtime::FolderTooLarge" to Words("The folder was not copied.", "It holds more than 10,000 files, or is nested more than 32 folders deep.", "Copy a smaller folder, or open it and copy fewer files at a time."),
+        "Runtime::MountFailed" to Words("The Finder mount did not start.", "{detail}", "Try again. If it keeps failing, restart Ferry."),
         "Runtime::NameTooLong" to Words("The name was refused.", "It is longer than 64 bytes.", "Choose a shorter name."),
         "Runtime::NoCandidate" to Words("Nothing was picked.", "That candidate is no longer present.", "Pick another."),
         "Runtime::NotPaired" to Words("The device is not paired.", "Its key is not in this device's list.", "Pair it first."),

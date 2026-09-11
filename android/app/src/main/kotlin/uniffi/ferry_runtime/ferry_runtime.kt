@@ -731,6 +731,10 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_list(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_mount_start(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_mount_stop(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pick_candidate(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pull(
@@ -744,6 +748,8 @@ internal object IntegrityCheckingUniffiLib {
     external fun uniffi_ferry_runtime_checksum_method_engine_roots(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_download_dir(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_set_mount_path(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_reachable(
     ): Int
@@ -810,6 +816,10 @@ internal object UniffiLib {
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_list(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_mount_start(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_mount_stop(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_pick_candidate(`ptr`: Long,`id`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_pull(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`localName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -823,6 +833,8 @@ internal object UniffiLib {
     external fun uniffi_ferry_runtime_fn_method_engine_roots(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_set_download_dir(`ptr`: Long,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_set_mount_path(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`path`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_set_reachable(`ptr`: Long,`on`: Byte,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -992,6 +1004,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_list() and 0xFFFF) != 16273) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_mount_start() and 0xFFFF) != 53865) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_mount_stop() and 0xFFFF) != 21724) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pick_candidate() and 0xFFFF) != 19467) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1011,6 +1029,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_download_dir() and 0xFFFF) != 37682) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_mount_path() and 0xFFFF) != 64178) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_set_reachable() and 0xFFFF) != 6511) {
@@ -1606,6 +1627,29 @@ public interface EngineInterface {
     fun `list`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): List<Entry>
     
     /**
+     * Starts serving one device's shared roots over `WebDAV` on a random
+     * loopback port. Idempotent: a second call for a device that already
+     * has a bridge returns that same bridge's endpoint.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, and
+     * `Runtime::MountFailed` when the loopback port cannot be bound or the
+     * password cannot be generated.
+     */
+    fun `mountStart`(`deviceKeyHex`: kotlin.String): MountEndpoint
+    
+    /**
+     * Stops serving one device's shared roots over `WebDAV`, and closes its
+     * port. Safe to call on a device with no running bridge.
+     *
+     * `docs/engine-contract.md`, item 6.
+     */
+    fun `mountStop`(`deviceKeyHex`: kotlin.String)
+    
+    /**
      * Dial the chosen candidate and run the pairing handshake.
      *
      * The dial happens on its own thread, so this returns at once. The code
@@ -1701,6 +1745,18 @@ public interface EngineInterface {
      * opened.
      */
     fun `setDownloadDir`(`path`: kotlin.String)
+    
+    /**
+     * Records where the app mounted a device's bridge, or that it
+     * unmounted it. Read back through `DeviceInfo.mount_path`.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    fun `setMountPath`(`deviceKeyHex`: kotlin.String, `path`: kotlin.String?)
     
     /**
      * Advertise over mDNS and accept connections, or stop doing both.
@@ -2082,6 +2138,53 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
+     * Starts serving one device's shared roots over `WebDAV` on a random
+     * loopback port. Idempotent: a second call for a device that already
+     * has a bridge returns that same bridge's endpoint.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, and
+     * `Runtime::MountFailed` when the loopback port cannot be bound or the
+     * password cannot be generated.
+     */
+    @Throws(FerryException::class)override fun `mountStart`(`deviceKeyHex`: kotlin.String): MountEndpoint {
+            return FfiConverterTypeMountEndpoint.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_mount_start(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Stops serving one device's shared roots over `WebDAV`, and closes its
+     * port. Safe to call on a device with no running bridge.
+     *
+     * `docs/engine-contract.md`, item 6.
+     */override fun `mountStop`(`deviceKeyHex`: kotlin.String)
+        = 
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_mount_stop(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * Dial the chosen candidate and run the pairing handshake.
      *
      * The dial happens on its own thread, so this returns at once. The code
@@ -2260,6 +2363,31 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         it,
         
         FfiConverterString.lower(`path`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Records where the app mounted a device's bridge, or that it
+     * unmounted it. Read back through `DeviceInfo.mount_path`.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    @Throws(FerryException::class)override fun `setMountPath`(`deviceKeyHex`: kotlin.String, `path`: kotlin.String?)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_set_mount_path(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterOptionalString.lower(`path`),_status)
 }
     }
     
@@ -2878,6 +3006,15 @@ data class DeviceInfo (
      * What kind of device it said it was, in `hello` at pairing time.
      */
     var `kind`: DeviceKind
+    , 
+    /**
+     * Where the peer's roots are mounted on this device, or `None` while
+     * no bridge is serving it or the app has not reported a path yet.
+     *
+     * `docs/engine-contract.md`, item 6. Replaces `Status.mount`, item 1:
+     * one fact, one place, and the fact is per device.
+     */
+    var `mountPath`: kotlin.String?
     
 ){
     
@@ -2902,6 +3039,7 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalLong.read(buf),
             FfiConverterSequenceTypeTransport.read(buf),
             FfiConverterTypeDeviceKind.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
@@ -2913,7 +3051,8 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalULong.allocationSize(value.`speedBytesPerSec`) +
             FfiConverterOptionalLong.allocationSize(value.`lastSeenUnixSecs`) +
             FfiConverterSequenceTypeTransport.allocationSize(value.`availableTransports`) +
-            FfiConverterTypeDeviceKind.allocationSize(value.`kind`)
+            FfiConverterTypeDeviceKind.allocationSize(value.`kind`) +
+            FfiConverterOptionalString.allocationSize(value.`mountPath`)
     )
 
     override fun write(value: DeviceInfo, buf: ByteBuffer) {
@@ -2925,6 +3064,7 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
             FfiConverterOptionalLong.write(value.`lastSeenUnixSecs`, buf)
             FfiConverterSequenceTypeTransport.write(value.`availableTransports`, buf)
             FfiConverterTypeDeviceKind.write(value.`kind`, buf)
+            FfiConverterOptionalString.write(value.`mountPath`, buf)
     }
 }
 
@@ -3036,6 +3176,65 @@ public object FfiConverterTypeKeyPair: FfiConverterRustBuffer<KeyPair> {
     override fun write(value: KeyPair, buf: ByteBuffer) {
             FfiConverterByteArray.write(value.`private`, buf)
             FfiConverterByteArray.write(value.`public`, buf)
+    }
+}
+
+
+
+/**
+ * Where the `WebDAV` bridge for one device answers, and the credentials to
+ * mount it.
+ *
+ * `docs/engine-contract.md`, item 6. Loopback only: `url` is always
+ * `"http://127.0.0.1:<port>/"`.
+ */
+data class MountEndpoint (
+    /**
+     * `"http://127.0.0.1:<port>/"`.
+     */
+    var `url`: kotlin.String
+    , 
+    /**
+     * The Basic auth user name. Fixed; only the password is secret.
+     */
+    var `user`: kotlin.String
+    , 
+    /**
+     * Random per `mount_start`. Never shown on screen.
+     */
+    var `password`: kotlin.String
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMountEndpoint: FfiConverterRustBuffer<MountEndpoint> {
+    override fun read(buf: ByteBuffer): MountEndpoint {
+        return MountEndpoint(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MountEndpoint) = (
+            FfiConverterString.allocationSize(value.`url`) +
+            FfiConverterString.allocationSize(value.`user`) +
+            FfiConverterString.allocationSize(value.`password`)
+    )
+
+    override fun write(value: MountEndpoint, buf: ByteBuffer) {
+            FfiConverterString.write(value.`url`, buf)
+            FfiConverterString.write(value.`user`, buf)
+            FfiConverterString.write(value.`password`, buf)
     }
 }
 
@@ -3174,12 +3373,6 @@ data class Status (
      * Whether `adb` was found when the engine started.
      */
     var `adbPresent`: kotlin.Boolean
-    , 
-    /**
-     * Where the peer's roots are mounted on this device. `None` until item
-     * 6 is built.
-     */
-    var `mount`: kotlin.String?
     
 ){
     
@@ -3199,22 +3392,19 @@ public object FfiConverterTypeStatus: FfiConverterRustBuffer<Status> {
             FfiConverterBoolean.read(buf),
             FfiConverterUShort.read(buf),
             FfiConverterBoolean.read(buf),
-            FfiConverterOptionalString.read(buf),
         )
     }
 
     override fun allocationSize(value: Status) = (
             FfiConverterBoolean.allocationSize(value.`reachable`) +
             FfiConverterUShort.allocationSize(value.`listenPort`) +
-            FfiConverterBoolean.allocationSize(value.`adbPresent`) +
-            FfiConverterOptionalString.allocationSize(value.`mount`)
+            FfiConverterBoolean.allocationSize(value.`adbPresent`)
     )
 
     override fun write(value: Status, buf: ByteBuffer) {
             FfiConverterBoolean.write(value.`reachable`, buf)
             FfiConverterUShort.write(value.`listenPort`, buf)
             FfiConverterBoolean.write(value.`adbPresent`, buf)
-            FfiConverterOptionalString.write(value.`mount`, buf)
     }
 }
 

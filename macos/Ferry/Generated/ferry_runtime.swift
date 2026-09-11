@@ -698,6 +698,29 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func list(deviceKeyHex: String, remotePath: String) throws  -> [Entry]
     
     /**
+     * Starts serving one device's shared roots over `WebDAV` on a random
+     * loopback port. Idempotent: a second call for a device that already
+     * has a bridge returns that same bridge's endpoint.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, and
+     * `Runtime::MountFailed` when the loopback port cannot be bound or the
+     * password cannot be generated.
+     */
+    func mountStart(deviceKeyHex: String) throws  -> MountEndpoint
+    
+    /**
+     * Stops serving one device's shared roots over `WebDAV`, and closes its
+     * port. Safe to call on a device with no running bridge.
+     *
+     * `docs/engine-contract.md`, item 6.
+     */
+    func mountStop(deviceKeyHex: String) 
+    
+    /**
      * Dial the chosen candidate and run the pairing handshake.
      *
      * The dial happens on its own thread, so this returns at once. The code
@@ -793,6 +816,18 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * opened.
      */
     func setDownloadDir(path: String) throws 
+    
+    /**
+     * Records where the app mounted a device's bridge, or that it
+     * unmounted it. Read back through `DeviceInfo.mount_path`.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    func setMountPath(deviceKeyHex: String, path: String?) throws 
     
     /**
      * Advertise over mDNS and accept connections, or stop doing both.
@@ -1093,6 +1128,44 @@ open func list(deviceKeyHex: String, remotePath: String)throws  -> [Entry]  {
 }
     
     /**
+     * Starts serving one device's shared roots over `WebDAV` on a random
+     * loopback port. Idempotent: a second call for a device that already
+     * has a bridge returns that same bridge's endpoint.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, and
+     * `Runtime::MountFailed` when the loopback port cannot be bound or the
+     * password cannot be generated.
+     */
+open func mountStart(deviceKeyHex: String)throws  -> MountEndpoint  {
+    return try  FfiConverterTypeMountEndpoint_lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_mount_start(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Stops serving one device's shared roots over `WebDAV`, and closes its
+     * port. Safe to call on a device with no running bridge.
+     *
+     * `docs/engine-contract.md`, item 6.
+     */
+open func mountStop(deviceKeyHex: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_mount_stop(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Dial the chosen candidate and run the pairing handshake.
      *
      * The dial happens on its own thread, so this returns at once. The code
@@ -1239,6 +1312,26 @@ open func setDownloadDir(path: String)throws   {try rustCallWithError(FfiConvert
     uniffi_ferry_runtime_fn_method_engine_set_download_dir(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(path),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Records where the app mounted a device's bridge, or that it
+     * unmounted it. Read back through `DeviceInfo.mount_path`.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+open func setMountPath(deviceKeyHex: String, path: String?)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_mount_path(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterOptionString.lower(path),uniffiCallStatus
     )
 }
 }
@@ -1947,6 +2040,14 @@ public struct DeviceInfo: Equatable, Hashable {
      * What kind of device it said it was, in `hello` at pairing time.
      */
     public var kind: DeviceKind
+    /**
+     * Where the peer's roots are mounted on this device, or `None` while
+     * no bridge is serving it or the app has not reported a path yet.
+     *
+     * `docs/engine-contract.md`, item 6. Replaces `Status.mount`, item 1:
+     * one fact, one place, and the fact is per device.
+     */
+    public var mountPath: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1976,7 +2077,14 @@ public struct DeviceInfo: Equatable, Hashable {
          */availableTransports: [Transport], 
         /**
          * What kind of device it said it was, in `hello` at pairing time.
-         */kind: DeviceKind) {
+         */kind: DeviceKind, 
+        /**
+         * Where the peer's roots are mounted on this device, or `None` while
+         * no bridge is serving it or the app has not reported a path yet.
+         *
+         * `docs/engine-contract.md`, item 6. Replaces `Status.mount`, item 1:
+         * one fact, one place, and the fact is per device.
+         */mountPath: String?) {
         self.keyHex = keyHex
         self.name = name
         self.pairedUnixSecs = pairedUnixSecs
@@ -1985,6 +2093,7 @@ public struct DeviceInfo: Equatable, Hashable {
         self.lastSeenUnixSecs = lastSeenUnixSecs
         self.availableTransports = availableTransports
         self.kind = kind
+        self.mountPath = mountPath
     }
 
     
@@ -2010,7 +2119,8 @@ public struct FfiConverterTypeDeviceInfo: FfiConverterRustBuffer {
                 speedBytesPerSec: FfiConverterOptionUInt64.read(from: &buf), 
                 lastSeenUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
                 availableTransports: FfiConverterSequenceTypeTransport.read(from: &buf), 
-                kind: FfiConverterTypeDeviceKind.read(from: &buf)
+                kind: FfiConverterTypeDeviceKind.read(from: &buf), 
+                mountPath: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -2023,6 +2133,7 @@ public struct FfiConverterTypeDeviceInfo: FfiConverterRustBuffer {
         FfiConverterOptionInt64.write(value.lastSeenUnixSecs, into: &buf)
         FfiConverterSequenceTypeTransport.write(value.availableTransports, into: &buf)
         FfiConverterTypeDeviceKind.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.mountPath, into: &buf)
     }
 }
 
@@ -2198,6 +2309,89 @@ public func FfiConverterTypeKeyPair_lift(_ buf: RustBuffer) throws -> KeyPair {
 #endif
 public func FfiConverterTypeKeyPair_lower(_ value: KeyPair) -> RustBuffer {
     return FfiConverterTypeKeyPair.lower(value)
+}
+
+
+/**
+ * Where the `WebDAV` bridge for one device answers, and the credentials to
+ * mount it.
+ *
+ * `docs/engine-contract.md`, item 6. Loopback only: `url` is always
+ * `"http://127.0.0.1:<port>/"`.
+ */
+public struct MountEndpoint: Equatable, Hashable {
+    /**
+     * `"http://127.0.0.1:<port>/"`.
+     */
+    public var url: String
+    /**
+     * The Basic auth user name. Fixed; only the password is secret.
+     */
+    public var user: String
+    /**
+     * Random per `mount_start`. Never shown on screen.
+     */
+    public var password: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `"http://127.0.0.1:<port>/"`.
+         */url: String, 
+        /**
+         * The Basic auth user name. Fixed; only the password is secret.
+         */user: String, 
+        /**
+         * Random per `mount_start`. Never shown on screen.
+         */password: String) {
+        self.url = url
+        self.user = user
+        self.password = password
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MountEndpoint: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMountEndpoint: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MountEndpoint {
+        return
+            try MountEndpoint(
+                url: FfiConverterString.read(from: &buf), 
+                user: FfiConverterString.read(from: &buf), 
+                password: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MountEndpoint, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterString.write(value.user, into: &buf)
+        FfiConverterString.write(value.password, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMountEndpoint_lift(_ buf: RustBuffer) throws -> MountEndpoint {
+    return try FfiConverterTypeMountEndpoint.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMountEndpoint_lower(_ value: MountEndpoint) -> RustBuffer {
+    return FfiConverterTypeMountEndpoint.lower(value)
 }
 
 
@@ -2382,11 +2576,6 @@ public struct Status: Equatable, Hashable {
      * Whether `adb` was found when the engine started.
      */
     public var adbPresent: Bool
-    /**
-     * Where the peer's roots are mounted on this device. `None` until item
-     * 6 is built.
-     */
-    public var mount: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2399,15 +2588,10 @@ public struct Status: Equatable, Hashable {
          */listenPort: UInt16, 
         /**
          * Whether `adb` was found when the engine started.
-         */adbPresent: Bool, 
-        /**
-         * Where the peer's roots are mounted on this device. `None` until item
-         * 6 is built.
-         */mount: String?) {
+         */adbPresent: Bool) {
         self.reachable = reachable
         self.listenPort = listenPort
         self.adbPresent = adbPresent
-        self.mount = mount
     }
 
     
@@ -2428,8 +2612,7 @@ public struct FfiConverterTypeStatus: FfiConverterRustBuffer {
             try Status(
                 reachable: FfiConverterBool.read(from: &buf), 
                 listenPort: FfiConverterUInt16.read(from: &buf), 
-                adbPresent: FfiConverterBool.read(from: &buf), 
-                mount: FfiConverterOptionString.read(from: &buf)
+                adbPresent: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -2437,7 +2620,6 @@ public struct FfiConverterTypeStatus: FfiConverterRustBuffer {
         FfiConverterBool.write(value.reachable, into: &buf)
         FfiConverterUInt16.write(value.listenPort, into: &buf)
         FfiConverterBool.write(value.adbPresent, into: &buf)
-        FfiConverterOptionString.write(value.mount, into: &buf)
     }
 }
 
@@ -4251,6 +4433,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_list() != 16273) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_mount_start() != 53865) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_mount_stop() != 21724) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 19467) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -4270,6 +4458,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_set_download_dir() != 37682) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_set_mount_path() != 64178) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_set_reachable() != 6511) {

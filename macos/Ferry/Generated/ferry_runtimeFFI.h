@@ -333,6 +333,16 @@ void uniffi_ferry_runtime_fn_method_engine_forget(uint64_t ptr, RustBuffer key_h
 RustBuffer uniffi_ferry_runtime_fn_method_engine_list(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MOUNT_START
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MOUNT_START
+RustBuffer uniffi_ferry_runtime_fn_method_engine_mount_start(uint64_t ptr, RustBuffer device_key_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MOUNT_STOP
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_MOUNT_STOP
+void uniffi_ferry_runtime_fn_method_engine_mount_stop(uint64_t ptr, RustBuffer device_key_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PICK_CANDIDATE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PICK_CANDIDATE
 void uniffi_ferry_runtime_fn_method_engine_pick_candidate(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
@@ -366,6 +376,11 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_roots(uint64_t ptr, RustCallSta
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_DOWNLOAD_DIR
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_DOWNLOAD_DIR
 void uniffi_ferry_runtime_fn_method_engine_set_download_dir(uint64_t ptr, RustBuffer path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_MOUNT_PATH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_MOUNT_PATH
+void uniffi_ferry_runtime_fn_method_engine_set_mount_path(uint64_t ptr, RustBuffer device_key_hex, RustBuffer path, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_SET_REACHABLE
@@ -739,6 +754,18 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_list(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_MOUNT_START
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_MOUNT_START
+uint16_t uniffi_ferry_runtime_checksum_method_engine_mount_start(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_MOUNT_STOP
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_MOUNT_STOP
+uint16_t uniffi_ferry_runtime_checksum_method_engine_mount_stop(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PICK_CANDIDATE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PICK_CANDIDATE
 uint16_t uniffi_ferry_runtime_checksum_method_engine_pick_candidate(void
@@ -778,6 +805,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_roots(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_DOWNLOAD_DIR
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_DOWNLOAD_DIR
 uint16_t uniffi_ferry_runtime_checksum_method_engine_set_download_dir(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_MOUNT_PATH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_SET_MOUNT_PATH
+uint16_t uniffi_ferry_runtime_checksum_method_engine_set_mount_path(void
     
 );
 #endif
