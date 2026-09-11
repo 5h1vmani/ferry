@@ -1835,6 +1835,66 @@ fn a_peer_that_claims_extra_bytes_written_fails_the_push_cleanly() {
     peer.close();
 }
 
+// ---------------------------------------------------------------------------
+// H5: two live pushes to the same destination on one device.
+// ---------------------------------------------------------------------------
+
+/// H5: a second push to a destination a live push on the same device is
+/// already sending must be refused, not raced: both would try to land the
+/// same name, and the second would waste a full send only to lose.
+#[test]
+fn a_second_push_to_a_destination_already_in_flight_is_refused() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+
+    let source = tempfile::tempdir().expect("a folder for the files being pushed");
+    let path_a = source.path().join("a.bin");
+    std::fs::write(&path_a, sample_bytes(mib(1))).expect("a.bin should write");
+    let path_b = source.path().join("b.bin");
+    std::fs::write(&path_b, sample_bytes(mib(1))).expect("b.bin should write");
+
+    let first = mac
+        .engine
+        .push(
+            phone_key.clone(),
+            path_a.to_string_lossy().into_owned(),
+            "Root/dest.bin".to_owned(),
+        )
+        .expect("the first push should be accepted");
+
+    let second = mac.engine.push(
+        phone_key.clone(),
+        path_b.to_string_lossy().into_owned(),
+        "Root/dest.bin".to_owned(),
+    );
+    assert_eq!(
+        second.err().map(|error| code_of_error(&error)),
+        Some("Runtime::PushInFlight".to_owned()),
+        "a second push to the same destination while the first is in flight must be refused"
+    );
+
+    wait_transfer(&mac, &first, "the first push to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    // Once the first has finished, the same destination is free again.
+    let third = mac
+        .engine
+        .push(
+            phone_key.clone(),
+            path_b.to_string_lossy().into_owned(),
+            "Root/dest.bin".to_owned(),
+        )
+        .expect("the same destination is free again once the first push has finished");
+    wait_transfer(&mac, &third, "the third push to finish", |t| {
+        t.state == TransferState::Done
+    });
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
 /// H2: a push's stored record is trusted only while the local file still
 /// matches the size and modified time recorded when its manifest was
 /// built. Editing the file between two attempts of the same push must

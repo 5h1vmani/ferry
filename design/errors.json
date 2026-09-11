@@ -406,6 +406,11 @@
       "why": "No device appeared within two minutes.",
       "todo": "Turn pairing on for the other device and try again."
     },
+    "Runtime::PushInFlight": {
+      "stopped": "The file was not sent.",
+      "why": "A push to that name on that device is already in progress.",
+      "todo": "Wait for it to finish, then try again."
+    },
     "Runtime::TransferNotFound": {
       "stopped": "The transfer was not found.",
       "why": "It is no longer in the list.",

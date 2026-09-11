@@ -87,6 +87,7 @@ enum FerryErrors {
         "Runtime::NotStarted": (stopped: "Ferry is not running.", why: "The engine was not started.", todo: "Restart Ferry."),
         "Runtime::PairingBusy": (stopped: "Pairing did not start.", why: "Another pairing is in progress.", todo: "Finish or cancel it first."),
         "Runtime::PairingTimeout": (stopped: "Pairing stopped.", why: "No device appeared within two minutes.", todo: "Turn pairing on for the other device and try again."),
+        "Runtime::PushInFlight": (stopped: "The file was not sent.", why: "A push to that name on that device is already in progress.", todo: "Wait for it to finish, then try again."),
         "Runtime::TransferNotFound": (stopped: "The transfer was not found.", why: "It is no longer in the list.", todo: "Nothing to do."),
         "TcpError::Io": (stopped: "The connection failed.", why: "The network dropped it.", todo: "It reconnects on its own when the device is reachable."),
         "TcpError::Noise": (stopped: "The connection was refused.", why: "The device did not prove it is the one paired.", todo: "If this keeps happening, forget the device and pair again."),

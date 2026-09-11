@@ -102,6 +102,14 @@ pub(crate) fn push(
         if state.peers.get(&key).is_none() {
             return Err(failed("Runtime::NotPaired"));
         }
+        // H5: two live pushes to the same name on the same device would
+        // race to land it, and the second would waste a full send only to
+        // lose. This is about two pushes in flight at once, never about
+        // one push resuming after a real interruption: `state` here is
+        // the live in-memory row, not the record on disk a resume reads.
+        if live_push_exists(&state, device_key_hex, &destination) {
+            return Err(failed("Runtime::PushInFlight"));
+        }
         let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
         let id = format!("{device_key_hex}-{session}");
         let file_name = engine::leaf_of(&destination);
@@ -312,6 +320,30 @@ fn local_leaf_name(local_path: &str) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or(local_path)
         .to_owned()
+}
+
+/// Whether a push to `device_key_hex`'s `destination` is already `Queued`,
+/// `Active`, or `Paused`.
+///
+/// H5: two live pushes to the same name on the same device would race to
+/// land it. This is about two pushes in flight at once, not one push
+/// resuming after a real interruption, which is a single row moving
+/// through those same states one attempt at a time, never two rows for
+/// the same name at once.
+fn live_push_exists(
+    state: &crate::state::State,
+    device_key_hex: &str,
+    destination: &RemotePath,
+) -> bool {
+    state.transfers.values().any(|row| {
+        row.direction == Direction::Push
+            && row.device_key_hex == device_key_hex
+            && row.destination == *destination
+            && matches!(
+                row.state,
+                TransferState::Queued | TransferState::Active | TransferState::Paused
+            )
+    })
 }
 
 /// Open the local file's parent folder as its own `LocalFs`, and name the
