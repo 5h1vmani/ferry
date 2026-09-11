@@ -4491,6 +4491,11 @@ sealed class PairingState {
          */
         val `name`: kotlin.String, 
         /**
+         * The scanning device's kind, from its hello. Shown as the
+         * device's own icon, rather than assuming every scan is a phone.
+         */
+        val `kind`: uniffi.ferry_runtime.DeviceKind, 
+        /**
          * How the phone reached this Mac. Always `Wifi`: QR pairing only
          * dials the Wi-Fi addresses in the offer.
          */
@@ -4565,6 +4570,7 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
                 )
             6 -> PairingState.Requested(
                 FfiConverterString.read(buf),
+                FfiConverterTypeDeviceKind.read(buf),
                 FfiConverterTypeTransport.read(buf),
                 )
             7 -> PairingState.Confirmed(
@@ -4619,6 +4625,7 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
             (
                 4UL
                 + FfiConverterString.allocationSize(value.`name`)
+                + FfiConverterTypeDeviceKind.allocationSize(value.`kind`)
                 + FfiConverterTypeTransport.allocationSize(value.`transport`)
             )
         }
@@ -4669,6 +4676,7 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
             is PairingState.Requested -> {
                 buf.putInt(6)
                 FfiConverterString.write(value.`name`, buf)
+                FfiConverterTypeDeviceKind.write(value.`kind`, buf)
                 FfiConverterTypeTransport.write(value.`transport`, buf)
                 Unit
             }

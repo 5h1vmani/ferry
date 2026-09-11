@@ -4005,6 +4005,10 @@ public enum PairingState: Equatable, Hashable {
          * The scanning phone's name, from its hello.
          */name: String, 
         /**
+         * The scanning device's kind, from its hello. Shown as the
+         * device's own icon, rather than assuming every scan is a phone.
+         */kind: DeviceKind, 
+        /**
          * How the phone reached this Mac. Always `Wifi`: QR pairing only
          * dials the Wi-Fi addresses in the offer.
          */transport: Transport
@@ -4060,7 +4064,7 @@ public struct FfiConverterTypePairingState: FfiConverterRustBuffer {
         case 5: return .offering(offer: try FfiConverterTypePairingOffer.read(from: &buf)
         )
         
-        case 6: return .requested(name: try FfiConverterString.read(from: &buf), transport: try FfiConverterTypeTransport.read(from: &buf)
+        case 6: return .requested(name: try FfiConverterString.read(from: &buf), kind: try FfiConverterTypeDeviceKind.read(from: &buf), transport: try FfiConverterTypeTransport.read(from: &buf)
         )
         
         case 7: return .confirmed(device: try FfiConverterTypeDeviceInfo.read(from: &buf)
@@ -4103,9 +4107,10 @@ public struct FfiConverterTypePairingState: FfiConverterRustBuffer {
             FfiConverterTypePairingOffer.write(offer, into: &buf)
             
         
-        case let .requested(name,transport):
+        case let .requested(name,kind,transport):
             writeInt(&buf, Int32(6))
             FfiConverterString.write(name, into: &buf)
+            FfiConverterTypeDeviceKind.write(kind, into: &buf)
             FfiConverterTypeTransport.write(transport, into: &buf)
             
         
