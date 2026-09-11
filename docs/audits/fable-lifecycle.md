@@ -60,3 +60,14 @@ Rank is by how often a real phone or Mac hits it. "Confirmed" means the whole pa
 - The Mac keeps `deviceInfos`, `transferInfos`, `trustedNetworks`, and `roots` as copies. Each copy is re-read from the engine on the next callback, and `roots` is the app's own store that the engine is fed from. No copy is written to on one side only.
 - `apply_presence` reads `state`, drops it, then takes `advertiser`. Two callers contend only on `advertiser`.
 - `browse_loop`, `adb_loop`, and `access_log_loop` all wait in `rest`, which `stop` wakes with `notify_all`.
+
+## Fix pass, 11 September 2026
+
+Findings 1, 3, 4, and 9 are fixed on the phone. Finding 5 needed no
+change: `FerryEngine.start` was already synchronized, and the pass says
+so in a comment. Findings 2 and 8 are fixed with tests in
+`tests/item_17_prefetch.rs`; a stalled peer no longer holds Forget for
+minutes. Findings 6 and 7 are fixed without tests, because both are
+timings a test cannot show without sleeping. The pairing sockets that
+`stop` could not reach, found by the scan confirm builder, are registered
+now, with a test in `tests/item_16_stop_pairing.rs`.

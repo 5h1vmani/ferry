@@ -43,3 +43,12 @@ Ranked by what it costs to fix later against now. Line numbers are from commit 3
 - `Cargo.lock` is committed and the toolchain is pinned to 1.92.0 in `rust-toolchain.toml`. `cargo audit` runs on every push.
 - The app layers report every engine error instead of dropping it: each `catch` in `EngineModel.swift` calls `report` or sets `actionError`; each `catch` in `FerryEngine.kt` sets `_error`.
 - Paths from a peer resolve through `cap_std::fs::Dir`, so a symlink cannot leave a root (`localfs.rs:11-18`).
+
+## Fix pass, 11 September 2026
+
+Findings 4, 5, 6, and 8 are fixed in one pass, finding 2 in a later
+engine pass with a total inbound cap of sixty-four and a spawn that
+cannot panic, and finding 3 on the Mac with a versioned root list that
+refuses to guess. Findings 1 and 7 are not done. Both are cost decisions
+for the owner: a macOS runner for the app builds, and one cargo target
+directory instead of three.

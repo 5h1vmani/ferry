@@ -35,3 +35,13 @@ Method: read only, on the main checkout. The docs were read first as the promise
 - "Go up" is disabled at the roots, as the IA says. DeviceDetail.swift:134.
 - Access log verbs and the retention line match on both platforms. Strings.swift accessLog, strings.xml access_verb_*.
 - The phone first run has Skip, and Skip lands on Devices. FirstRunScreen.kt:92-100, MainActivity.kt:83.
+
+## Fix pass, 11 September 2026
+
+Rows 1 to 13 are fixed, one commit each, on both apps. Row 14 is not
+fixed: the phone's Settings shows the device name as a fact and does not
+edit it, so the row's premise was false. Row 7 took two steps. The first
+made the table's words the one instruction, and a later commit rewrote
+those words so a person can act on them before the engine exists: remove
+the stored key, then open Ferry again. Row 11 follows the IA: the
+notification shows the first line only, and contract item 18 says so.

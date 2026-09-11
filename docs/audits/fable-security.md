@@ -44,3 +44,17 @@ Ranked by cost to the person using Ferry. "Confirmed" means the whole path was r
 ## Not read
 
 `macos/Ferry/Engine/NetworkName.swift` beyond its function list, `crates/ferry-runtime/src/guard.rs`, and `crates/ferry-runtime/src/held.rs`.
+
+## Fix pass, 11 September 2026
+
+Findings 1, 4, 5, and 7 are fixed with one bound each, in
+`crates/ferry-core/src/limits.rs` and the bridge, with tests in
+`tests/security_bounds.rs`, and the constants are in contract item 16.
+Finding 2 is fixed as a cap per device per day; the "log full" entry was
+not written, because it needs a new field on the boundary. Finding 3
+changed a rule: both sides now confirm a scan pairing by name before
+storing the peer, with tests in `tests/item_12_scan_confirm.rs`, and
+contract item 12, the IA, and the protocol doc say so. Finding 6 is
+recorded in `docs/protocol.md` as a known limit. One follow-on: the
+bridge's thirty-two connection test now meets the four connection
+unauthenticated cap first, so it no longer guards the larger cap.
