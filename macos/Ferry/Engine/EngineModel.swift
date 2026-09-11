@@ -57,6 +57,9 @@ final class EngineModel: ObservableObject {
     /// Which way in a person chose. A view concern, held here because the
     /// engine is told about it and the sheet may be rebuilt at any moment.
     private var pairingMethod: PairingEntryMethod?
+    /// Ticks `pairing`'s `Offering` countdown once a second. See
+    /// `updateOfferingTimer`.
+    private var offeringTimer: Timer?
     /// Devices this run has already tried to mount since they last became
     /// reachable. Cleared when a device stops being reachable, so the next
     /// reachable moment gets its own try. `docs/engine-contract.md`, item
@@ -143,6 +146,8 @@ final class EngineModel: ObservableObject {
         pairingState = .idle
         pairingMethod = nil
         pairing = .choosing
+        offeringTimer?.invalidate()
+        offeringTimer = nil
         presence = .unknown
         mountAttempted = []
     }
@@ -208,6 +213,26 @@ final class EngineModel: ObservableObject {
 
     private func refreshPairing() {
         pairing = EngineAdapter.pairing(pairingState, method: pairingMethod)
+        updateOfferingTimer()
+    }
+
+    /// Ticks the `Offering` countdown once a second.
+    ///
+    /// `refreshPairing` otherwise only runs when the engine reports a real
+    /// state change, so without this the drawn countdown ("1:48") would
+    /// freeze between those, rather than counting down on its own.
+    private func updateOfferingTimer() {
+        guard case .offering = pairing else {
+            offeringTimer?.invalidate()
+            offeringTimer = nil
+            return
+        }
+        guard offeringTimer == nil else { return }
+        offeringTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.refreshPairing()
+            }
+        }
     }
 
     // MARK: - Reading
