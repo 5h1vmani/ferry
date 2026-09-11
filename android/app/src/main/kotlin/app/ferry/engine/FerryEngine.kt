@@ -128,6 +128,10 @@ object FerryEngine {
     // running forget or retry. Null when the last such call succeeded.
     val error: StateFlow<FerryException?> = _error.asStateFlow()
 
+    // create and stop write this under @Synchronized. Listener callbacks
+    // read it on engine threads with no such lock, so @Volatile is what
+    // gives those reads a happens-before edge against the last write.
+    @Volatile
     private var engine: Engine? = null
 
     // forget, retry and offerScanned block on the network or the disk, so
