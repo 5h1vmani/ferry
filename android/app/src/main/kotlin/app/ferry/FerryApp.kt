@@ -1,5 +1,6 @@
 package app.ferry
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -59,6 +60,21 @@ fun FerryApp(
     )
 
     var screen by remember { mutableStateOf<Screen>(Screen.Devices) }
+
+    // The system back gesture otherwise finishes the activity from every
+    // screen, whatever screen is showing. Each branch does what that
+    // screen's own back control does.
+    BackHandler(enabled = screen != Screen.Devices) {
+        when (screen) {
+            is Screen.Pairing -> {
+                FerryEngine.cancelPairing()
+                screen = Screen.Devices
+            }
+            is Screen.Settings -> screen = Screen.Devices
+            is Screen.AccessLog -> screen = Screen.Settings
+            is Screen.Devices -> Unit
+        }
+    }
 
     val allFilesAccess by Permissions.allFilesAccess.collectAsState()
     val notificationsAllowed by Permissions.notifications.collectAsState()
