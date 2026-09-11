@@ -105,7 +105,7 @@ enum FerryErrors {
         "TransferError::ShortRead": (stopped: "The transfer stopped.", why: "The other device sent less of the file than it said it holds. The file changed during the transfer.", todo: "Start it again."),
         "VersionError::Io": (stopped: "The connection failed.", why: "The network dropped it.", todo: "It reconnects on its own when the device is reachable."),
         "VersionError::NoSharedVersion": (stopped: "The connection was refused.", why: "The two devices run versions that cannot talk.", todo: "Update Ferry on both devices."),
-        "VersionError::NotFerry": (stopped: "The connection was refused.", why: "The other end is not Ferry.", todo: "Check the address."),
+        "VersionError::NotFerry": (stopped: "The connection was refused.", why: "The other end is not Ferry.", todo: "Check that Ferry is open on the other device."),
         "VersionError::UnknownMode": (stopped: "The connection was refused.", why: "The two devices run versions that cannot talk.", todo: "Update Ferry on both devices."),
         "WireError::BadManifest": (stopped: "A message could not be decoded.", why: "It held a manifest Ferry refuses.", todo: "Update Ferry on both devices."),
         "WireError::InvalidPath": (stopped: "A message could not be decoded.", why: "It held a path Ferry refuses.", todo: "Update Ferry on both devices."),

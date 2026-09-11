@@ -499,7 +499,7 @@
     "VersionError::NotFerry": {
       "stopped": "The connection was refused.",
       "why": "The other end is not Ferry.",
-      "todo": "Check the address."
+      "todo": "Check that Ferry is open on the other device."
     },
     "VersionError::UnknownMode": {
       "stopped": "The connection was refused.",

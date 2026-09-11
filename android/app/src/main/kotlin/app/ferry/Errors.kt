@@ -108,7 +108,7 @@ object FerryErrors {
         "TransferError::ShortRead" to Words("The transfer stopped.", "The other device sent less of the file than it said it holds. The file changed during the transfer.", "Start it again."),
         "VersionError::Io" to Words("The connection failed.", "The network dropped it.", "It reconnects on its own when the device is reachable."),
         "VersionError::NoSharedVersion" to Words("The connection was refused.", "The two devices run versions that cannot talk.", "Update Ferry on both devices."),
-        "VersionError::NotFerry" to Words("The connection was refused.", "The other end is not Ferry.", "Check the address."),
+        "VersionError::NotFerry" to Words("The connection was refused.", "The other end is not Ferry.", "Check that Ferry is open on the other device."),
         "VersionError::UnknownMode" to Words("The connection was refused.", "The two devices run versions that cannot talk.", "Update Ferry on both devices."),
         "WireError::BadManifest" to Words("A message could not be decoded.", "It held a manifest Ferry refuses.", "Update Ferry on both devices."),
         "WireError::InvalidPath" to Words("A message could not be decoded.", "It held a path Ferry refuses.", "Update Ferry on both devices."),
