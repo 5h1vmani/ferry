@@ -531,7 +531,7 @@ controls. It opens the file panel for one or more files and calls
 `push_files` into the folder the section is showing. One string added.
 Rows show the direction through the existing `TransferRow`.
 
-### 6. The mount: I1 built, I2 open
+### 6. The mount: built
 
 The Finder mount is a WebDAV bridge, as ADR 0008 decided. The bridge
 lives in the Rust runtime as `crates/ferry-runtime/src/dav/`, a

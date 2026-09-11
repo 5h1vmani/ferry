@@ -181,6 +181,22 @@ turns the phone's shared folders into a volume Finder can mount, per
    go unreachable and reachable again, such as by turning Wi-Fi off and
    back on. The volume should come back at the same place.
 
+Steps 7 to 11 were added for the I2 fix pass, saving.
+
+7. Open TextEdit. Write a short note, then save it onto the volume, into a
+   folder the phone shares. The save should complete without an error, the
+   same way it does to any other disk.
+8. On the phone's device screen on the Mac, check the access log. It
+   should show a "write" line for the new file.
+9. In Finder, rename the file you just saved. The rename should complete
+   without an error, and Finder should show the new name at once.
+10. Make a new folder inside the volume, then delete it. Both should
+    complete without an error, and the folder should be gone from the
+    Finder window right after the delete.
+11. On the phone's device screen on the Mac, check the access log again.
+    It should show a "rename" line for step 9 and a "delete" line for
+    step 10, alongside the "write" line from step 8.
+
 ### What to send back
 
 For each part, one line: worked, or what you saw instead. Paste the exact
