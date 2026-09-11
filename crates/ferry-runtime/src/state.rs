@@ -117,6 +117,13 @@ pub(crate) struct DeviceLive {
     /// `forget` sets every one of them to false. A served connection then
     /// refuses every operation, even though its socket is still open.
     pub(crate) serving: Vec<Arc<AtomicBool>>,
+    /// Where the app reported this device's `WebDAV` bridge is mounted, or
+    /// `None` while it is not mounted.
+    ///
+    /// `docs/engine-contract.md`, item 6. Set by `Engine::set_mount_path`,
+    /// not persisted: an OS mount does not survive an engine restart
+    /// either, so nothing here needs to.
+    pub(crate) mount_path: Option<String>,
 }
 
 /// One device that could be paired, with the address to dial it on.
@@ -533,6 +540,7 @@ impl State {
                     last_seen_unix_secs: live.and_then(|l| l.last_seen_unix_secs),
                     available_transports: available_transports(live, now),
                     kind: DeviceKind::from(peer.kind),
+                    mount_path: live.and_then(|l| l.mount_path.clone()),
                 }
             })
             .collect()

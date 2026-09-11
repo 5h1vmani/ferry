@@ -138,6 +138,14 @@
 //!     /// The access log, newest first. `None` for `device_key_hex` returns
 //!     /// every device's. `limit` is capped at 1,000.
 //!     pub fn access_log(&self, device_key_hex: Option<String>, limit: u32) -> Vec<AccessEntry>;
+//!
+//!     /// Starts serving a device's roots over WebDAV. Idempotent.
+//!     pub fn mount_start(&self, device_key_hex: String) -> Result<MountEndpoint, FerryError>;
+//!     /// Stops serving a device's roots over WebDAV.
+//!     pub fn mount_stop(&self, device_key_hex: String);
+//!     /// The app reports where the OS mounted a device's bridge, or `None`
+//!     /// once it unmounted it.
+//!     pub fn set_mount_path(&self, device_key_hex: String, path: Option<String>) -> Result<(), FerryError>;
 //! }
 //! ```
 //!
@@ -207,6 +215,7 @@ uniffi::setup_scaffolding!();
 
 mod access;
 mod batch;
+mod dav;
 mod engine;
 pub mod errors;
 mod folder;
@@ -302,9 +311,21 @@ pub struct Status {
     pub listen_port: u16,
     /// Whether `adb` was found when the engine started.
     pub adb_present: bool,
-    /// Where the peer's roots are mounted on this device. `None` until item
-    /// 6 is built.
-    pub mount: Option<String>,
+}
+
+/// Where the `WebDAV` bridge for one device answers, and the credentials to
+/// mount it.
+///
+/// `docs/engine-contract.md`, item 6. Loopback only: `url` is always
+/// `"http://127.0.0.1:<port>/"`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MountEndpoint {
+    /// `"http://127.0.0.1:<port>/"`.
+    pub url: String,
+    /// The Basic auth user name. Fixed; only the password is secret.
+    pub user: String,
+    /// Random per `mount_start`. Never shown on screen.
+    pub password: String,
 }
 
 /// One paired device, as the Devices screen shows it.
@@ -328,6 +349,12 @@ pub struct DeviceInfo {
     pub available_transports: Vec<Transport>,
     /// What kind of device it said it was, in `hello` at pairing time.
     pub kind: DeviceKind,
+    /// Where the peer's roots are mounted on this device, or `None` while
+    /// no bridge is serving it or the app has not reported a path yet.
+    ///
+    /// `docs/engine-contract.md`, item 6. Replaces `Status.mount`, item 1:
+    /// one fact, one place, and the fact is per device.
+    pub mount_path: Option<String>,
 }
 
 /// Where a transfer is.

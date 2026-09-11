@@ -1121,7 +1121,6 @@ fn status_reports_reachability_listen_port_and_adb_presence() {
             .port(),
         "status reports the same port the engine bound"
     );
-    assert_eq!(before.mount, None, "mounting is not built until item 6");
     assert_eq!(
         before.adb_present,
         ferry_core::adb::find_adb().is_some(),
