@@ -247,6 +247,11 @@ object FerryEngine {
     // The engine's start() opens the shared root, so it fails while all
     // files access is missing. The caller checks the grant first and calls
     // this again on every resume until it succeeds.
+    //
+    // @Synchronized so a start() racing a stop() on another thread waits
+    // for stop()'s own monitor block to finish first. It then finds engine
+    // already null and returns false, instead of racing to start an engine
+    // stop() is in the middle of tearing down.
     @Synchronized
     fun start(): Boolean {
         if (_started.value) {
@@ -280,27 +285,41 @@ object FerryEngine {
     // reachable service is not running and the activity is finishing, so
     // the engine is never left started with nothing on screen and no
     // service.
-    @Synchronized
+    //
+    // The engine is taken out and the field nulled under the monitor, and
+    // only then is the taken engine's own stop() called, outside it. That
+    // call joins every worker thread and can block for several seconds
+    // against a peer that stopped answering. Holding the monitor for that
+    // whole time would make create() on another thread — MainActivity's
+    // onResume, run right after this on a swipe-away-and-reopen — wait out
+    // the join before it could see engine as null and build a fresh one.
+    // By the time the monitor is released here, the field is already null,
+    // so create() and the @Synchronized start() never wait on the slow
+    // part.
     fun stop() {
-        engine?.stop()
-        // The reference is dropped so a later create() builds a fresh
-        // engine. The crate documentation states that after stop returns
-        // the data directory is free for another engine, and it does not
-        // say a stopped engine can be started again.
-        engine = null
-        _started.value = false
-        _reachable.value = false
-        _shortCode.value = null
-        _pairing.value = PairingState.Idle
-        _pairingMethod.value = null
-        _scanSent.value = false
-        _devices.value = emptyList()
-        _transfers.value = emptyList()
-        _batches.value = emptyList()
-        _accessLog.value = emptyList()
-        _network.value = null
-        _wifiPresence.value = false
-        _trustedNetworks.value = emptyList()
+        val current: Engine?
+        synchronized(this) {
+            current = engine
+            // The reference is dropped so a later create() builds a fresh
+            // engine. The crate documentation states that after stop
+            // returns the data directory is free for another engine, and
+            // it does not say a stopped engine can be started again.
+            engine = null
+            _started.value = false
+            _reachable.value = false
+            _shortCode.value = null
+            _pairing.value = PairingState.Idle
+            _pairingMethod.value = null
+            _scanSent.value = false
+            _devices.value = emptyList()
+            _transfers.value = emptyList()
+            _batches.value = emptyList()
+            _accessLog.value = emptyList()
+            _network.value = null
+            _wifiPresence.value = false
+            _trustedNetworks.value = emptyList()
+        }
+        current?.stop()
     }
 
     // Advertises over mDNS and accepts connections, or stops doing both.
