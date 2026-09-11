@@ -381,6 +381,18 @@ worse than no log.
 These four change what Ferry is, not what it says. The screens render
 each one as honestly unavailable today.
 
+**Order, decided 11 September 2026.** First a run on real devices per
+`docs/manual-checks.md` task 4, because nothing built today has been used.
+Then, in this order:
+
+| Step | What | Needs | Why here |
+|---|---|---|---|
+| 0 | The runtime limits from `PLAN.md` phase 2 item 1: a manifest request, a responder that tries each stored key, a `stop` that closes a socket inside an encrypted stream | nothing | Item 14 and the mount's delta on save both need the manifest request. |
+| 1 | Item 14, automatic copying | step 0 | Job 7 is the daily-use job. It reuses `pull_folder` and batches with `Origin::Automatic`. |
+| 2 | Item 5, push | step 0 | Finder save needs it, so it lands before the mount. |
+| 3 | Item 6, the mount, read-only first, then the write verbs | steps 0 and 2 | The largest piece. A read-only mount already gives Finder browsing. |
+| 4 | Item 12, QR pairing | the Kotlin design pass | The phone needs a camera screen, which has no design yet. |
+
 ### 14. Automatic copying, job 7: deferred
 
 `PLAN.md` phase 2, item 2. Depends on the manifest request and content
