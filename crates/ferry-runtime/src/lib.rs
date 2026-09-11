@@ -322,7 +322,7 @@ pub struct Status {
 ///
 /// `docs/engine-contract.md`, item 6. Loopback only: `url` is always
 /// `"http://127.0.0.1:<port>/"`.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct MountEndpoint {
     /// `"http://127.0.0.1:<port>/"`.
     pub url: String,
@@ -330,6 +330,17 @@ pub struct MountEndpoint {
     pub user: String,
     /// Random per `mount_start`. Never shown on screen.
     pub password: String,
+}
+
+impl fmt::Debug for MountEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The password must never reach a log, the same rule `KeyPair`
+        // follows for the private half of a key.
+        f.debug_struct("MountEndpoint")
+            .field("url", &self.url)
+            .field("user", &self.user)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One paired device, as the Devices screen shows it.

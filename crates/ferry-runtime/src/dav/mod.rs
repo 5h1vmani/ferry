@@ -98,7 +98,9 @@ impl MountRegistry {
     /// it, and this returns that bridge's own endpoint unchanged.
     ///
     /// The caller (`Engine::mount_start`) has already checked that the
-    /// device is paired.
+    /// device is paired, and passes `device_name` for the mount root's
+    /// `displayname` (N4): the peer's own stored name, not anything a DAV
+    /// request could influence.
     ///
     /// # Errors
     ///
@@ -108,6 +110,7 @@ impl MountRegistry {
         &self,
         shared: &Arc<crate::engine::Shared>,
         device_key_hex: &str,
+        device_name: &str,
     ) -> Result<MountEndpoint, FerryError> {
         let mut mounts = lock_mutex(&self.mounts);
         if let Some(mount) = mounts.get(device_key_hex) {
@@ -131,6 +134,7 @@ impl MountRegistry {
         let running = Arc::new(AtomicBool::new(true));
         let bridge = Arc::new(server::Bridge::new(
             device_key_hex.to_owned(),
+            device_name.to_owned(),
             user,
             password,
             port,

@@ -67,6 +67,10 @@ fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlo
 /// it.
 pub(crate) struct Bridge {
     device_key_hex: String,
+    /// The peer's own stored name, read once at `mount_start`. Used only
+    /// as the mount root's `displayname` (N4); never anything a DAV
+    /// request could shape.
+    device_name: String,
     user: String,
     password: String,
     port: u16,
@@ -82,6 +86,7 @@ pub(crate) struct Bridge {
 impl Bridge {
     pub(crate) fn new(
         device_key_hex: String,
+        device_name: String,
         user: String,
         password: String,
         port: u16,
@@ -94,6 +99,7 @@ impl Bridge {
             locks: LockTable::new(),
             connections: Arc::new(AtomicU32::new(0)),
             device_key_hex,
+            device_name,
             user,
             password,
             port,
@@ -237,12 +243,25 @@ fn respond(
         "GET" | "HEAD" => get_file(shared, bridge, target, &request.method, request, out),
         // I2 builds these. `docs/engine-contract.md`, item 6.
         "PUT" | "DELETE" | "MOVE" | "MKCOL" | "COPY" | "PROPPATCH" => no_body(out, "403 Forbidden"),
-        _ => no_body(out, "405 Method Not Allowed"),
+        _ => method_not_allowed(out),
     }
 }
 
 fn no_body(out: &mut impl Write, status: &str) -> io::Result<()> {
     http::write_head(out, status, &[("Content-Length", "0".to_owned())])
+}
+
+/// N3: a 405 carries the methods this bridge answers, the same list
+/// `options` states for `OPTIONS`.
+fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
+    http::write_head(
+        out,
+        "405 Method Not Allowed",
+        &[
+            ("Allow", ALLOWED_METHODS.to_owned()),
+            ("Content-Length", "0".to_owned()),
+        ],
+    )
 }
 
 fn unavailable(out: &mut impl Write) -> io::Result<()> {
@@ -272,15 +291,16 @@ fn authorized(bridge: &Bridge, request: &http::Request) -> bool {
     user == bridge.user && http::constant_time_eq(password.as_bytes(), bridge.password.as_bytes())
 }
 
+/// The methods this bridge answers at all, I1 and I2 together. Shared by
+/// `OPTIONS` and by a 405's `Allow` header (N3).
+const ALLOWED_METHODS: &str = "OPTIONS, GET, HEAD, PUT, PROPFIND, LOCK, UNLOCK";
+
 fn options(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
         out,
         "200 OK",
         &[
-            (
-                "Allow",
-                "OPTIONS, GET, HEAD, PUT, PROPFIND, LOCK, UNLOCK".to_owned(),
-            ),
+            ("Allow", ALLOWED_METHODS.to_owned()),
             ("MS-Author-Via", "DAV".to_owned()),
             ("Content-Length", "0".to_owned()),
         ],
@@ -416,6 +436,26 @@ fn parent_of(path: &str) -> &str {
 // Real paths: served through the pool.
 // ---------------------------------------------------------------------------
 
+/// N3, RFC 4918 9.1: a `PROPFIND` this bridge will not walk. `depth` is
+/// `None` for a missing header and `Some("infinity")` for an explicit one;
+/// both mean "the whole tree", which I1 never serves.
+fn depth_not_finite(out: &mut impl Write) -> io::Result<()> {
+    let body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+<D:error xmlns:D=\"DAV:\"><D:propfind-finite-depth/></D:error>\n";
+    http::write_head(
+        out,
+        "403 Forbidden",
+        &[
+            (
+                "Content-Type",
+                "application/xml; charset=\"utf-8\"".to_owned(),
+            ),
+            ("Content-Length", body.len().to_string()),
+        ],
+    )?;
+    out.write_all(body.as_bytes())
+}
+
 fn propfind(
     shared: &Arc<Shared>,
     bridge: &Bridge,
@@ -426,7 +466,12 @@ fn propfind(
     let Ok(path) = RemotePath::parse(target) else {
         return no_body(out, "404 Not Found");
     };
-    let depth = request.header("depth").unwrap_or("infinity");
+    let Some(depth) = request.header("depth") else {
+        return depth_not_finite(out);
+    };
+    if depth == "infinity" {
+        return depth_not_finite(out);
+    }
 
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
         return unavailable(out);
@@ -516,7 +561,9 @@ fn propfind(
         .map(|(path, entry)| xml::Item {
             path,
             name: if path.is_empty() {
-                ""
+                // The mount root has no last path segment of its own;
+                // N4 names it after the device instead.
+                bridge.device_name.as_str()
             } else {
                 probes::last_segment(path)
             },

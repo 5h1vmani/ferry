@@ -468,6 +468,37 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
         body.contains("<D:collection/>"),
         "Root is listed as a collection: {body}"
     );
+    // N4: the mount root's own entry (href "/") is named after the
+    // device, not left blank.
+    assert!(
+        body.contains("<D:href>/</D:href>")
+            && body.contains("<D:displayname>Pixel 3 XL</D:displayname>"),
+        "the mount root should show the device's name: {body}"
+    );
+
+    // N3, RFC 4918 9.1: a `PROPFIND` with no `Depth` header, or an
+    // explicit `infinity`, is refused. I1 never walks a whole tree.
+    let response = client.request("PROPFIND", "/Root", &host, Some(auth), &[], Some(b""));
+    assert_eq!(response.status, 403);
+    let response = client.request(
+        "PROPFIND",
+        "/Root",
+        &host,
+        Some(auth),
+        &[("Depth", "infinity".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 403);
+
+    // N3: a method this bridge never answers is 405, with an Allow header
+    // naming what it does answer.
+    let response = client.request("TRACE", "/Root/Notes.txt", &host, Some(auth), &[], None);
+    assert_eq!(response.status, 405);
+    assert!(
+        response
+            .header("allow")
+            .is_some_and(|allow| allow.contains("PROPFIND"))
+    );
 
     // PROPFIND depth 1 of a folder shows its entries with the six
     // properties, whatever the request body asks for: an empty body means

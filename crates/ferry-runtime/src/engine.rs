@@ -999,10 +999,19 @@ impl Engine {
     /// password cannot be generated.
     pub fn mount_start(&self, device_key_hex: String) -> Result<MountEndpoint, FerryError> {
         let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
-        if lock(&self.shared.state).peers.get(&key).is_none() {
-            return Err(failed("Runtime::NotPaired"));
-        }
-        self.shared.mounts.start(&self.shared, &device_key_hex)
+        // The device's own stored name becomes the mount root's
+        // `displayname` (N4, `docs/manual-checks.md` Part E): read here,
+        // under the state lock, rather than trusting anything a DAV
+        // request could shape.
+        let device_name = lock(&self.shared.state)
+            .peers
+            .get(&key)
+            .ok_or_else(|| failed("Runtime::NotPaired"))?
+            .name
+            .clone();
+        self.shared
+            .mounts
+            .start(&self.shared, &device_key_hex, &device_name)
     }
 
     /// Stops serving one device's shared roots over `WebDAV`, and closes its
