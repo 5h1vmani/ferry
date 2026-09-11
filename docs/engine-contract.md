@@ -526,7 +526,8 @@ The receiver's `writable` flag on the root is the only permission check.
 
 **Rows and batches.** `Direction::Push` on the transfer, `source` the
 local path, `destination` the remote path. `bytes_done` is bytes the peer
-has verified, so the row moves the same way a pull's does. `push_files`
+has acknowledged; the whole file is verified once at the end, so the row
+moves the same way a pull's does. `push_files`
 makes a batch with `Direction::Push`, `Origin::Manual`, label
 `remote_folder`. A push is stored, resumed and retried like a pull.
 
