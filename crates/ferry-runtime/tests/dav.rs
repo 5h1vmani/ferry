@@ -318,6 +318,11 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     let notes = b"hello from the phone".to_vec();
     let big = pattern(2 * 1024 * 1024 + 777);
     let photo = b"not really a jpeg".to_vec();
+    // Comfortably past any OS socket buffer this test's own connection
+    // will use, so a client that stops reading after a small prefix is
+    // guaranteed to leave the bridge blocked mid-transfer rather than
+    // having already written the whole file into the buffer unread.
+    let huge = pattern(16 * 1024 * 1024);
 
     let mac = build_side(
         "Vamana",
@@ -336,6 +341,7 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
             ("Notes.txt", notes.as_slice()),
             ("Big.bin", big.as_slice()),
             ("DCIM/IMG_0001.jpg", photo.as_slice()),
+            ("Huge.bin", huge.as_slice()),
         ],
         &mac_key,
         "Vamana",
@@ -509,6 +515,35 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     assert_eq!(response.status, 200);
     assert_eq!(response.body, notes);
 
+    // S1: a range past the end, and an empty suffix, both answer 416 with
+    // the right Content-Range, never a 200 with the wrong length.
+    let response = client.request(
+        "GET",
+        "/Root/Notes.txt",
+        &host,
+        Some(auth),
+        &[("Range", "bytes=1000-2000".to_owned())],
+        None,
+    );
+    assert_eq!(response.status, 416);
+    assert_eq!(
+        response.header("content-range"),
+        Some(format!("bytes */{}", notes.len()).as_str())
+    );
+    let response = client.request(
+        "GET",
+        "/Root/Notes.txt",
+        &host,
+        Some(auth),
+        &[("Range", "bytes=-0".to_owned())],
+        None,
+    );
+    assert_eq!(response.status, 416);
+    assert_eq!(
+        response.header("content-range"),
+        Some(format!("bytes */{}", notes.len()).as_str())
+    );
+
     // GET with Range, and served in pieces, since the file is bigger than
     // one mebibyte: this exercises more than one `read` on the peer.
     let start = 1_000_000usize;
@@ -635,10 +670,70 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     let response = client.request("DELETE", "/Root/Notes.txt", &host, Some(auth), &[], None);
     assert_eq!(response.status, 403);
 
-    // Once the peer engine stops, PROPFIND answers 503 within one second,
+    // S2: a peer failing mid body ends the connection, since the
+    // declared `Content-Length` can no longer be met. A raw connection
+    // reads the headers and a small prefix of "Huge.bin" (16 MiB, far
+    // past any OS socket buffer this test leaves undrained), so the
+    // bridge is left blocked writing pieces this connection has not
+    // read. The phone stopping there makes its next `read` RPC call
+    // fail before the rest of the file ever arrives.
+    let mut raw = TcpStream::connect(addr).expect("a raw connection for the partial read");
+    raw.set_read_timeout(Some(PATIENCE))
+        .expect("a read timeout should set");
+    let credentials = base64_encode(format!("{}:{}", auth.0, auth.1).as_bytes());
+    write!(
+        raw,
+        "GET /Root/Huge.bin HTTP/1.1\r\nHost: {host}\r\nAuthorization: Basic {credentials}\r\n\r\n"
+    )
+    .expect("the raw request should write");
+    let mut raw_reader = BufReader::new(raw.try_clone().expect("the raw stream should clone"));
+    let mut status_line = String::new();
+    raw_reader
+        .read_line(&mut status_line)
+        .expect("a status line should arrive");
+    assert!(status_line.contains("200"), "{status_line}");
+    let mut declared_len = 0usize;
+    loop {
+        let mut line = String::new();
+        raw_reader
+            .read_line(&mut line)
+            .expect("a header line should arrive");
+        let line = line.trim_end();
+        if line.is_empty() {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':')
+            && key.trim().eq_ignore_ascii_case("content-length")
+        {
+            declared_len = value.trim().parse().expect("a numeric Content-Length");
+        }
+    }
+    assert_eq!(declared_len, huge.len());
+
+    let mut prefix = vec![0u8; 4096];
+    let first = raw_reader
+        .read(&mut prefix)
+        .expect("a first slice of the body should arrive");
+    assert!(first > 0);
+    let mut received = first;
+
+    phone.engine.stop();
+
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        match raw_reader.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => received += count,
+        }
+    }
+    assert!(
+        received < declared_len,
+        "a peer failing mid body must not deliver the whole declared length: got {received} of {declared_len}"
+    );
+
+    // PROPFIND on the existing connection answers 503 within one second,
     // whether the bridge reuses a pooled connection the peer now refuses
     // everything on, or dials fresh into a port nothing listens on anymore.
-    phone.engine.stop();
     let started = Instant::now();
     let response = client.request(
         "PROPFIND",

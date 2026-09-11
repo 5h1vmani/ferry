@@ -23,7 +23,7 @@ use crate::guard::StopAware;
 
 use super::cache::Cache;
 use super::lock::LockTable;
-use super::pool::Pool;
+use super::pool::{self, Pool};
 use super::probes::{self, SidecarStore};
 use super::{http, xml};
 
@@ -563,21 +563,34 @@ fn get_file(
         return no_body(out, "404 Not Found");
     }
 
-    let range = request
+    // S1: a `Range` this side cannot satisfy is 416, with `Content-Range:
+    // bytes */<size>`, never a 200 with the wrong length.
+    let outcome = request
         .header("range")
-        .and_then(|value| http::parse_range(value, entry.size));
-    let (start, end) = range.unwrap_or((0, entry.size.saturating_sub(1)));
+        .map_or(http::RangeOutcome::Absent, |value| {
+            http::parse_range(value, entry.size)
+        });
+    let (start, end, ranged) = match outcome {
+        http::RangeOutcome::Unsatisfiable => {
+            return http::write_head(
+                out,
+                "416 Range Not Satisfiable",
+                &[
+                    ("Content-Range", format!("bytes */{}", entry.size)),
+                    ("Content-Length", "0".to_owned()),
+                ],
+            );
+        }
+        http::RangeOutcome::Absent => (0, entry.size.saturating_sub(1), false),
+        http::RangeOutcome::Satisfiable(start, end) => (start, end, true),
+    };
     let len = if entry.size == 0 {
         0
     } else {
         end.saturating_sub(start) + 1
     };
 
-    let status = if range.is_some() {
-        "206 Partial Content"
-    } else {
-        "200 OK"
-    };
+    let status = if ranged { "206 Partial Content" } else { "200 OK" };
     let mut headers = vec![
         ("Content-Length", len.to_string()),
         ("Content-Type", "application/octet-stream".to_owned()),
@@ -585,7 +598,7 @@ fn get_file(
         ("ETag", http::etag(entry.size, entry.modified_unix_secs)),
         ("Last-Modified", http::rfc1123(entry.modified_unix_secs)),
     ];
-    if range.is_some() {
+    if ranged {
         headers.push((
             "Content-Range",
             format!("bytes {start}-{end}/{}", entry.size),
@@ -597,36 +610,60 @@ fn get_file(
         return Ok(());
     }
 
-    // Served in pieces of at most one mebibyte through the peer's `read`,
-    // whether or not a `Range` was asked for, per
-    // `docs/engine-contract.md`, item 6, and stops at the first failed
-    // write to the socket: `docs/spike-0-findings.md`, question 2, found
-    // macOS aborts an open-ended range early, and a naive server that
-    // tried to hand it a whole 512 MiB file at once wasted the read.
+    // S2: a peer read failing mid body propagates as an `Err`, so
+    // `handle_connection` drops the connection instead of trying to
+    // parse a next request off a socket whose promised
+    // `Content-Length` was never met.
+    stream_body(&mut borrowed, &path, start, end.saturating_add(1), out)?;
+    Ok(())
+}
+
+/// Streams `[start, stop_at)` of `path` from the peer to `out`, in pieces
+/// of at most one mebibyte, whether or not a `Range` was asked for, per
+/// `docs/engine-contract.md`, item 6. Stops at the first failed write to
+/// the socket: `docs/spike-0-findings.md`, question 2, found macOS aborts
+/// an open-ended range early, and a naive server that tried to hand it a
+/// whole 512 MiB file at once wasted the read.
+///
+/// # Errors
+///
+/// Returns an error when the peer's `read` fails (S2: the caller's
+/// `Content-Length` promise can no longer be met, so the connection must
+/// be dropped, not reused for a next request) or when the write to `out`
+/// fails.
+fn stream_body(
+    borrowed: &mut pool::Borrowed<'_>,
+    path: &RemotePath,
+    start: u64,
+    stop_at: u64,
+    out: &mut impl Write,
+) -> io::Result<u64> {
     let piece = ferry_core::limits::MAX_READ_LEN;
     let mut offset = start;
-    let stop_at = end.saturating_add(1);
+    let mut sent = 0u64;
     while offset < stop_at {
         let want = u32::try_from((stop_at - offset).min(u64::from(piece))).unwrap_or(piece);
-        let bytes = match borrowed.client().read(&path, offset, want) {
+        let bytes = match borrowed.client().read(path, offset, want) {
             Ok(bytes) => bytes,
             Err(error) => {
                 let (_, unhealthy) = map_rpc_error(&error);
                 if unhealthy {
                     borrowed.mark_unhealthy();
                 }
-                return Ok(());
+                return Err(io::Error::other(
+                    "the peer's read failed before the declared Content-Length was met",
+                ));
             }
         };
         if bytes.is_empty() {
             break;
         }
-        if out.write_all(&bytes).is_err() {
-            return Ok(());
-        }
-        offset += u64::try_from(bytes.len()).unwrap_or(0);
+        out.write_all(&bytes)?;
+        let written = u64::try_from(bytes.len()).unwrap_or(0);
+        sent += written;
+        offset += written;
     }
-    Ok(())
+    Ok(sent)
 }
 
 /// What to answer for one failed operation on the peer, and whether the

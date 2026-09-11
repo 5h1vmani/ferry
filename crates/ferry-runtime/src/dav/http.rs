@@ -191,26 +191,62 @@ pub(crate) fn percent_decode(input: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Splits a `Range: bytes=...` value into an inclusive `(start, end)`,
-/// against a file of `total` bytes. `None` on anything this side does not
-/// understand, which the caller treats as "no range".
-pub(crate) fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
-    let spec = value.strip_prefix("bytes=")?;
-    let (a, b) = spec.split_once('-')?;
-    if a.trim().is_empty() {
-        let suffix: u64 = b.trim().parse().ok()?;
-        return Some((total.saturating_sub(suffix), total.saturating_sub(1)));
-    }
-    let start: u64 = a.trim().parse().ok()?;
-    let end = if b.trim().is_empty() {
-        total.saturating_sub(1)
-    } else {
-        b.trim().parse().ok()?
+/// What a `Range` header means against an entity of `total` bytes.
+pub(crate) enum RangeOutcome {
+    /// No `Range` header, or one this side does not understand as
+    /// `bytes=...`: serve the whole entity, 200.
+    Absent,
+    /// A `bytes=` range that cannot be satisfied against `total` bytes: a
+    /// start past the end, an empty suffix such as `bytes=-0`, or a span
+    /// that is backwards once its end is clamped to the entity's last
+    /// byte. RFC 7233: 416, with `Content-Range: bytes */<total>`, and
+    /// never a 200 with the wrong length.
+    Unsatisfiable,
+    /// A satisfiable inclusive span, already clamped to `total`.
+    Satisfiable(u64, u64),
+}
+
+/// Reads a `Range: bytes=...` value against a file of `total` bytes. See
+/// [`RangeOutcome`] for what each case means.
+pub(crate) fn parse_range(value: &str, total: u64) -> RangeOutcome {
+    let Some(spec) = value.strip_prefix("bytes=") else {
+        return RangeOutcome::Absent;
     };
-    if start > end {
-        return None;
+    let Some((a, b)) = spec.split_once('-') else {
+        return RangeOutcome::Absent;
+    };
+    let (start, end) = if a.trim().is_empty() {
+        let Ok(suffix) = b.trim().parse::<u64>() else {
+            return RangeOutcome::Absent;
+        };
+        // `bytes=-0` asks for the last zero bytes: nothing satisfies that.
+        if suffix == 0 {
+            return RangeOutcome::Unsatisfiable;
+        }
+        (total.saturating_sub(suffix), total.saturating_sub(1))
+    } else {
+        let Ok(start) = a.trim().parse::<u64>() else {
+            return RangeOutcome::Absent;
+        };
+        let end = if b.trim().is_empty() {
+            total.saturating_sub(1)
+        } else {
+            match b.trim().parse::<u64>() {
+                Ok(end) => end,
+                Err(_) => return RangeOutcome::Absent,
+            }
+        };
+        (start, end)
+    };
+    let end = end.min(total.saturating_sub(1));
+    // `start >= total` catches a start past the end even when `total` is
+    // 0, since a zero-length entity satisfies no range at all; `start >
+    // end` catches a span that is backwards once `end` is clamped, which
+    // a start past the end always is.
+    if start >= total || start > end {
+        return RangeOutcome::Unsatisfiable;
     }
-    Some((start, end.min(total.saturating_sub(1))))
+    RangeOutcome::Satisfiable(start, end)
 }
 
 /// `"<size>-<mtime>"`, quoted, per `docs/engine-contract.md`, item 6.
@@ -362,9 +398,21 @@ pub(crate) fn iso8601(unix_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64_decode, constant_time_eq, iso8601, parse_range, percent_decode, read_request,
-        rfc1123,
+        RangeOutcome, base64_decode, constant_time_eq, iso8601, parse_range, percent_decode,
+        read_request, rfc1123,
     };
+
+    /// Asserts a [`RangeOutcome::Satisfiable`] and returns its span, so a
+    /// test reads like the plain tuple the old `Option` API returned.
+    fn satisfiable(outcome: &RangeOutcome) -> (u64, u64) {
+        match *outcome {
+            RangeOutcome::Satisfiable(start, end) => (start, end),
+            RangeOutcome::Absent => panic!("expected a satisfiable range, got Absent"),
+            RangeOutcome::Unsatisfiable => {
+                panic!("expected a satisfiable range, got Unsatisfiable")
+            }
+        }
+    }
 
     #[test]
     fn base64_decodes_a_basic_auth_pair() {
@@ -410,19 +458,57 @@ mod tests {
 
     #[test]
     fn range_reads_a_bounded_span() {
-        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
-        assert_eq!(parse_range("bytes=900-", 1000), Some((900, 999)));
-        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
+        assert_eq!(satisfiable(&parse_range("bytes=0-99", 1000)), (0, 99));
+        assert_eq!(satisfiable(&parse_range("bytes=900-", 1000)), (900, 999));
+        assert_eq!(satisfiable(&parse_range("bytes=-100", 1000)), (900, 999));
     }
 
     #[test]
     fn range_clamps_an_end_past_the_file() {
-        assert_eq!(parse_range("bytes=0-99999", 1000), Some((0, 999)));
+        assert_eq!(satisfiable(&parse_range("bytes=0-99999", 1000)), (0, 999));
     }
 
     #[test]
     fn range_refuses_a_backwards_span() {
-        assert_eq!(parse_range("bytes=500-100", 1000), None);
+        assert!(matches!(
+            parse_range("bytes=500-100", 1000),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn range_refuses_a_start_past_the_end() {
+        assert!(matches!(
+            parse_range("bytes=1000-2000", 1000),
+            RangeOutcome::Unsatisfiable
+        ));
+        // Backwards only once the end is clamped to the last byte: before
+        // clamping, 20 <= 30, so this is not caught by the plain
+        // start-past-end check on its own.
+        assert!(matches!(
+            parse_range("bytes=20-30", 10),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn range_refuses_an_empty_suffix() {
+        assert!(matches!(
+            parse_range("bytes=-0", 1000),
+            RangeOutcome::Unsatisfiable
+        ));
+    }
+
+    #[test]
+    fn range_absent_on_a_header_this_side_does_not_understand() {
+        assert!(matches!(
+            parse_range("not-bytes", 1000),
+            RangeOutcome::Absent
+        ));
+        assert!(matches!(
+            parse_range("bytes=abc-99", 1000),
+            RangeOutcome::Absent
+        ));
     }
 
     /// B3: `server.rs::accept_loop` sets a read timeout on every accepted
