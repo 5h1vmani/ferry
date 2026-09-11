@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use ferry_core::adb::{Adb, find_adb};
 use ferry_core::chunk::ChunkSize;
-use ferry_core::discovery::Advertiser;
 use ferry_core::limits::{MAX_READ_LEN, MAX_WRITE_LEN};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::StaticKey;
@@ -35,7 +34,7 @@ use crate::errors::{
 };
 use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{RootsState, StopAware};
-use crate::networks;
+use crate::networks::apply_presence;
 use crate::notify::{Change, Notify};
 use crate::push;
 use crate::state::{BatchRow, State, TransferRow, key_from_hex, lock, now_unix_secs};
@@ -1838,67 +1837,6 @@ pub fn generate_key() -> Result<KeyPair, FerryError> {
         private: key.private_bytes().to_vec(),
         public: key.public().as_bytes().to_vec(),
     })
-}
-
-/// Compare the browse-allowed and Wi-Fi presence rules to what is running,
-/// and start or stop the advertiser and the browser to match.
-///
-/// `docs/engine-contract.md`, item 18. This is the only place the advertiser
-/// is started, and the only place that decides whether the browse loop holds
-/// a `Browser`. It gates the browser by [`networks::browse_allowed`], which
-/// does not need `reachable`, and the advertiser by
-/// [`networks::wifi_presence`], which does. Every site that changes an input
-/// calls it: `set_reachable`, `set_network`, `trust_network`,
-/// `forget_network`, `Shared::set_pairing`, which covers every pairing start
-/// and every pairing end, `start`, and `stop`.
-///
-/// An advertiser that is already running is left alone. Restarting one gives
-/// it a fresh random instance name, and [`Engine::short_code`] shows the last
-/// four characters of that name next to this device in the other side's
-/// pairing list, so a restart during pairing would change the code a person
-/// is reading off two screens.
-///
-/// A stopped engine is left alone too. `stop` turns the advertiser and the
-/// browse flag off itself and this does nothing from then on, so a
-/// `set_reachable(true)` that arrives after `stop` cannot announce a port
-/// that is already closed. `stop` sets `stopped` before it takes the
-/// presence lock, so a thread already inside this one either read `stopped`
-/// as false and finished before `stop`'s own writes, or reads it as true and
-/// returns.
-pub(crate) fn apply_presence(shared: &Shared) {
-    // One rule, applied by one thread at a time. Held across the state read
-    // and both writes below, so two threads cannot read the inputs in one
-    // order and write the advertiser in the other.
-    let _presence = lock(&shared.presence);
-    let (browsing, present, port) = {
-        let state = lock(&shared.state);
-        if state.stopped {
-            return;
-        }
-        (
-            networks::browse_allowed(&state),
-            networks::wifi_presence(&state),
-            state.listen_addr.map(|addr| addr.port()),
-        )
-    };
-    shared.browsing.store(browsing, Ordering::SeqCst);
-    {
-        let mut advertiser = lock(&shared.advertiser);
-        if present {
-            if advertiser.is_none()
-                && let Some(port) = port
-            {
-                // A network that refuses multicast still allows the cable and
-                // a known address, so this failure does not stop the switch.
-                *advertiser = Advertiser::start(port).ok();
-            }
-        } else {
-            *advertiser = None;
-        }
-    }
-    // The browse loop rests between passes, so this is what makes it read
-    // the flag now rather than at the end of its current wait.
-    shared.wake.notify_all();
 }
 
 /// True when an inbound connection from `remote` is welcome.

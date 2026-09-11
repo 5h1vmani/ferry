@@ -29,7 +29,7 @@ use crate::pool::Pool;
 use crate::state::{State, key_from_hex, lock, now_unix_secs};
 use crate::{FerryError, PairingState, Root};
 
-use super::apply_presence;
+use crate::networks::apply_presence;
 
 /// Everything the engine's threads share.
 pub(crate) struct Shared {
