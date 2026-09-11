@@ -54,10 +54,23 @@ down. A run that ignores one will pay for it again.
 12. **A commit names who made it.** The trailer on a commit names the model
     that wrote the diff, not the session that launched it. The orchestrator
     is accountable through the merge and the push, which it performs.
+13. **Main is pushed before a builder is launched.** Builders fast-forward
+    from origin, not from local main. Two builders today found origin
+    behind local main and had to decide for themselves whether to wait or
+    carry on.
+14. **A test's time budget is at least three times its time alone.** A
+    test that took nine to ten seconds alone, with a ten second budget,
+    failed twice under the load of parallel builds today.
+15. **An app gate runs the packaging step, not only the compile.** The
+    Android compile task never merged the manifest, so a bad provider or
+    service element would have passed the gate and failed only at
+    install.
 
 ## What a builder prompt holds
 
 The contract item to read, the files to read first, the facts the
 orchestrator already verified with their locations, the rules above that
-apply, the tests to add, the gate, the commit subjects, and a report
-format under a stated line count. Nothing else.
+apply, the tests to add, the gate, which files other builders are editing
+at the same time and where to put additions so the merge stays clean, the
+commit subjects, and a report format under a stated line count. Nothing
+else.
