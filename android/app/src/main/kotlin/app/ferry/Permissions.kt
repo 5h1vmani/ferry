@@ -39,6 +39,13 @@ object Permissions {
     // at first run, so a person who pairs by code is never asked at all.
     val camera: StateFlow<Boolean> = _camera.asStateFlow()
 
+    private val _location = MutableStateFlow(false)
+
+    // True when this app may read the phone's fine location. Only the
+    // Wi-Fi network name needs it, and only pairing needs the name: it is
+    // asked for the first time pairing starts, never at first run.
+    val location: StateFlow<Boolean> = _location.asStateFlow()
+
     private val _cameraRefused = MutableStateFlow(false)
 
     // True once the person has refused the camera in this run. The pairing
@@ -60,6 +67,11 @@ object Permissions {
         _notifications.value = manager?.areNotificationsEnabled() ?: false
         val camera = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
         _camera.value = camera == PackageManager.PERMISSION_GRANTED
+        val location = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        )
+        _location.value = location == PackageManager.PERMISSION_GRANTED
         if (_camera.value) {
             // A grant made on the system screen clears an earlier refusal,
             // so the pairing screen stops offering the fallback as if it
@@ -82,6 +94,12 @@ object Permissions {
         _cameraRefused.value = !granted
     }
 
+    // Records the answer to the location prompt. Refused is not an error:
+    // the network name stays unknown, and Settings says why.
+    fun locationAnswered(granted: Boolean) {
+        _location.value = granted
+    }
+
     // The system screen where all files access is granted for this app.
     fun allFilesAccessIntent(context: Context): Intent = Intent(
         Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
@@ -93,9 +111,9 @@ object Permissions {
         Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
             .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
 
-    // This app's own settings page, where a refused camera is turned back
-    // on. Android stops showing the prompt after two refusals, so this is
-    // the only way back from there.
+    // This app's own settings page, where a refused camera or a refused
+    // location is turned back on. Android stops showing either prompt
+    // after two refusals, so this is the only way back from there.
     fun appSettingsIntent(context: Context): Intent = Intent(
         Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
         Uri.parse("package:" + context.packageName),

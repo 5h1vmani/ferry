@@ -12,11 +12,12 @@ import app.ferry.engine.FerryEngine
 // screen state, not by the Android framework's back stack.
 //
 // The activity owns everything that needs an Activity: the system screens
-// for all files access, notifications and this app's own settings, the two
-// runtime prompts, and the engine's start and stop.
+// for all files access, notifications and this app's own settings, the
+// three runtime prompts, and the engine's start and stop.
 class MainActivity : ComponentActivity() {
     private lateinit var notificationPrompt: ActivityResultLauncher<String>
     private lateinit var cameraPrompt: ActivityResultLauncher<String>
+    private lateinit var locationPrompt: ActivityResultLauncher<String>
 
     // True once the person has granted on the first run screen. The
     // notification prompt follows the all files access screen, which is
@@ -29,6 +30,11 @@ class MainActivity : ComponentActivity() {
     private var notificationPromptShown = false
     private var cameraPromptShown = false
 
+    // Asked for the first time pairing starts, in the same shape as the
+    // two prompts above: once per run of the process, because Android
+    // itself stops showing a prompt again after two refusals.
+    private var locationPromptShown = false
+
     // Set when advertising went on and the notification prompt had to come
     // first. The service starts as soon as the prompt is answered.
     private var startServiceAfterPrompt = false
@@ -39,6 +45,7 @@ class MainActivity : ComponentActivity() {
             cameFromFirstRun = savedInstanceState.getBoolean(KEY_CAME_FROM_FIRST_RUN)
             notificationPromptShown = savedInstanceState.getBoolean(KEY_NOTIFICATION_PROMPT_SHOWN)
             cameraPromptShown = savedInstanceState.getBoolean(KEY_CAMERA_PROMPT_SHOWN)
+            locationPromptShown = savedInstanceState.getBoolean(KEY_LOCATION_PROMPT_SHOWN)
             startServiceAfterPrompt = savedInstanceState.getBoolean(KEY_START_SERVICE_AFTER_PROMPT)
         }
         notificationPrompt = registerForActivityResult(
@@ -61,6 +68,15 @@ class MainActivity : ComponentActivity() {
                 FerryEngine.startPairing(app.ferry.model.PairingMethod.Scan)
             }
         }
+        locationPrompt = registerForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { granted ->
+            Permissions.locationAnswered(granted)
+            // A callback registered before this grant never carries the
+            // name, so a grant here is exactly the edge NetworkName has to
+            // re-register for.
+            NetworkName.refresh(this)
+        }
         setContent {
             FerryApp(
                 onGrantFirstRunAccess = ::grantFirstRunAccess,
@@ -71,6 +87,7 @@ class MainActivity : ComponentActivity() {
                 },
                 onOpenAppSettings = { startActivity(Permissions.appSettingsIntent(this)) },
                 onRequestCamera = ::requestCamera,
+                onRequestLocation = ::requestLocationIfNeeded,
                 onSetAdvertising = ::setAdvertising,
             )
         }
@@ -79,6 +96,10 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         Permissions.refresh(this)
+        // Picks up a location grant made on the system screen since the
+        // last resume: the network callback registered before it exists
+        // has to be remade to carry the name.
+        NetworkName.refresh(this)
         // The process can outlive an activity that finished and stopped the
         // engine. This builds a fresh one in that case, and does nothing in
         // the ordinary one.
@@ -104,6 +125,7 @@ class MainActivity : ComponentActivity() {
         outState.putBoolean(KEY_CAME_FROM_FIRST_RUN, cameFromFirstRun)
         outState.putBoolean(KEY_NOTIFICATION_PROMPT_SHOWN, notificationPromptShown)
         outState.putBoolean(KEY_CAMERA_PROMPT_SHOWN, cameraPromptShown)
+        outState.putBoolean(KEY_LOCATION_PROMPT_SHOWN, locationPromptShown)
         outState.putBoolean(KEY_START_SERVICE_AFTER_PROMPT, startServiceAfterPrompt)
     }
 
@@ -140,6 +162,19 @@ class MainActivity : ComponentActivity() {
         cameraPrompt.launch(Manifest.permission.CAMERA)
     }
 
+    // Asked for the first time pairing starts, never at first run, in the
+    // same shape as requestCamera: once per run of the process, and never
+    // asked again once granted. docs/engine-contract.md item 18. Refused
+    // is not an error; Settings and the presence surfaces state why the
+    // network name stays unknown.
+    private fun requestLocationIfNeeded() {
+        if (locationPromptShown || Permissions.location.value) {
+            return
+        }
+        locationPromptShown = true
+        locationPrompt.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
     private fun setAdvertising(on: Boolean) {
         if (!on) {
             ReachableService.turnOff(this)
@@ -159,12 +194,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private companion object {
-        // Keys for the four flags saved across a recreation, so a system
+        // Keys for the five flags saved across a recreation, so a system
         // prompt or a system screen in front does not lose a decision this
         // activity already made this run.
         const val KEY_CAME_FROM_FIRST_RUN = "cameFromFirstRun"
         const val KEY_NOTIFICATION_PROMPT_SHOWN = "notificationPromptShown"
         const val KEY_CAMERA_PROMPT_SHOWN = "cameraPromptShown"
+        const val KEY_LOCATION_PROMPT_SHOWN = "locationPromptShown"
         const val KEY_START_SERVICE_AFTER_PROMPT = "startServiceAfterPrompt"
     }
 }

@@ -40,6 +40,14 @@
         android:name="android.hardware.camera"
         android:required="false" />
 
+    <!-- Job 5: invisible to strangers, docs/engine-contract.md item 18. A
+         device that paired at home stays silent in a cafe. Android hands
+         over the Wi-Fi network name only to an app holding this
+         permission, so the phone can tell the engine which network it is
+         on. Asked for at the moment pairing first starts, never at first
+         run, so a person who never pairs is never asked. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
     <application
         android:name=".FerryApplication"
         android:allowBackup="true"

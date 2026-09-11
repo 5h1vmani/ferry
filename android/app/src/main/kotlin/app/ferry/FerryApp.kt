@@ -69,6 +69,7 @@ fun FerryApp(
     onOpenNotificationSettings: () -> Unit,
     onOpenAppSettings: () -> Unit,
     onRequestCamera: () -> Unit,
+    onRequestLocation: () -> Unit,
     onSetAdvertising: (Boolean) -> Unit,
 ) {
     val darkTheme = isSystemInDarkTheme()
@@ -173,6 +174,11 @@ fun FerryApp(
                     if (!isAdvertising) {
                         onSetAdvertising(true)
                     }
+                    // Only the network name needs location, and only
+                    // pairing needs the name, so this is the first moment
+                    // that is worth asking. requestLocationIfNeeded is a
+                    // no-op past the first time.
+                    onRequestLocation()
                     goTo(Screen.Pairing)
                 },
                 onSettingsClick = { goTo(Screen.Settings) },
