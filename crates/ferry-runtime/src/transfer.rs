@@ -284,6 +284,7 @@ fn clear_running(shared: &Arc<Shared>, id: &str) {
 fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<FerryError>) {
     let mut held_write: Option<(String, String, u64, i64)> = None;
     let mut auto_copy_update: Option<(String, u32)> = None;
+    let mut push_batch_ended: Option<(String, String, u32, u64)> = None;
     let batch_update = {
         let mut locked = lock(&shared.state);
         let Some(row) = locked.transfers.get_mut(id) else {
@@ -353,6 +354,27 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
             }
         }
 
+        // H3: `push_files` logs nothing of its own for any one file; the
+        // batch logs one Write entry for the folder, once every transfer
+        // in it has reached `Done` or `Failed`, with the copied count and
+        // bytes -- the mirror of the automatic batch's own run record just
+        // above, and of item 13's folder rollup rule.
+        if matches!(state, TransferState::Done | TransferState::Failed)
+            && let Some(batch_id) = &batch_id
+            && let Some(batch) = locked.batches.get(batch_id)
+            && batch.direction == Direction::Push
+        {
+            let info = batch.info(&locked.transfers);
+            if info.ended_unix_secs.is_some() {
+                push_batch_ended = Some((
+                    batch.device_key_hex.clone(),
+                    batch.label.clone(),
+                    info.files_done,
+                    info.bytes_done,
+                ));
+            }
+        }
+
         batch_update
     };
     if let Some((path, record)) = batch_update {
@@ -366,6 +388,9 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
     }
     if let Some((device_key_hex, files_done)) = auto_copy_update {
         crate::auto_copy::record_run(shared, &device_key_hex, now_unix_secs(), files_done);
+    }
+    if let Some((device_key_hex, label, files_done, bytes_done)) = push_batch_ended {
+        crate::push::record_batch_write(shared, &device_key_hex, &label, files_done, bytes_done);
     }
     notify(shared, Change::Transfers);
     notify(shared, Change::Devices);
@@ -515,10 +540,9 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     let mut client = Client::new(stream);
 
     if plan.direction == Direction::Push {
-        // A push logs its one access log entry up front, in `push::push` and
-        // `push::push_files`, through the existing `record_this`: see
-        // `docs/engine-contract.md` item 5. Nothing here logs per attempt.
-        return crate::push::attempt(shared, id, &plan, &mut client);
+        // H3: `push::attempt` logs its own Write entry from the bytes this
+        // attempt actually sent, the mirror of `record_attempt_read` below.
+        return crate::push::attempt(shared, id, &plan, &mut client, connection, bytes_before);
     }
 
     let fs = fs.expect("checked above: a pull always has a download folder here");

@@ -1772,6 +1772,22 @@ fn editing_the_local_file_between_two_attempts_lands_the_edited_bytes() {
         |t| t.state == TransferState::Paused,
     );
 
+    // H3: the Write entry reflects only what an attempt actually sent, not
+    // the whole file up front. The cut attempt above sent at most 1 MiB
+    // before it failed, well under the 3 MiB file, so the log must not
+    // already show the whole file as written.
+    let logged_before_retry: u64 = mac
+        .engine
+        .access_log(None, 100)
+        .iter()
+        .filter(|e| e.actor == Actor::This && e.verb == AccessVerb::Write)
+        .filter_map(|e| e.bytes)
+        .sum();
+    assert!(
+        logged_before_retry < original.len() as u64,
+        "the cut attempt must not log the whole file's size up front, got {logged_before_retry}"
+    );
+
     // Edited between attempts: different content and a different size,
     // neither of which the first attempt's manifest describes any more.
     let edited = sample_bytes(mib(2) + 12_345);

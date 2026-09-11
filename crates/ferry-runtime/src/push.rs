@@ -134,22 +134,11 @@ pub(crate) fn push(
         id
     };
 
-    // docs/engine-contract.md item 5: one Write entry per pushed file, with
-    // the bytes, through the existing `record_this`. A best-effort local
-    // size: if the path turns out to be missing, a directory, a symlink, or
-    // a special file, the queued row will fail and say so, and no bytes
-    // will really have moved, but the log entry itself is not worth
-    // withholding over a size that could not be read.
-    engine::record_this(
-        shared,
-        device_key_hex,
-        access::AccessVerb::Write,
-        destination.as_str(),
-        Some(local_file_size(local_path)),
-        None,
-        None,
-    );
-
+    // H3: the Write entry is logged from the bytes actually written, at the
+    // end of a successful attempt (`record_attempt_write`), the mirror of
+    // a pull's `record_attempt_read`. Logging it here instead, up front,
+    // would count bytes before the peer ever verified them, and would
+    // still count them even when the push fails and nothing moves at all.
     engine::notify(shared, Change::Transfers);
     transfer::spawn(shared, &id);
     Ok(id)
@@ -203,22 +192,13 @@ pub(crate) fn push_files(
         started_unix_secs,
         chunk_size,
     )?;
-    let total_bytes: u64 = local_paths
-        .iter()
-        .fold(0, |total, path| total.saturating_add(local_file_size(path)));
 
-    // docs/engine-contract.md item 5: a file pushed as part of `push_files`
-    // logs nothing of its own; the batch logs one Write entry for the
-    // folder, the mirror of the folder copy rule in item 13.
-    engine::record_this(
-        shared,
-        device_key_hex,
-        access::AccessVerb::Write,
-        folder.as_str(),
-        Some(total_bytes),
-        None,
-        Some(u32::try_from(rows.len()).unwrap_or(u32::MAX)),
-    );
+    // H3: a file pushed as part of `push_files` logs nothing of its own;
+    // the batch logs one Write entry for the folder, from the copied count
+    // and bytes once every file in it has reached `Done` or `Failed`
+    // (`transfer::finish`, which calls `record_batch_write` below). Logging
+    // it here instead, up front, would count files and bytes before any of
+    // them had actually landed.
 
     let batch_session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
     let batch_id = format!("{device_key_hex}-{batch_session}");
@@ -324,15 +304,6 @@ fn local_absolute_path(source: &RemotePath) -> String {
     format!("/{}", source.as_str())
 }
 
-/// A best-effort size for the access log entry `push` and `push_files` write
-/// up front. Zero when the path cannot be read at all; the queued row will
-/// say why once a worker attempts it.
-fn local_file_size(local_path: &str) -> u64 {
-    std::fs::metadata(local_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0)
-}
-
 /// The last component of a local path, for `file_name` and for the name a
 /// pushed file takes inside `remote_folder`.
 fn local_leaf_name(local_path: &str) -> String {
@@ -368,20 +339,101 @@ fn open_local(source: &RemotePath) -> Result<(LocalFs, RemotePath), Outcome> {
 /// One connection, one go at sending the file. Mirrors the shape of
 /// `transfer::attempt`'s own pull half: read or build the record, then run
 /// the transfer.
+///
+/// H3: `connection` and `bytes_before` are exactly what `transfer::attempt`
+/// passes its own `record_attempt_read` after a pull; this attempt's own
+/// `record_attempt_write`, below, is the write-side mirror of that.
 pub(crate) fn attempt<S: Read + Write>(
     shared: &Arc<Shared>,
     id: &str,
     plan: &Plan,
     client: &mut Client<S>,
+    connection: u64,
+    bytes_before: u64,
 ) -> Outcome {
     let transfer = match load_or_build(shared, id, plan) {
         Ok(transfer) => transfer,
-        Err(outcome) => return outcome,
+        Err(outcome) => {
+            record_attempt_write(shared, id, plan, connection, bytes_before);
+            return outcome;
+        }
     };
-    match send(shared, id, plan, client, &transfer) {
+    let outcome = match send(shared, id, plan, client, &transfer) {
         Ok(()) => Outcome::Done,
         Err(outcome) => outcome,
+    };
+    record_attempt_write(shared, id, plan, connection, bytes_before);
+    outcome
+}
+
+/// Record what this attempt actually sent, as actor `This`, and end the
+/// roll-up's connection for it. The write-side mirror of
+/// `transfer::record_attempt_read`.
+///
+/// Skips logging when nothing was sent: an attempt that failed before a
+/// byte crossed the wire has nothing to report. Skips logging when
+/// `plan.batch_id` is `Some`: a file pushed as part of `push_files` logs
+/// nothing of its own, because the batch's own entry, with its `files` and
+/// `bytes` totals, already covers it once the batch ends
+/// (`record_batch_write`, below).
+fn record_attempt_write(
+    shared: &Arc<Shared>,
+    id: &str,
+    plan: &Plan,
+    connection: u64,
+    bytes_before: u64,
+) {
+    if plan.batch_id.is_some() {
+        return;
     }
+    let sent = transfer::bytes_done_of(shared, id).saturating_sub(bytes_before);
+    if sent == 0 {
+        return;
+    }
+    let now = now_unix_secs();
+    let mut log = lock(&shared.access_log);
+    let Some(rollup) = log.as_mut() else {
+        return;
+    };
+    rollup.touch(
+        now,
+        connection,
+        access::EntryFields {
+            device_key_hex: plan.device_key_hex.clone(),
+            actor: access::Actor::This,
+            verb: access::AccessVerb::Write,
+            path: plan.destination.as_str().to_owned(),
+            bytes: Some(sent),
+            entries: None,
+            files: None,
+        },
+    );
+    rollup.connection_ended(now, connection);
+}
+
+/// Record one `push_files` batch's own Write entry, once every file in it
+/// has reached `Done` or `Failed`: one entry for the folder, with the
+/// copied count and bytes. Called from `transfer::finish`.
+///
+/// Best effort, the same as every other access log write: a dropped entry
+/// here is a gap in the log, never a wrong answer, and never something a
+/// transfer's own outcome depends on.
+pub(crate) fn record_batch_write(
+    shared: &Arc<Shared>,
+    device_key_hex: &str,
+    label: &str,
+    files_done: u32,
+    bytes_done: u64,
+) {
+    engine::record_this(
+        shared,
+        device_key_hex,
+        access::AccessVerb::Write,
+        label,
+        Some(bytes_done),
+        None,
+        Some(files_done),
+    );
 }
 
 /// Read the stored record, or build one from the local file. See the module

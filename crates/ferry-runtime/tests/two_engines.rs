@@ -1702,6 +1702,26 @@ fn push_files_makes_one_batch_and_lands_every_file() {
         "every transfer this push_files call made carries the batch id"
     );
 
+    // H3: one Write entry for the whole folder, logged once the batch
+    // ends, with the copied count and bytes -- not one entry per file, and
+    // not logged up front before anything had actually landed.
+    let mac_log = mac.engine.access_log(None, 100);
+    let this_writes: Vec<_> = mac_log
+        .iter()
+        .filter(|e| e.actor == Actor::This && e.verb == AccessVerb::Write)
+        .collect();
+    assert_eq!(
+        this_writes.len(),
+        1,
+        "one Write entry for the whole folder, not one per file"
+    );
+    assert_eq!(this_writes[0].path, "Root/Uploads");
+    assert_eq!(
+        this_writes[0].bytes,
+        Some((bytes_a.len() + bytes_b.len() + bytes_c.len()) as u64)
+    );
+    assert_eq!(this_writes[0].files, Some(3));
+
     mac.engine.stop();
     phone.engine.stop();
 }
