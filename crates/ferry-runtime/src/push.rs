@@ -697,7 +697,18 @@ fn write_all_remote<S: Read + Write>(
         let piece = (bytes.len() - written).min(cap);
         let at = offset + u64::try_from(written).unwrap_or(0);
         let sent = client.write(path, at, bytes[written..written + piece].to_vec())?;
-        if sent == 0 {
+        // H4: zero is a peer that wrote nothing; more than `piece` is a
+        // peer claiming to have written bytes this call never sent it.
+        // Trusting that claim moves `written` ahead by more than what was
+        // actually sent, so the next piece is read from the wrong offset
+        // in `bytes` and written to the wrong offset on the peer: bytes in
+        // between are silently skipped, on both sides, rather than ever
+        // erroring, until the final manifest check catches the mismatch as
+        // a plain `ChunkFailedVerification`, far from where it happened.
+        // Neither shape is one this side asked for, and the same peer
+        // would claim it again on a retry, so this is fatal here instead,
+        // not worth another attempt.
+        if sent == 0 || usize::try_from(sent).unwrap_or(usize::MAX) > piece {
             return Err(RpcError::Remote(OpError::Internal));
         }
         written += usize::try_from(sent).unwrap_or(piece);

@@ -1733,6 +1733,108 @@ fn a_push_to_a_peer_that_stores_nothing_fails_within_a_bounded_number_of_attempt
     peer.close();
 }
 
+// ---------------------------------------------------------------------------
+// H4: a peer that claims to have written more than it was sent is fatal.
+// ---------------------------------------------------------------------------
+
+/// A peer that answers every write by claiming it wrote more bytes than
+/// the call ever sent it. Stands in for a peer that does not speak the
+/// write protocol honestly.
+struct ClaimsExtraWrittenFs;
+
+impl FileOps for ClaimsExtraWrittenFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn write(&self, _path: &RemotePath, _offset: u64, bytes: &[u8]) -> Result<u32, OpError> {
+        Ok(u32::try_from(bytes.len())
+            .unwrap_or(u32::MAX)
+            .saturating_add(1))
+    }
+
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+        Ok(manifest_from_bytes(&[], ChunkSize::one_mebibyte()))
+    }
+}
+
+/// H4: `write_all_remote` used to trust a peer's claimed write length past
+/// what the call actually sent, which moved its own byte count ahead of
+/// what really went out: the next piece was read from the wrong offset in
+/// the local file and written to the wrong offset on the peer, bytes in
+/// between silently skipped on both sides, caught only much later as a
+/// plain `ChunkFailedVerification` once the whole file's manifest no
+/// longer matches. A peer that claims more than it was sent must instead
+/// fail the push cleanly and immediately, naming what actually went wrong.
+#[test]
+fn a_peer_that_claims_extra_bytes_written_fails_the_push_cleanly() {
+    let mac = build("Vamana");
+    let peer = start_peer_with(&mac.key, Arc::new(ClaimsExtraWrittenFs));
+    pair_with_peer(&mac, &peer);
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("a.bin");
+    std::fs::write(&local_path, sample_bytes(1024)).expect("the local file should write");
+
+    let id = mac
+        .engine
+        .push(
+            key_hex(&peer.key),
+            local_path.to_string_lossy().into_owned(),
+            "Root/a.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+
+    wait_transfer(
+        &mac,
+        &id,
+        "the push to fail cleanly rather than panic",
+        |t| t.state == TransferState::Failed,
+    );
+
+    let info = mac
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the failed transfer is still listed");
+    assert_eq!(
+        code_of_error(&info.error.expect("a failed transfer carries an error")),
+        "OpError::Internal"
+    );
+
+    mac.engine.stop();
+    peer.close();
+}
+
 /// H2: a push's stored record is trusted only while the local file still
 /// matches the size and modified time recorded when its manifest was
 /// built. Editing the file between two attempts of the same push must
