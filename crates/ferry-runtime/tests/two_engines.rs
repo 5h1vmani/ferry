@@ -1475,6 +1475,93 @@ fn a_push_into_a_read_only_root_fails_with_permission_denied() {
     phone.engine.stop();
 }
 
+/// `push_files` makes one batch and lands every file, the push mirror of
+/// `pull_folder_groups_its_transfers_into_one_batch`.
+#[test]
+fn push_files_makes_one_batch_and_lands_every_file() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("Uploads"))
+        .expect("a folder on the phone to push into");
+
+    let source = tempfile::tempdir().expect("a folder for the files being pushed");
+    let bytes_a = sample_bytes();
+    let bytes_b = sample_bytes();
+    let bytes_c = sample_bytes();
+    let path_a = source.path().join("a.bin");
+    let path_b = source.path().join("b.bin");
+    let path_c = source.path().join("c.bin");
+    std::fs::write(&path_a, &bytes_a).expect("a.bin should write");
+    std::fs::write(&path_b, &bytes_b).expect("b.bin should write");
+    std::fs::write(&path_c, &bytes_c).expect("c.bin should write");
+
+    let batch_id = mac
+        .engine
+        .push_files(
+            phone_key,
+            vec![
+                path_a.to_string_lossy().into_owned(),
+                path_b.to_string_lossy().into_owned(),
+                path_c.to_string_lossy().into_owned(),
+            ],
+            "Root/Uploads".to_owned(),
+        )
+        .expect("push_files should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted_batch = batch_id.clone();
+    mac.inbox.wait_until("the batch to finish", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted_batch && b.state == TransferState::Done)
+    });
+
+    let batch = mac
+        .engine
+        .batches()
+        .into_iter()
+        .find(|b| b.id == batch_id)
+        .expect("the finished batch should still be listed");
+    assert_eq!(batch.files_total, 3, "three files were pushed");
+    assert_eq!(batch.files_done, 3, "every file finished");
+    assert_eq!(batch.direction, Direction::Push);
+    assert_eq!(
+        batch.bytes_total,
+        (bytes_a.len() + bytes_b.len() + bytes_c.len()) as u64,
+        "the byte total is the sum over its transfers"
+    );
+
+    assert_eq!(
+        std::fs::read(phone.shared_root.join("Uploads/a.bin")).expect("a.bin should have landed"),
+        bytes_a
+    );
+    assert_eq!(
+        std::fs::read(phone.shared_root.join("Uploads/b.bin")).expect("b.bin should have landed"),
+        bytes_b
+    );
+    assert_eq!(
+        std::fs::read(phone.shared_root.join("Uploads/c.bin")).expect("c.bin should have landed"),
+        bytes_c
+    );
+
+    let transfers = mac.engine.transfers();
+    let in_batch: Vec<&ferry_runtime::TransferInfo> = transfers
+        .iter()
+        .filter(|t| t.batch_id.as_deref() == Some(batch.id.as_str()))
+        .collect();
+    assert_eq!(
+        in_batch.len(),
+        3,
+        "every transfer this push_files call made carries the batch id"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
 // ---------------------------------------------------------------------------
 // Item 13: the access log records what each side did.
 // ---------------------------------------------------------------------------

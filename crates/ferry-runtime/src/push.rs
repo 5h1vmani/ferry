@@ -62,20 +62,22 @@ use ferry_core::limits;
 use ferry_core::localfs::LocalFs;
 use ferry_core::ops::{FileKind, OpError};
 use ferry_core::path::{PathError, RemotePath};
-use ferry_core::rpc::{Client, FileOps, RpcError};
+use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello};
 use ferry_core::session::{SessionId, Transfer, TransferError};
 
 use crate::access;
+use crate::batch::{self, BatchRecord};
 use crate::engine::{self, Shared};
-use crate::errors::{failed, from_op, from_path, from_transfer};
+use crate::errors::{failed, from_op, from_path, from_rpc, from_transfer};
+use crate::guard::StopAware;
 use crate::notify::Change;
 use crate::record::{Meta, Record, read_record, write_record};
 use crate::state::{TransferRow, key_from_hex, lock, now_unix_secs};
 use crate::transfer::{self, BACKOFF_MIN, Outcome, Plan, Reporter, classify_rpc};
-use crate::{Direction, FerryError, TransferState};
+use crate::{Direction, FerryError, Origin, TransferState};
 
 // ---------------------------------------------------------------------------
-// The boundary: `Engine::push` calls straight in.
+// The boundary: `Engine::push` and `Engine::push_files` call straight in.
 // ---------------------------------------------------------------------------
 
 /// Send one file. See `Engine::push` in `engine.rs`.
@@ -153,6 +155,126 @@ pub(crate) fn push(
     Ok(id)
 }
 
+/// Send several files into one folder, as one batch. See `Engine::push_files`
+/// in `engine.rs`.
+pub(crate) fn push_files(
+    shared: &Arc<Shared>,
+    device_key_hex: &str,
+    local_paths: &[String],
+    remote_folder: &str,
+) -> Result<String, FerryError> {
+    let folder = RemotePath::parse(remote_folder).map_err(from_path)?;
+    let key = key_from_hex(device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+    {
+        let state = lock(&shared.state);
+        if !state.started {
+            return Err(failed("Runtime::NotStarted"));
+        }
+        if state.peers.get(&key).is_none() {
+            return Err(failed("Runtime::NotPaired"));
+        }
+    }
+
+    // Confirm the folder is really one before anything is queued, the same
+    // way `pull_folder` confirms its own folder by listing it. This dial
+    // never wraps its stream in `Cut`; only a transfer attempt's dial does.
+    let (stream, socket, addr, via) = transfer::dial(shared, device_key_hex, &key)?;
+    engine::mark_reachable(shared, device_key_hex, addr, via);
+    let connection_id = shared.next_connection_id();
+    let _socket = engine::SocketRegistration::new(shared, connection_id, socket);
+    let mut stream = StopAware::new(stream, Arc::clone(&shared.stopping));
+    exchange_hello(&mut stream, &shared.display_name, shared.kind)
+        .map_err(|error| from_rpc(&error))?;
+    let mut client = Client::new(stream);
+    let entry = client.stat(&folder).map_err(|error| from_rpc(&error))?;
+    if entry.kind != FileKind::Directory {
+        return Err(from_op(OpError::NotADirectory));
+    }
+
+    let started_unix_secs = now_unix_secs();
+    let chunk_size = *lock(&shared.chunk_size);
+    let mut rows = Vec::with_capacity(local_paths.len());
+    let mut total_bytes: u64 = 0;
+    for local_path in local_paths {
+        let leaf = local_leaf_name(local_path);
+        let destination =
+            RemotePath::parse(&format!("{}/{leaf}", folder.as_str())).map_err(from_path)?;
+        let source = store_local_path(local_path)?;
+        total_bytes = total_bytes.saturating_add(local_file_size(local_path));
+        let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
+        let id = format!("{device_key_hex}-{session}");
+        rows.push(TransferRow {
+            id,
+            device_key_hex: device_key_hex.to_owned(),
+            file_name: leaf,
+            source,
+            destination,
+            bytes_total: 0,
+            bytes_done: 0,
+            state: TransferState::Queued,
+            transport: None,
+            error: None,
+            source_size: None,
+            source_mtime: None,
+            running: false,
+            attempt_after: None,
+            backoff: BACKOFF_MIN,
+            started_unix_secs,
+            ended_unix_secs: None,
+            direction: Direction::Push,
+            speed_bytes_per_sec: None,
+            // Filled in below, once the batch id exists.
+            batch_id: None,
+            chunk_size,
+        });
+    }
+
+    // docs/engine-contract.md item 5: a file pushed as part of `push_files`
+    // logs nothing of its own; the batch logs one Write entry for the
+    // folder, the mirror of the folder copy rule in item 13.
+    engine::record_this(
+        shared,
+        device_key_hex,
+        access::AccessVerb::Write,
+        folder.as_str(),
+        Some(total_bytes),
+        None,
+        Some(u32::try_from(rows.len()).unwrap_or(u32::MAX)),
+    );
+
+    let batch_session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
+    let batch_id = format!("{device_key_hex}-{batch_session}");
+    for row in &mut rows {
+        row.batch_id = Some(batch_id.clone());
+    }
+    let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+    let batch_row = crate::state::BatchRow {
+        id: batch_id.clone(),
+        device_key_hex: device_key_hex.to_owned(),
+        label: remote_folder.to_owned(),
+        direction: Direction::Push,
+        origin: Origin::Manual,
+        started_unix_secs,
+        transfer_ids: ids.clone(),
+        done_files: 0,
+        done_bytes: 0,
+    };
+    batch::write_batch(&shared.batch_path(&batch_id), &BatchRecord::of(&batch_row))?;
+
+    {
+        let mut state = lock(&shared.state);
+        state.batches.insert(batch_id.clone(), batch_row);
+        for row in rows {
+            state.transfers.insert(row.id.clone(), row);
+        }
+    }
+    engine::notify(shared, Change::Transfers);
+    for id in &ids {
+        transfer::spawn(shared, id);
+    }
+    Ok(batch_id)
+}
+
 // ---------------------------------------------------------------------------
 // Local paths, stored as a `RemotePath` with the leading slash stripped.
 // ---------------------------------------------------------------------------
@@ -178,13 +300,23 @@ fn local_absolute_path(source: &RemotePath) -> String {
     format!("/{}", source.as_str())
 }
 
-/// A best-effort size for the access log entry `push` writes up front. Zero
-/// when the path cannot be read at all; the queued row will say why once a
-/// worker attempts it.
+/// A best-effort size for the access log entry `push` and `push_files` write
+/// up front. Zero when the path cannot be read at all; the queued row will
+/// say why once a worker attempts it.
 fn local_file_size(local_path: &str) -> u64 {
     std::fs::metadata(local_path)
         .map(|metadata| metadata.len())
         .unwrap_or(0)
+}
+
+/// The last component of a local path, for `file_name` and for the name a
+/// pushed file takes inside `remote_folder`.
+fn local_leaf_name(local_path: &str) -> String {
+    Path::new(local_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(local_path)
+        .to_owned()
 }
 
 /// Open the local file's parent folder as its own `LocalFs`, and name the

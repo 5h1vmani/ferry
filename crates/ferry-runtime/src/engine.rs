@@ -1528,6 +1528,28 @@ impl Engine {
         push::push(&self.shared, &device_key_hex, &local_path, &remote_path)
     }
 
+    /// Send several files into one folder on a paired device, as one batch.
+    ///
+    /// `docs/engine-contract.md`, item 5. Each file lands at
+    /// `remote_folder/<file name>`. Dials the device to confirm
+    /// `remote_folder` is really a folder before anything is queued, the
+    /// same way `pull_folder` confirms its own folder by listing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::NotPaired`, `Runtime::NotStarted`, an `OpError`
+    /// code when the dial or the folder check fails, and
+    /// `OpError::NotADirectory` when `remote_folder` names a file on the
+    /// peer.
+    pub fn push_files(
+        &self,
+        device_key_hex: String,
+        local_paths: Vec<String>,
+        remote_folder: String,
+    ) -> Result<String, FerryError> {
+        push::push_files(&self.shared, &device_key_hex, &local_paths, &remote_folder)
+    }
+
     /// List every entry in one folder on a paired device.
     ///
     /// Dials the device, then pages through the server's cursor until it

@@ -134,6 +134,9 @@
 //!     /// the file's manifest first, resumes like a pull, and writes through
 //!     /// `<remote_path>.ferry-part` until the whole file verifies.
 //!     pub fn push(&self, device_key_hex: String, local_path: String, remote_path: String) -> Result<String, FerryError>;
+//!     /// Send several files into one folder on a paired device, as one
+//!     /// batch labelled with that folder. Returns the batch id.
+//!     pub fn push_files(&self, device_key_hex: String, local_paths: Vec<String>, remote_folder: String) -> Result<String, FerryError>;
 //!     pub fn batches(&self) -> Vec<BatchInfo>;
 //!     /// Retry every `Failed` transfer in a batch.
 //!     pub fn retry_batch(&self, batch_id: String) -> Result<(), FerryError>;
