@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import app.ferry.NetworkName
 import uniffi.ferry_runtime.AccessEntry
 import uniffi.ferry_runtime.BatchInfo
 import uniffi.ferry_runtime.Config
@@ -123,6 +124,26 @@ object FerryEngine {
     // True while the phone advertises and accepts connections. Read from
     // the engine's own status(), never cached from what was last set.
     val reachable: StateFlow<Boolean> = _reachable.asStateFlow()
+
+    private val _network = MutableStateFlow<String?>(null)
+
+    // The Wi-Fi network name NetworkName last set. Null when unknown: Wi-Fi
+    // off, location refused, or the name unreadable. Read from status(),
+    // same as reachable.
+    val network: StateFlow<String?> = _network.asStateFlow()
+
+    private val _wifiPresence = MutableStateFlow(false)
+
+    // True while this device advertises, browses, and accepts over Wi-Fi.
+    // False while reachable is off, and also while it is on but this
+    // network is not trusted. docs/engine-contract.md item 18.
+    val wifiPresence: StateFlow<Boolean> = _wifiPresence.asStateFlow()
+
+    private val _trustedNetworks = MutableStateFlow<List<String>>(emptyList())
+
+    // Every trusted Wi-Fi network name, oldest first, as the engine reports
+    // it.
+    val trustedNetworks: StateFlow<List<String>> = _trustedNetworks.asStateFlow()
 
     private val _started = MutableStateFlow(false)
 
@@ -240,6 +261,11 @@ object FerryEngine {
             _batches.value = current.batches()
             _accessLog.value = current.accessLog(null, ACCESS_LOG_LIMIT)
             readStatus(current)
+            // NetworkName may have read a name before this engine was
+            // built, or before start() opened it for calls. That reading
+            // is not lost: it is held there and pushed again here, which
+            // is the "once after start" half of setNetwork's contract.
+            setNetwork(NetworkName.current())
             true
         } catch (e: FerryException) {
             _error.value = e
@@ -271,6 +297,9 @@ object FerryEngine {
         _transfers.value = emptyList()
         _batches.value = emptyList()
         _accessLog.value = emptyList()
+        _network.value = null
+        _wifiPresence.value = false
+        _trustedNetworks.value = emptyList()
     }
 
     // Advertises over mDNS and accepts connections, or stops doing both.
@@ -287,10 +316,60 @@ object FerryEngine {
     }
 
     // Reads what this engine currently is. One call for reachability, the
-    // listen port, and whether adb was found, so no screen holds a copy of
-    // any of them.
+    // network name, Wi-Fi presence, the listen port, and whether adb was
+    // found, so no screen holds a copy of any of them. trustedNetworks() is
+    // its own call, read here too, because the trusted list changes on the
+    // same devicesChanged callback as the rest of this.
     private fun readStatus(current: Engine) {
-        _reachable.value = current.status().reachable
+        val status = current.status()
+        _reachable.value = status.reachable
+        _network.value = status.network
+        _wifiPresence.value = status.wifiPresence
+        _trustedNetworks.value = current.trustedNetworks()
+    }
+
+    // Hands the engine the phone's current Wi-Fi network name, or null
+    // when it cannot be read. NetworkName calls this after start and on
+    // every change; idempotent, so a repeat costs a round trip and nothing
+    // else. This does not throw, so it needs no error handling of its own,
+    // but it runs on Dispatchers.IO with trustNetwork and forgetNetwork so
+    // none of the three ever blocks the caller's thread.
+    fun setNetwork(name: String?) {
+        val current = engine ?: return
+        scope.launch {
+            current.setNetwork(name)
+            readStatus(current)
+        }
+    }
+
+    // Adds a name to the trusted list. Refused with Runtime::NetworkName
+    // for an empty name, a name over 32 bytes, or a 33rd name.
+    fun trustNetwork(name: String) {
+        val current = engine ?: return
+        _error.value = null
+        scope.launch {
+            try {
+                current.trustNetwork(name)
+                readStatus(current)
+            } catch (e: FerryException) {
+                _error.value = e
+            }
+        }
+    }
+
+    // Removes a name from the trusted list. A name that is not trusted is
+    // not an error and changes nothing.
+    fun forgetNetwork(name: String) {
+        val current = engine ?: return
+        _error.value = null
+        scope.launch {
+            try {
+                current.forgetNetwork(name)
+                readStatus(current)
+            } catch (e: FerryException) {
+                _error.value = e
+            }
+        }
     }
 
     // Records which way in a person chose, without touching the engine.

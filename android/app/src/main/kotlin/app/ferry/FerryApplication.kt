@@ -21,6 +21,11 @@ class FerryApplication : Application() {
         super.onCreate()
         Permissions.refresh(this)
         FerryEngine.create(this)
+        // Registered once here rather than after create(): a callback that
+        // fires before the engine exists is not lost, because NetworkName
+        // holds the last name it read and FerryEngine.start() reads it
+        // back.
+        NetworkName.start(this)
         registerActivityLifecycleCallbacks(
             object : ActivityLifecycleCallbacks {
                 override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
