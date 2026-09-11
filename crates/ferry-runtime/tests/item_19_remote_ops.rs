@@ -16,7 +16,11 @@
 //!
 //! The helpers below are copied from `two_engines.rs`, as every test file in
 //! this crate does today (`docs/agent-runs.md`, rule 3): one test file per
-//! item, never appended to a shared one.
+//! item, never appended to a shared one. The one test here that speaks HTTP
+//! to a running bridge uses the shared client in `tests/common/mod.rs`
+//! instead of copying it again.
+
+mod common;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -522,6 +526,92 @@ fn a_write_over_one_mebibyte_is_refused_and_writes_nothing() {
             .len(),
         u64::from(MAX_WRITE_LEN),
         "the whole mebibyte lands"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Audit `docs/audits/third-run-engine.md`, finding 5: `forget` and the pool.
+// ---------------------------------------------------------------------------
+
+/// `forget` must close the device's pool, not only drop the registry's
+/// handle on it.
+///
+/// A connection Finder already holds keeps its own `Arc<Bridge>`, which
+/// keeps the `Arc<Pool>`. Before this, the next request on that connection
+/// popped an idle pooled connection `forget` had never closed, so files on
+/// a forgotten device were still read after `forget` returned.
+#[test]
+fn forget_closes_the_devices_pool_so_an_open_bridge_serves_nothing_more() {
+    let contents = b"the phone's own notes".as_slice();
+    let mac_key = generate_key().expect("a fresh key pair");
+    let phone_key_pair = generate_key().expect("a fresh key pair");
+    let mac = common::build_side(
+        "Vamana",
+        DeviceKind::Mac,
+        mac_key.clone(),
+        &[],
+        &phone_key_pair,
+        "Pixel 3 XL",
+        DeviceKind::Phone,
+    );
+    let phone = common::build_side(
+        "Pixel 3 XL",
+        DeviceKind::Phone,
+        phone_key_pair,
+        &[("Notes.txt", contents)],
+        &mac_key,
+        "Vamana",
+        DeviceKind::Mac,
+    );
+    phone.engine.set_reachable(true);
+
+    let phone_key = mac.engine.devices()[0].key_hex.clone();
+    // Discovery is not running in a test, so this `list` is what gives the
+    // Mac the phone's address and marks it reachable.
+    mac.engine.offer_candidate(common::loopback_addr(&phone));
+    mac.engine
+        .list(phone_key.clone(), String::new())
+        .expect("listing the phone's root should succeed once dialable");
+    let endpoint = mac
+        .engine
+        .mount_start(phone_key.clone())
+        .expect("mount_start should succeed for a paired, reachable device");
+
+    let port = common::port_of(&endpoint.url);
+    let host = format!("127.0.0.1:{port}");
+    let addr: SocketAddr = host.parse().expect("a loopback address");
+    let mut client = common::TestClient::connect(addr);
+    let auth = Some((endpoint.user.as_str(), endpoint.password.as_str()));
+
+    let served = client.request("GET", "/Root/Notes.txt", &host, auth, &[], None);
+    assert_eq!(
+        served.status, 200,
+        "the bridge serves the file while paired"
+    );
+    assert_eq!(served.body, contents, "and serves its real bytes");
+
+    mac.engine
+        .forget(phone_key)
+        .expect("forgetting a paired device should succeed");
+
+    let refused = client.request("GET", "/Root/Notes.txt", &host, auth, &[], None);
+    assert_eq!(
+        refused.status, 503,
+        "the next request on the same connection must be refused"
+    );
+    assert!(
+        refused.body.is_empty(),
+        "a forgotten device's files must not be read again"
+    );
+
+    // The bridge's own port went with `forget`, so a fresh request cannot
+    // even reach it.
+    assert!(
+        std::net::TcpStream::connect(addr).is_err(),
+        "the forgotten device's bridge port must be closed"
     );
 
     mac.engine.stop();

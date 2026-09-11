@@ -1325,10 +1325,18 @@ impl Engine {
             return Err(failed("Runtime::NotPaired"));
         }
         // `forget` stops the device's bridge. `docs/engine-contract.md`,
-        // item 6, and drops its pool, item 19. The bridge is stopped first,
+        // item 6, and closes its pool, item 19. The bridge is stopped first,
         // so no request can make the pool again after it is dropped.
+        //
+        // Removing the registry's handle is not enough. A bridge connection
+        // Finder already holds keeps its own `Arc<Bridge>`, which keeps the
+        // `Arc<Pool>`, so its next request would pop an idle connection
+        // nobody had closed. `Pool::close` shuts every idle connection down
+        // and refuses every later borrow.
         self.shared.mounts.stop(&key_hex);
-        drop(lock(&self.shared.pools).remove(&key_hex));
+        if let Some(pool) = lock(&self.shared.pools).remove(&key_hex) {
+            pool.close();
+        }
         save_peers(&self.shared, |store| {
             drop(store.remove(&key));
             Ok(())

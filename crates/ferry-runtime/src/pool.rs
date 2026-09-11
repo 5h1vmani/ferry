@@ -35,6 +35,7 @@
 //! device that is not marked reachable instead of refusing it. An app call
 //! is what learns a device is reachable in the first place.
 
+use std::net::Shutdown;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -78,6 +79,9 @@ impl Drop for Pooled {
 struct Inner {
     idle: Vec<Pooled>,
     outstanding: usize,
+    /// True once [`Pool::close`] has run. A closed pool never dials again
+    /// and never hands out an idle connection again.
+    closed: bool,
 }
 
 pub(crate) struct Pool {
@@ -93,6 +97,7 @@ impl Pool {
             inner: Mutex::new(Inner {
                 idle: Vec::new(),
                 outstanding: 0,
+                closed: false,
             }),
             slot_freed: Condvar::new(),
         }
@@ -152,6 +157,12 @@ impl Pool {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
+            // `docs/engine-contract.md`, item 19: a device this engine has
+            // forgotten has no connection left to borrow, and no dial to
+            // make. A bridge connection Finder still holds is refused here.
+            if inner.closed {
+                return Err(failed("Runtime::NotReachable"));
+            }
             if let Some(client) = inner.idle.pop() {
                 inner.outstanding += 1;
                 return Ok(Borrowed::new(self, client));
@@ -211,17 +222,55 @@ impl Pool {
 
     /// Takes back a borrowed connection. `None` means it was found broken
     /// and is dropped rather than reused.
+    ///
+    /// A connection given back to a closed pool is dropped too: the device
+    /// is forgotten, so there is nothing left to keep it for.
     fn give_back(&self, client: Option<Pooled>) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.outstanding = inner.outstanding.saturating_sub(1);
-        if let Some(client) = client {
+        if let Some(client) = client
+            && !inner.closed
+        {
             inner.idle.push(client);
         }
         drop(inner);
         self.slot_freed.notify_one();
+    }
+
+    /// Shut every idle connection down and refuse every later borrow.
+    ///
+    /// `docs/engine-contract.md`, item 19. `Engine::forget` calls this. The
+    /// registry's own handle on the pool goes with the same call, but a
+    /// bridge connection Finder already holds keeps its own `Arc<Bridge>`,
+    /// which keeps this `Arc<Pool>`. Without this, that connection's next
+    /// request popped an idle connection nobody had closed and read a
+    /// forgotten device's files. After this, [`Pool::take`] and
+    /// [`Pool::take_dialing`] both answer `Runtime::NotReachable`.
+    ///
+    /// A connection borrowed right now is not interrupted; the call it is
+    /// running finishes and [`Pool::give_back`] then drops it.
+    pub(crate) fn close(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inner.closed = true;
+        let idle = std::mem::take(&mut inner.idle);
+        drop(inner);
+        // A shutdown turns a peer's blocked read into an error at once,
+        // rather than waiting for the idle timeout in `tcp.rs`. Dropping
+        // each `Pooled` below closes its own copy of the socket and
+        // unregisters it. `docs/engine-contract.md` item 16c.
+        for pooled in &idle {
+            if let Some(socket) = lock_mutex(&pooled.shared.sockets).get(&pooled.id) {
+                drop(socket.shutdown(Shutdown::Both));
+            }
+        }
+        drop(idle);
+        self.slot_freed.notify_all();
     }
 }
 

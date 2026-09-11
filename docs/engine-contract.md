@@ -887,7 +887,12 @@ Finder mount on the same layer, and it reuses the mount's decisions.
 **One pool.** The DAV bridge's per-device connection pool moves from
 `dav/pool.rs` to `crates/ferry-runtime/src/pool.rs`, owned by `Shared`
 as one pool per device key, made on first use and dropped by `forget`
-and by `stop`. `Bridge` borrows from it instead of owning one. The
+and by `stop`. `forget` closes the pool as well as dropping it: it shuts
+every idle connection down and marks the pool closed, so `take` and
+`take_dialing` both answer `Runtime::NotReachable` from then on. A bridge
+connection Finder already holds keeps its own handle on the pool, so
+without the close its next request would read a forgotten device's files.
+`Bridge` borrows from it instead of owning one. The
 `take`, `Borrowed`, `client`, and `mark_unhealthy` API does not change.
 `Engine::list` borrows from it too, instead of dialling fresh. The
 constants keep their values: four connections, and a thirty second wait
