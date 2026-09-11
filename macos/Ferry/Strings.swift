@@ -458,8 +458,12 @@ enum S {
         static let keychainToDo = "Restart Ferry. If it repeats, unlock the login keychain."
 
         static let wrongSizeStopped = "The stored key is unusable."
-        static let wrongSizeWhy = "It is not the size Ferry expects."
-        static let wrongSizeToDo = "Delete the Ferry device key in Keychain Access. Ferry makes a new one."
+        /// The Keychain-specific fact moved here from the "what to do",
+        /// so the block gives one instruction, the same one
+        /// `NoiseError::BadKeyLength` gives, instead of two that
+        /// disagreed. design/errors.json, docs/audits/fable-ux.md, row 7.
+        static let wrongSizeWhy = "It is not the size Ferry expects. It is the Ferry device key in Keychain Access."
+        static let wrongSizeToDo = "Forget every device and pair again. The key is made fresh."
     }
 
     /// The Finder mount, item 6. A NetFS failure is not an engine error, so
