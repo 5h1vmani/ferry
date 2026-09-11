@@ -299,6 +299,14 @@ object FerryEngine {
             // code has been read.
             return
         }
+        // start_pairing_with refuses a second call while pairing already
+        // runs and reports the same state again, which left "Scan
+        // instead" and "Use a code instead" dead once pairing was under
+        // way. Cancelling first only when there is something to cancel
+        // keeps the first, ordinary call unchanged.
+        if (_pairing.value !is PairingState.Idle) {
+            current.cancelPairing()
+        }
         current.startPairingWith(EnginePairingMethod.CODE)
     }
 
