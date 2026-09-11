@@ -24,11 +24,10 @@ to built in the same commit that removes its `TODO(engine N)` markers.
    `scripts/gen_bindings.sh`. The Android app must still compile after
    each item. The phone took its screens on 11 September 2026 and reads
    them.
-4. The protocol version goes from 1 to 2 once, in item 15. Item 11 rides on
-   the same bump. Both `VERSION_MIN` and `VERSION_MAX` become 2. No build
-   in the field speaks version 1 with anyone but its own author, and a
-   stale phone build should fail with `NoSharedVersion` rather than read
-   paths wrongly.
+4. The protocol version bumps whenever an item changes the wire in a way an
+   old build cannot read; the current `VERSION_MIN` and `VERSION_MAX` live
+   in `crates/ferry-core/src/version.rs`, not here. A stale build must
+   fail with `NoSharedVersion` rather than read paths wrongly.
 5. Nothing in the engine formats numbers, dates, or sentences. The engine
    states facts. The app formats them.
 
