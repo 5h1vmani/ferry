@@ -585,12 +585,13 @@ fn a_wish_set_before_start_survives_start() {
         status.wifi_presence,
         "an empty trusted list is present once reachable"
     );
-    // `status().wifi_presence` recomputes the rule fresh, so it is not proof
-    // that `start` applied it. `short_code` is: it reads the advertiser
-    // `Shared::advertiser` actually holds, which only exists once
-    // `apply_presence` has run with a bound port. Before `start` calls
-    // `apply_presence` itself, the wish set here is recorded but never
-    // acted on, and the advertiser never starts for the rest of the run.
+    // `status().wifi_presence` reads whether an advertiser is actually
+    // running (finding 5, `docs/audits/fable-engineering.md`), so the
+    // assertion above already is proof that `start` applied the wish.
+    // `short_code` reads the same `Shared::advertiser` a different way, and
+    // is kept here too: before `start` calls `apply_presence` itself, the
+    // wish set here is recorded but never acted on, and the advertiser
+    // never starts for the rest of the run.
     assert!(
         engine.short_code().is_some(),
         "start should apply the rule now that it has a port, and start the \

@@ -1162,7 +1162,15 @@ impl Engine {
             listen_port: state.listen_addr.map_or(0, |addr| addr.port()),
             adb_present: self.shared.adb.is_some(),
             network: state.network.clone(),
-            wifi_presence: networks::wifi_presence(&state),
+            // Finding 5, `docs/audits/fable-engineering.md`: this reports
+            // the fact, not the rule. `apply_presence` decides whether an
+            // advertiser *should* run from `networks::wifi_presence`, then
+            // tries to start one and drops the error if the platform
+            // refuses, on purpose (`docs/engine-contract.md`, item 18). A
+            // person reading this field wants to know whether this device
+            // is actually announcing itself on mDNS right now, so this
+            // checks the advertiser directly instead of repeating the rule.
+            wifi_presence: lock(&self.shared.advertiser).is_some(),
         }
     }
 

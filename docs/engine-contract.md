@@ -789,6 +789,7 @@ fn trusted_networks(&self) -> Vec<String>;
 /// The name the app last set. None when unknown.
 pub network: Option<String>,
 /// True while this device advertises, browses, and accepts over Wi-Fi.
+/// Reports the advertiser actually running, not what the rule wants.
 pub wifi_presence: bool,
 ```
 
