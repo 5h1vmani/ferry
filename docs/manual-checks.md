@@ -202,6 +202,41 @@ Steps 7 to 11 were added for the I2 fix pass, saving.
 For each part, one line: worked, or what you saw instead. Paste the exact
 words from any error block.
 
+---
+
+## Task 5: the Mac's folders in the phone's Files app
+
+**Open.** Added 11 September 2026. This is job 8 and
+`docs/engine-contract.md` item 19. The phone now offers every paired Mac
+to the Files app and to every app's open and save dialog. Nothing below
+has run on a real phone yet.
+
+Build and install both apps as in task 3. Pair the two devices. Leave the
+Mac app open, so the phone can reach it.
+
+1. On the phone, open Files. Open the menu at the top left. The Mac
+   should be listed there by its own name. Under the name you should see
+   "Reachable over Wi-Fi", or "Reachable over USB" with the cable in.
+   Tap the Mac. The screen should list the Mac's shared folders, and
+   nothing else. Those are the same folders the Mac's Settings lists.
+2. Open one of those folders. It should list the files and folders inside
+   it. Each file should show a size and a date. Open a folder inside it.
+   That should list its contents the same way.
+3. Open a photo. It should appear in the Files app viewer. There should
+   be no download step and no copy step. Now open Ferry on the phone, go
+   to Settings, and tap Access log. It should hold a line saying this
+   phone read that photo.
+4. Open another app that saves a file, such as a notes app or a camera.
+   Choose its share or save action and pick Ferry's Mac. Pick a folder
+   inside one of the shared folders, then save. The save should finish
+   with no error. The file should appear in that folder on the Mac. The
+   phone's access log should gain a line saying this phone wrote it.
+
+### What to send back
+
+For each step, one line: worked, or what you saw instead. Paste the exact
+words from any error block.
+
 ## Sending results back
 
 You do not need to write anything neat. Copy and paste is fine. Paste text
