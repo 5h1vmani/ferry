@@ -38,21 +38,29 @@ enum FinderMount {
     /// Mounts `endpoint` through the NetFS API and returns the POSIX path
     /// the OS put it at.
     ///
-    /// Tries a mount directory named after the device first, under
-    /// `~/Library/Application Support/Ferry/mounts/<device name>`, so the
-    /// volume Finder shows is named for the phone rather than a NetFS
-    /// default. Falls back to the OS's own default location, ordinarily
-    /// under `/Volumes`, when that directory cannot be made or NetFS
+    /// Tries a mount directory named after the device's own key hex first,
+    /// under `~/Library/Application Support/Ferry/mounts/<device key
+    /// hex>`. The device's display name is untrusted text a peer chose for
+    /// itself: it can hold `/` or `..`, so it never becomes a path
+    /// component (S7). NetFS has no option key of its own for a volume's
+    /// display name separate from where it is mounted (checked against
+    /// this SDK's `NetFS.h`, `mountOnce`'s own comment), so the volume
+    /// Finder shows is whatever the OS derives from the mount directory;
+    /// the device's real name still reaches Finder as the mount root's
+    /// `displayname` property, `docs/engine-contract.md`, item 6, N4.
+    ///
+    /// Falls back to the OS's own default location, ordinarily under
+    /// `/Volumes`, when the named directory cannot be made or NetFS
     /// refuses to mount at it.
     ///
     /// # Errors
     ///
     /// Throws `FinderMountError.failed` when both tries fail.
-    static func mount(endpoint: MountEndpoint, deviceName: String) throws -> String {
+    static func mount(endpoint: MountEndpoint, deviceKeyHex: String) throws -> String {
         guard let url = URL(string: endpoint.url) else {
             throw FinderMountError.failed(reason: "The mount address did not parse.")
         }
-        if let namedDirectory = makeNamedMountDirectory(for: deviceName),
+        if let namedDirectory = makeNamedMountDirectory(for: deviceKeyHex),
             let path = try? mountOnce(
                 url: url,
                 mountDirectory: namedDirectory,
@@ -71,10 +79,12 @@ enum FinderMount {
         try? NSWorkspace.shared.unmountAndEjectDevice(at: URL(fileURLWithPath: path))
     }
 
-    private static func makeNamedMountDirectory(for deviceName: String) -> URL? {
+    /// `deviceKeyHex` is lowercase hex: always a safe single path
+    /// component, unlike the device's own display name (S7).
+    private static func makeNamedMountDirectory(for deviceKeyHex: String) -> URL? {
         let base = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/Ferry/mounts", isDirectory: true)
-        let directory = base.appendingPathComponent(deviceName, isDirectory: true)
+        let directory = base.appendingPathComponent(deviceKeyHex, isDirectory: true)
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             return directory
@@ -87,6 +97,12 @@ enum FinderMount {
     /// its own default location; non-nil asks it to mount directly on that
     /// folder (`kNetFSMountAtMountDirKey`) rather than creating a folder
     /// beneath it.
+    ///
+    /// The open options ask NetFS for no UI of its own (`kNAUIOptionKey` =
+    /// `kNAUIOptionNoUI`) and to allow this loopback mount at all
+    /// (`kNetFSAllowLoopbackKey`): both are declared in this SDK's
+    /// `NetFS.h` (S8), so both are set here rather than one being left
+    /// out.
     private static func mountOnce(
         url: URL,
         mountDirectory: URL?,
@@ -95,6 +111,8 @@ enum FinderMount {
     ) throws -> String {
         var mountPoints: Unmanaged<CFArray>?
         let openOptions = NSMutableDictionary()
+        openOptions[kNAUIOptionKey as String] = kNAUIOptionNoUI as String
+        openOptions[kNetFSAllowLoopbackKey as String] = true
         let mountOptions = NSMutableDictionary()
         if mountDirectory != nil {
             mountOptions[kNetFSMountAtMountDirKey as String] = true

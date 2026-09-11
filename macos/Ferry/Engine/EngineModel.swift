@@ -152,9 +152,25 @@ final class EngineModel: ObservableObject {
     func reloadDevices() {
         let previous = deviceInfos
         deviceInfos = engine?.devices() ?? []
+        clearEjectedMounts()
         devices = EngineAdapter.devices(deviceInfos)
         refreshPresence()
         mountNewlyReachableDevices(from: previous, to: deviceInfos)
+    }
+
+    /// Clears the stored mount path for any device whose path no longer
+    /// exists on disk: a person ejecting the volume in Finder, rather than
+    /// through this app. `docs/engine-contract.md`, item 6, S9: checked at
+    /// every devices change, so a volume the person ejects can be mounted
+    /// again on the device's next reachable moment, the same as one this
+    /// app unmounted itself.
+    private func clearEjectedMounts() {
+        for index in deviceInfos.indices {
+            guard let path = deviceInfos[index].mountPath else { continue }
+            guard !FileManager.default.fileExists(atPath: path) else { continue }
+            deviceInfos[index].mountPath = nil
+            try? engine?.setMountPath(deviceKeyHex: deviceInfos[index].keyHex, path: nil)
+        }
     }
 
     func reloadTransfers() {
@@ -280,7 +296,7 @@ final class EngineModel: ObservableObject {
         Task.detached { [weak self] in
             do {
                 let endpoint = try engine.mountStart(deviceKeyHex: device.keyHex)
-                let path = try FinderMount.mount(endpoint: endpoint, deviceName: device.name)
+                let path = try FinderMount.mount(endpoint: endpoint, deviceKeyHex: device.keyHex)
                 try engine.setMountPath(deviceKeyHex: device.keyHex, path: path)
             } catch {
                 await self?.report(error)
@@ -290,11 +306,17 @@ final class EngineModel: ObservableObject {
 
     /// Unmounts and stops one device's bridge. Used at `forget` and at
     /// quit; safe to call on a device that was never mounted.
+    ///
+    /// Clears the stored mount path (S9) once the unmount call is made, so
+    /// a device the person ejects, or forgets, is not left reporting a
+    /// path Finder no longer shows, and so it can be mounted again on its
+    /// next reachable moment.
     private func unmountAndStopBridge(forDevice keyHex: String) {
         if let path = deviceInfos.first(where: { $0.keyHex == keyHex })?.mountPath {
             FinderMount.unmount(path: path)
         }
         engine?.mountStop(deviceKeyHex: keyHex)
+        try? engine?.setMountPath(deviceKeyHex: keyHex, path: nil)
     }
 
     // MARK: - Pairing
