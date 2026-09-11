@@ -310,6 +310,12 @@ pub(crate) struct Shared {
     /// dropped for it. This takes its place: one writer at a time, so two
     /// savers cannot write the file in one order and publish in the other.
     pub(crate) peers_write: Mutex<()>,
+    /// Held by whichever thread is writing the trusted Wi-Fi network list.
+    ///
+    /// The same shape as [`Shared::peers_write`], and for the same reason:
+    /// that file is written with `fsync` too, and no thread that wants
+    /// `State` should wait for a disk.
+    pub(crate) networks_write: Mutex<()>,
     /// The claim on the data folder, held for as long as the engine is.
     pub(crate) dir_lock: DirLock,
     /// The access log's roll-up, open once `start` has run and dropped
@@ -751,6 +757,31 @@ pub(crate) fn save_peers(
     result.map_err(|e| from_peer(&e))
 }
 
+/// Change the trusted Wi-Fi network list and write it out.
+///
+/// The same shape as [`save_peers`], for the same reason: writing the list
+/// calls `fsync`, so the state lock is not held across it. The list is
+/// cloned, changed and written under its own writer lock, and the state lock
+/// is taken only to swap the result in.
+///
+/// # Errors
+///
+/// Whatever `change` returns. Nothing is published in that case, so memory
+/// and disk still agree.
+fn save_networks(
+    shared: &Arc<Shared>,
+    change: impl FnOnce(&mut crate::networks::TrustedNetworks) -> Result<bool, FerryError>,
+) -> Result<bool, FerryError> {
+    let writing = lock(&shared.networks_write);
+    let mut copy = lock(&shared.state).trusted.clone();
+    let result = change(&mut copy);
+    if matches!(result, Ok(true)) {
+        lock(&shared.state).trusted = copy;
+    }
+    drop(writing);
+    result
+}
+
 /// The engine both apps link. See the crate documentation for the contract.
 #[derive(uniffi::Object)]
 pub struct Engine {
@@ -866,6 +897,7 @@ impl Engine {
             cut: Mutex::new(None),
             wire_bytes: Arc::new(AtomicU64::new(0)),
             peers_write: Mutex::new(()),
+            networks_write: Mutex::new(()),
             presence: Mutex::new(()),
             dir_lock,
             access_log: Arc::new(Mutex::new(None)),
@@ -1156,10 +1188,10 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Runtime::NetworkName` for an empty name, a name over 32
-    /// bytes, or a 33rd name. Returns `TransferError::Local` when local
-    /// storage refuses the write.
+    /// bytes, a name holding a control character, or a 33rd name. Returns
+    /// `TransferError::Local` when local storage refuses the write.
     pub fn trust_network(&self, name: String) -> Result<(), FerryError> {
-        let changed = lock(&self.shared.state).trusted.add(&name)?;
+        let changed = save_networks(&self.shared, |list| list.add(&name))?;
         if changed {
             apply_presence(&self.shared);
             notify(&self.shared, Change::Devices);
@@ -1175,7 +1207,7 @@ impl Engine {
     ///
     /// Returns `TransferError::Local` when local storage refuses the write.
     pub fn forget_network(&self, name: String) -> Result<(), FerryError> {
-        let changed = lock(&self.shared.state).trusted.remove(&name)?;
+        let changed = save_networks(&self.shared, |list| list.remove(&name))?;
         if changed {
             apply_presence(&self.shared);
             notify(&self.shared, Change::Devices);
@@ -2942,11 +2974,10 @@ fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
 /// grow is not a reason to fail it. `Shared::set_pairing` reapplies the rule
 /// right after this, when it reports `Confirmed`.
 fn trust_current_network(shared: &Arc<Shared>) {
-    let mut state = lock(&shared.state);
-    let Some(name) = state.network.clone() else {
+    let Some(name) = lock(&shared.state).network.clone() else {
         return;
     };
-    drop(state.trusted.add(&name));
+    drop(save_networks(shared, |list| list.add(&name)));
 }
 
 /// Exchange names, store the peer, and report the new device.
