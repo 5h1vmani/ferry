@@ -22,8 +22,8 @@ to built in the same commit that removes its `TODO(engine N)` markers.
    The words follow `docs/voice.md`.
 3. Every boundary change regenerates both bindings with
    `scripts/gen_bindings.sh`. The Android app must still compile after
-   each item. It gets no new screens in this run; a later Kotlin design
-   pass will read the same fields.
+   each item. The phone took its screens on 11 September 2026 and reads
+   them.
 4. The protocol version goes from 1 to 2 once, in item 15. Item 11 rides on
    the same bump. Both `VERSION_MIN` and `VERSION_MAX` become 2. No build
    in the field speaks version 1 with anyone but its own author, and a
@@ -386,7 +386,7 @@ Each item states its decisions so that a builder needs no other source.
 | I1 | 6, read-only | Needs nothing from F, so it runs beside it. |
 | G | 14 | Reuses `pull_folder`, batches, and the manifest request. |
 | H | 5 | Push, with its own Mac control, so it is used before the mount needs it. |
-| J | 12 | The engine and Mac half of QR pairing. The phone's camera screen waits for the Kotlin design pass. |
+| J | 12 | The engine and Mac half of QR pairing. The phone's camera screen is built. |
 | I2 | 6, the write verbs and the delta on save | Needs push and the manifest request. |
 
 ### 16. The runtime limits: built
@@ -683,9 +683,9 @@ one the app's, all with rows.
 
 **The Mac.** `PairingQRView` draws the real payload; `isReal` goes away.
 The adapter maps `Offering` and `Requested`. `startPairing(method:)` calls
-`start_pairing_with`. The phone's camera screen is not built now; the
-engine half is tested engine to engine, with one engine calling
-`offer_scanned` on the other's payload.
+`start_pairing_with`. The phone's camera screen was built on 11 September
+2026, in `screens/QrScanner.kt`; the engine half is tested engine to
+engine, with one engine calling `offer_scanned` on the other's payload.
 
 ## The third run: items 17, 18 and 19
 
