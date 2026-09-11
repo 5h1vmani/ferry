@@ -38,6 +38,7 @@
 
 mod cache;
 mod delete;
+mod handlers;
 mod heads;
 mod http;
 mod lock;

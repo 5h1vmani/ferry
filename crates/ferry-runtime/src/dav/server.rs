@@ -15,37 +15,37 @@ use std::time::Duration;
 
 use ferry_core::chunk::Manifest;
 use ferry_core::localfs::LocalFs;
-use ferry_core::noise::SecureStream;
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
-use ferry_core::rpc::{Client, RpcError};
+use ferry_core::rpc::RpcError;
 
 use crate::access::AccessVerb;
 use crate::engine::{Shared, record_this};
 use crate::folder::RemoteLister;
-use crate::guard::StopAware;
 
 use crate::pool::{self, Pool};
 
 use super::cache::Cache;
 use super::delete;
 use super::heads::{self, HeadCache, Prefetch};
+use super::http;
 use super::lock::{LockError, LockTable, UnlockOutcome};
 use super::probes::{self, SidecarStore, SidecarWriteError};
 use super::put;
-use super::{http, xml};
+
+use crate::dav::handlers::{propfind, propfind_probe, proppatch_verb};
 
 /// How many connections one bridge serves at once. A 33rd is refused at
 /// accept, before its socket is even read from. Mirrors
 /// `MAX_PENDING_HANDSHAKES` in `ferry_core::tcp`.
-const MAX_LIVE_CONNECTIONS: u32 = 32;
+pub(crate) const MAX_LIVE_CONNECTIONS: u32 = 32;
 
 /// How long a connection may sit with nothing read, or a write may block,
 /// before this bridge gives up on it. `docs/engine-contract.md`, item 6,
 /// sets no number of its own; this exists only so a connection that never
 /// sends a byte, or a peer that stops reading, cannot hold a thread
 /// forever.
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a connection may go before its first request head is fully
 /// read, in seconds, before this bridge gives up on it.
@@ -57,7 +57,7 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// the same kept-alive connection goes back to [`CONNECTION_TIMEOUT`],
 /// since Finder holding a connection open between requests on purpose is
 /// not what this bounds.
-const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The largest number of connections that may be open without yet having
 /// sent one request this bridge accepted as authorized, at once.
@@ -71,13 +71,13 @@ const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 /// before its socket is even read from. A connection stops counting
 /// against this the moment `authorized` first accepts it, so an ordinary
 /// Finder session past its first request never sits here at all.
-const MAX_UNAUTHENTICATED_CONNECTIONS: u32 = 4;
+pub(crate) const MAX_UNAUTHENTICATED_CONNECTIONS: u32 = 4;
 
 /// Reserves one live-connection slot, and gives it back when dropped.
 /// Mirrors `PendingSlot` in `ferry_core::tcp`: a slot can only be created
 /// while one is free, and dropping it is the only way to free one again,
 /// so the count can never be missed or double counted.
-struct ConnectionSlot(Arc<AtomicU32>);
+pub(crate) struct ConnectionSlot(Arc<AtomicU32>);
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
@@ -87,7 +87,7 @@ impl Drop for ConnectionSlot {
 
 /// Reserves one of [`MAX_LIVE_CONNECTIONS`] slots, or `None` when the
 /// bridge is already at that many.
-fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
+pub(crate) fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
     connections
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             (current < MAX_LIVE_CONNECTIONS).then_some(current + 1)
@@ -101,7 +101,7 @@ fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlo
 /// authenticated. Shares [`ConnectionSlot`] with
 /// [`reserve_connection_slot`]: both only ever decrement the counter they
 /// were built from, so the same guard works for either.
-fn reserve_unauth_slot(unauthenticated: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
+pub(crate) fn reserve_unauth_slot(unauthenticated: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
     unauthenticated
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             (current < MAX_UNAUTHENTICATED_CONNECTIONS).then_some(current + 1)
@@ -113,32 +113,32 @@ fn reserve_unauth_slot(unauthenticated: &Arc<AtomicU32>) -> Option<ConnectionSlo
 /// One device's bridge state, shared by every connection thread serving
 /// it.
 pub(crate) struct Bridge {
-    device_key_hex: String,
+    pub(crate) device_key_hex: String,
     /// The peer's own stored name, read once at `mount_start`. Used only
     /// as the mount root's `displayname` (N4); never anything a DAV
     /// request could shape.
-    device_name: String,
-    user: String,
-    password: String,
-    port: u16,
-    sidecars: SidecarStore,
+    pub(crate) device_name: String,
+    pub(crate) user: String,
+    pub(crate) password: String,
+    pub(crate) port: u16,
+    pub(crate) sidecars: SidecarStore,
     /// This device's pool, owned by [`Shared`] and shared with
     /// [`crate::Engine::list`]. `docs/engine-contract.md`, item 19.
-    pool: Arc<Pool>,
-    cache: Cache,
+    pub(crate) pool: Arc<Pool>,
+    pub(crate) cache: Cache,
     /// Item 17: the first bytes of each recently listed image.
-    heads: HeadCache,
+    pub(crate) heads: HeadCache,
     /// Item 17: the listing the prefetch thread works on next.
-    prefetch: Prefetch,
-    locks: LockTable,
+    pub(crate) prefetch: Prefetch,
+    pub(crate) locks: LockTable,
     /// Live connections right now, checked at accept against
     /// [`MAX_LIVE_CONNECTIONS`] (B3).
-    connections: Arc<AtomicU32>,
+    pub(crate) connections: Arc<AtomicU32>,
     /// Connections right now that have not yet sent one request this
     /// bridge accepted as authorized, checked at accept against
     /// [`MAX_UNAUTHENTICATED_CONNECTIONS`]. `docs/audits/fable-security.md`,
     /// finding 7.
-    unauthenticated: Arc<AtomicU32>,
+    pub(crate) unauthenticated: Arc<AtomicU32>,
 }
 
 impl Bridge {
@@ -248,7 +248,7 @@ pub(crate) fn accept_loop(
 /// which is when it is dropped, freeing the slot for another connection to
 /// use while this one keeps serving under its ordinary `connections` slot.
 /// `docs/audits/fable-security.md`, finding 7.
-fn handle_connection(
+pub(crate) fn handle_connection(
     shared: &Arc<Shared>,
     bridge: &Arc<Bridge>,
     stream: &TcpStream,
@@ -332,7 +332,7 @@ fn handle_connection(
 /// loopback claims to be sending. Every other refusal keeps the connection
 /// open, once its own declared body (bounded to [`http::MAX_BODY_LEN`] the
 /// same way as I1) has actually been read.
-fn respond(
+pub(crate) fn respond(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     head: &http::RequestHead,
@@ -423,13 +423,13 @@ fn respond(
     .map(|()| true)
 }
 
-fn no_body(out: &mut impl Write, status: &str) -> io::Result<()> {
+pub(crate) fn no_body(out: &mut impl Write, status: &str) -> io::Result<()> {
     http::write_head(out, status, &[("Content-Length", "0".to_owned())])
 }
 
 /// N3: a 405 carries the methods this bridge answers, the same list
 /// `options` states for `OPTIONS`.
-fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
+pub(crate) fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
         out,
         "405 Method Not Allowed",
@@ -440,7 +440,7 @@ fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
     )
 }
 
-fn unavailable(out: &mut impl Write) -> io::Result<()> {
+pub(crate) fn unavailable(out: &mut impl Write) -> io::Result<()> {
     no_body(out, "503 Service Unavailable")
 }
 
@@ -452,7 +452,7 @@ fn unavailable(out: &mut impl Write) -> io::Result<()> {
 /// Takes the header's value directly, rather than a whole request, so it
 /// reads the same from the head alone (before any body is touched) as it
 /// does once a request is fully buffered.
-fn authorized(bridge: &Bridge, header: Option<&str>) -> bool {
+pub(crate) fn authorized(bridge: &Bridge, header: Option<&str>) -> bool {
     let Some(header) = header else {
         return false;
     };
@@ -473,10 +473,10 @@ fn authorized(bridge: &Bridge, header: Option<&str>) -> bool {
 
 /// The methods this bridge answers at all, I1 and I2 together. Shared by
 /// `OPTIONS` and by a 405's `Allow` header (N3).
-const ALLOWED_METHODS: &str =
+pub(crate) const ALLOWED_METHODS: &str =
     "OPTIONS, GET, HEAD, PUT, PROPFIND, PROPPATCH, MKCOL, DELETE, MOVE, COPY, LOCK, UNLOCK";
 
-fn options(out: &mut impl Write) -> io::Result<()> {
+pub(crate) fn options(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
         out,
         "200 OK",
@@ -493,7 +493,7 @@ fn options(out: &mut impl Write) -> io::Result<()> {
 // question 4.
 // ---------------------------------------------------------------------------
 
-fn lock_verb(bridge: &Bridge, target: &str, out: &mut impl Write) -> io::Result<()> {
+pub(crate) fn lock_verb(bridge: &Bridge, target: &str, out: &mut impl Write) -> io::Result<()> {
     let token = match bridge.locks.lock_path(target) {
         Ok(token) => token,
         // A second `LOCK` of an unexpired lock, RFC 4918's own 423.
@@ -526,7 +526,7 @@ fn lock_verb(bridge: &Bridge, target: &str, out: &mut impl Write) -> io::Result<
     out.write_all(body.as_bytes())
 }
 
-fn unlock_verb(
+pub(crate) fn unlock_verb(
     bridge: &Bridge,
     request: &http::Request,
     target: &str,
@@ -546,29 +546,12 @@ fn unlock_verb(
 // Probes: answered from the sidecar store, never from the peer.
 // ---------------------------------------------------------------------------
 
-fn propfind_probe(
+pub(crate) fn get_probe(
     bridge: &Bridge,
     target: &str,
-    request: &http::Request,
+    method: &str,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let Some(sidecar) = bridge.sidecars.read(target) else {
-        return no_body(out, "404 Not Found");
-    };
-    let props = xml::requested_props(&request.body);
-    let name = probes::last_segment(target);
-    let size = u64::try_from(sidecar.bytes.len()).unwrap_or(u64::MAX);
-    let items = [xml::Item {
-        path: target,
-        name,
-        is_dir: false,
-        size,
-        modified_unix_secs: sidecar.modified_unix_secs,
-    }];
-    write_multistatus(out, &items, &props)
-}
-
-fn get_probe(bridge: &Bridge, target: &str, method: &str, out: &mut impl Write) -> io::Result<()> {
     let Some(sidecar) = bridge.sidecars.read(target) else {
         return no_body(out, "404 Not Found");
     };
@@ -589,7 +572,7 @@ fn get_probe(bridge: &Bridge, target: &str, method: &str, out: &mut impl Write) 
     Ok(())
 }
 
-fn put_sidecar(
+pub(crate) fn put_sidecar(
     bridge: &Bridge,
     target: &str,
     request: &http::Request,
@@ -618,7 +601,7 @@ fn put_sidecar(
     http::write_head(out, "201 Created", &[("Content-Length", "0".to_owned())])
 }
 
-fn parent_of(path: &str) -> &str {
+pub(crate) fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
@@ -634,7 +617,7 @@ fn parent_of(path: &str) -> &str {
 /// here is exactly what it says: the receiver's writable flag on the root
 /// (item 5), not a stand-in for the peer going away. I1 never calls an
 /// operation the peer refuses for that reason; every I2 write verb can.
-fn map_write_error(error: &RpcError) -> (&'static str, bool) {
+pub(crate) fn map_write_error(error: &RpcError) -> (&'static str, bool) {
     match error {
         RpcError::Remote(OpError::NotFound) => ("404 Not Found", false),
         RpcError::Remote(OpError::PermissionDenied) => ("403 Forbidden", false),
@@ -658,7 +641,7 @@ fn map_write_error(error: &RpcError) -> (&'static str, bool) {
 }
 
 /// `MKCOL` is `mkdir`. `docs/engine-contract.md`, item 6.
-fn mkcol_verb(
+pub(crate) fn mkcol_verb(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     target: &str,
@@ -711,7 +694,7 @@ fn mkcol_verb(
 /// bounds and deleted leaves first, then folders deepest first, per
 /// `delete::plan`. The wire stays non-recursive: one `delete` call per
 /// file or folder removed. A sidecar name never reaches the peer.
-fn delete_verb(
+pub(crate) fn delete_verb(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     target: &str,
@@ -832,7 +815,7 @@ fn delete_verb(
 /// when `dest_path` does not exist on the peer, so the caller proceeds;
 /// `Some` with the status to answer otherwise, 412 when it does exist and
 /// whatever `map_write_error` names for any other failure.
-fn overwrite_conflict(
+pub(crate) fn overwrite_conflict(
     borrowed: &mut pool::Borrowed<'_>,
     dest_path: &RemotePath,
 ) -> Option<&'static str> {
@@ -860,7 +843,7 @@ fn overwrite_conflict(
 /// name while the source is not: a real file has no sidecar entry to
 /// become, and letting the rename reach the peer would leave a real file
 /// there under a name this bridge never shows again.
-fn move_verb(
+pub(crate) fn move_verb(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     from_target: &str,
@@ -942,7 +925,7 @@ fn move_verb(
 /// `COPY` of a file reads it from the peer into a fresh spool file, then
 /// pushes it back under the new name through [`put::land_new`], item 5's
 /// landing rule. `COPY` of a folder is 403.
-fn copy_verb(
+pub(crate) fn copy_verb(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     source_target: &str,
@@ -1058,7 +1041,7 @@ fn copy_verb(
 /// Reads `source` into `spool_path`, then lands it at `destination` as a
 /// new file. One function so `copy_verb` never holds two overlapping
 /// mutable borrows of `borrowed`'s connection at once.
-fn copy_landing(
+pub(crate) fn copy_landing(
     borrowed: &mut pool::Borrowed<'_>,
     source: &RemotePath,
     destination: &RemotePath,
@@ -1084,7 +1067,7 @@ fn copy_landing(
 /// memory. A new destination lands the push way
 /// ([`put::land_new`]); an existing one lands the chunks that differ, in
 /// place ([`put::land_delta`]), which is the delta on save.
-fn put_file(
+pub(crate) fn put_file(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     target: &str,
@@ -1219,7 +1202,7 @@ fn put_file(
 
 /// Which of `put.rs`'s two landing rules [`put_landing`] used, so
 /// `put_file` answers 201 or 204.
-enum Landing {
+pub(crate) enum Landing {
     New,
     Delta,
 }
@@ -1227,7 +1210,7 @@ enum Landing {
 /// Stats `destination` to decide which landing rule applies, then runs
 /// it. One function so `put_file` never holds two overlapping mutable
 /// borrows of `borrowed`'s connection at once.
-fn put_landing(
+pub(crate) fn put_landing(
     borrowed: &mut pool::Borrowed<'_>,
     destination: &RemotePath,
     fs: &LocalFs,
@@ -1265,280 +1248,11 @@ fn put_landing(
     }
 }
 
-/// `PROPPATCH` sets the modified time when `getlastmodified` or the
-/// Apple `Win32LastModifiedTime` property is given, both carrying the
-/// same `rfc1123` shape a well behaved client only ever echoes back. It
-/// answers 200 for that property and 403 for every other, in one
-/// multistatus. `set_mtime` is never logged as its own `This` entry, the
-/// same rule `docs/engine-contract.md`, item 13, states for every other
-/// caller of it: it always follows a write that already is, and here
-/// there is no such write to follow. A sidecar name never reaches the
-/// peer.
-fn proppatch_verb(
-    shared: &Arc<Shared>,
-    bridge: &Bridge,
-    target: &str,
-    request: &http::Request,
-    out: &mut impl Write,
-) -> io::Result<()> {
-    if !bridge.locks.allows(target, request.header("if")) {
-        return no_body(out, "423 Locked");
-    }
-    let parsed = xml::read_proppatch(&request.body);
-    let mtime = parsed.mtime_text.as_deref().and_then(http::parse_rfc1123);
-    // A modified time property whose date failed to parse is refused, the
-    // same as any other property this bridge does not set: reporting it
-    // as accepted would tell the client its date landed when nothing was
-    // ever touched.
-    let (accepted, refused): (Vec<String>, Vec<String>) =
-        parsed.names.into_iter().partition(|name| {
-            let lower = name.to_ascii_lowercase();
-            (lower == "getlastmodified" || lower == "win32lastmodifiedtime") && mtime.is_some()
-        });
-
-    if probes::is_probe_name(probes::last_segment(target)) {
-        if let Some(when) = mtime {
-            bridge.sidecars.set_mtime(target, when);
-        }
-        let body = xml::proppatch_multistatus(target, false, &accepted, &refused);
-        return write_multistatus_xml(out, &body);
-    }
-
-    let Ok(path) = RemotePath::parse(target) else {
-        return no_body(out, "404 Not Found");
-    };
-    if let Some(when) = mtime {
-        let Ok(mut borrowed) = bridge.pool.take(shared) else {
-            return unavailable(out);
-        };
-        if let Err(error) = borrowed.client().set_mtime(&path, when) {
-            let (status, unhealthy) = map_write_error(&error);
-            if unhealthy {
-                borrowed.mark_unhealthy();
-            }
-            return no_body(out, status);
-        }
-    }
-    let body = xml::proppatch_multistatus(target, false, &accepted, &refused);
-    write_multistatus_xml(out, &body)
-}
-
-fn write_multistatus_xml(out: &mut impl Write, body: &str) -> io::Result<()> {
-    http::write_head(
-        out,
-        "207 Multi-Status",
-        &[
-            (
-                "Content-Type",
-                "application/xml; charset=\"utf-8\"".to_owned(),
-            ),
-            ("Content-Length", body.len().to_string()),
-        ],
-    )?;
-    out.write_all(body.as_bytes())
-}
-
 // ---------------------------------------------------------------------------
 // Real paths: served through the pool.
 // ---------------------------------------------------------------------------
 
-/// N3, RFC 4918 9.1: a `PROPFIND` this bridge will not walk. `depth` is
-/// `None` for a missing header and `Some("infinity")` for an explicit one;
-/// both mean "the whole tree", which I1 never serves.
-fn depth_not_finite(out: &mut impl Write) -> io::Result<()> {
-    let body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
-<D:error xmlns:D=\"DAV:\"><D:propfind-finite-depth/></D:error>\n";
-    http::write_head(
-        out,
-        "403 Forbidden",
-        &[
-            (
-                "Content-Type",
-                "application/xml; charset=\"utf-8\"".to_owned(),
-            ),
-            ("Content-Length", body.len().to_string()),
-        ],
-    )?;
-    out.write_all(body.as_bytes())
-}
-
-fn propfind(
-    shared: &Arc<Shared>,
-    bridge: &Bridge,
-    target: &str,
-    request: &http::Request,
-    out: &mut impl Write,
-) -> io::Result<()> {
-    let Ok(path) = RemotePath::parse(target) else {
-        return no_body(out, "404 Not Found");
-    };
-    let Some(depth) = request.header("depth") else {
-        return depth_not_finite(out);
-    };
-    if depth == "infinity" {
-        return depth_not_finite(out);
-    }
-
-    let Ok(mut borrowed) = bridge.pool.take(shared) else {
-        return unavailable(out);
-    };
-
-    let self_entry = match borrowed.client().stat(&path) {
-        Ok(entry) => entry,
-        Err(error) => {
-            let (status, unhealthy) = map_rpc_error(&error);
-            if unhealthy {
-                borrowed.mark_unhealthy();
-            }
-            return no_body(out, status);
-        }
-    };
-
-    let mut named: Vec<(String, Entry)> = vec![(target.to_owned(), self_entry.clone())];
-    let mut listed = false;
-
-    if depth != "0" && self_entry.kind == FileKind::Directory {
-        listed = true;
-        let cached = bridge.cache.get(target);
-        let children = match cached {
-            Some(children) => children,
-            None => match list_all(borrowed.client(), &path) {
-                Ok(children) => {
-                    bridge.cache.put(target, children.clone());
-                    children
-                }
-                Err(error) => {
-                    let (status, unhealthy) = map_rpc_error(&error);
-                    if unhealthy {
-                        borrowed.mark_unhealthy();
-                    }
-                    return no_body(out, status);
-                }
-            },
-        };
-        for child in children {
-            // A real file that happens to share a probe name is still
-            // never shown: those names belong to the sidecar store in
-            // this bridge's model. `docs/engine-contract.md`, item 6.
-            // Neither is a landing file's own `.ferry-part` name, item 6,
-            // I2: Finder must never see one.
-            if probes::is_probe_name(&child.name) || put::is_partial_name(&child.name) {
-                continue;
-            }
-            let child_path = if target.is_empty() {
-                child.name.clone()
-            } else {
-                format!("{target}/{}", child.name)
-            };
-            named.push((child_path, child));
-        }
-    }
-    drop(borrowed);
-
-    // S3: a bridge `PROPFIND` leaves a `This` entry in the Mac's own
-    // access log, once the peer round trip it needed is done. A folder
-    // listing is `List` with the entries actually shown (children only,
-    // matching `Engine::list`'s own count); a single stat, at depth 0 or
-    // on a file, is `Stat`.
-    if listed {
-        let entry_count = u32::try_from(named.len().saturating_sub(1)).unwrap_or(u32::MAX);
-        record_this(
-            shared,
-            &bridge.device_key_hex,
-            AccessVerb::List,
-            path.as_str(),
-            None,
-            Some(entry_count),
-            None,
-        );
-    } else {
-        record_this(
-            shared,
-            &bridge.device_key_hex,
-            AccessVerb::Stat,
-            path.as_str(),
-            None,
-            None,
-            None,
-        );
-    }
-
-    let props = xml::requested_props(&request.body);
-    let items: Vec<xml::Item<'_>> = named
-        .iter()
-        .map(|(path, entry)| xml::Item {
-            path,
-            name: if path.is_empty() {
-                // The mount root has no last path segment of its own;
-                // N4 names it after the device instead.
-                bridge.device_name.as_str()
-            } else {
-                probes::last_segment(path)
-            },
-            is_dir: entry.kind == FileKind::Directory,
-            size: entry.size,
-            modified_unix_secs: entry.modified_unix_secs,
-        })
-        .collect();
-    let written = write_multistatus(out, &items, &props);
-
-    // Item 17: the response is out, so the person is already looking at
-    // the folder. Hand its children to the prefetch thread, which is what
-    // makes the thumbnail requests that follow cost nothing on the wire.
-    // `named[0]` is the folder itself, which has no head to read.
-    if listed {
-        bridge.prefetch.submit(path.as_str(), &named[1..]);
-    }
-    written
-}
-
-fn write_multistatus(
-    out: &mut impl Write,
-    items: &[xml::Item<'_>],
-    props: &xml::PropSet,
-) -> io::Result<()> {
-    let body = xml::multistatus(items, props);
-    http::write_head(
-        out,
-        "207 Multi-Status",
-        &[
-            (
-                "Content-Type",
-                "application/xml; charset=\"utf-8\"".to_owned(),
-            ),
-            ("Content-Length", body.len().to_string()),
-        ],
-    )?;
-    out.write_all(body.as_bytes())
-}
-
-/// Pages through the peer's `list` cursor, the same bound `Engine::list`
-/// uses. A folder past the bound is served truncated rather than failing
-/// the whole `PROPFIND`: `docs/engine-contract.md`, item 6, sets no folder
-/// size limit for browsing, so a partial listing is the more useful answer
-/// than none.
-fn list_all(
-    client: &mut Client<StopAware<SecureStream>>,
-    path: &RemotePath,
-) -> Result<Vec<Entry>, RpcError> {
-    let mut entries = Vec::new();
-    let mut cursor = 0u64;
-    let mut pages = 0usize;
-    let mut seen = 0usize;
-    loop {
-        let (page, next_cursor) = client.list(path, cursor)?;
-        pages += 1;
-        seen += page.len();
-        entries.extend(page);
-        match crate::folder::after_page(cursor, next_cursor, pages, seen) {
-            Ok(Some(next)) => cursor = next,
-            Ok(None) | Err(_) => break,
-        }
-    }
-    Ok(entries)
-}
-
-fn get_file(
+pub(crate) fn get_file(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     target: &str,
@@ -1650,7 +1364,7 @@ fn get_file(
 ///
 /// Returns the status to answer with when the device is unreachable or the
 /// peer refused the `stat`.
-fn file_entry<'a>(
+pub(crate) fn file_entry<'a>(
     shared: &Arc<Shared>,
     bridge: &'a Bridge,
     target: &str,
@@ -1687,7 +1401,7 @@ fn file_entry<'a>(
 /// this side cannot satisfy all send no body, so none of them needs the
 /// wire. Everything else needs the wire unless the head holds the last byte
 /// the response promises.
-fn needs_the_wire(
+pub(crate) fn needs_the_wire(
     bridge: &Bridge,
     target: &str,
     entry: &Entry,
@@ -1729,7 +1443,7 @@ fn needs_the_wire(
 /// fails. The response head, with its `Content-Length`, is already
 /// written by then, so there is no status left to answer with: S2 has
 /// `handle_connection` drop the connection instead.
-fn send_body(
+pub(crate) fn send_body(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     body: &BodyPlan<'_>,
@@ -1759,7 +1473,7 @@ fn send_body(
 
 /// One `GET`'s body: which file, and which bytes of it the response head
 /// already promised.
-struct BodyPlan<'a> {
+pub(crate) struct BodyPlan<'a> {
     /// The DAV target, which is also the head cache key.
     target: &'a str,
     /// What the listing or the `stat` said the file is.
@@ -1778,7 +1492,7 @@ struct BodyPlan<'a> {
 /// only otherwise. The listing cache drops a folder on any write through
 /// this bridge to it, so a file this answers for is one nothing here has
 /// changed since the listing.
-fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
+pub(crate) fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
     let (parent, name) = target.rsplit_once('/').unwrap_or(("", target));
     let children = bridge.cache.get(parent)?;
     children.into_iter().find(|child| child.name == name)
@@ -1795,7 +1509,7 @@ fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
 ///
 /// Returns an error when the write to `out` fails, the same as
 /// [`stream_body`].
-fn write_cached_head(
+pub(crate) fn write_cached_head(
     bridge: &Bridge,
     body: &BodyPlan<'_>,
     out: &mut impl Write,
@@ -1840,7 +1554,7 @@ pub(crate) fn prefetch_loop(shared: &Arc<Shared>, bridge: &Arc<Bridge>, running:
 /// interleave with it. `running` is read between files, and again on every
 /// pass of [`read_head_bounded`], so `MountRegistry::stop` waits for one
 /// read and not for a whole folder.
-fn prefetch_job(
+pub(crate) fn prefetch_job(
     shared: &Arc<Shared>,
     bridge: &Arc<Bridge>,
     running: &Arc<AtomicBool>,
@@ -1909,7 +1623,7 @@ fn prefetch_job(
 /// peer's read fails, which marks the borrowed connection unhealthy the
 /// same way [`stream_body`] does, and `None` when `running` clears while
 /// the read is in flight.
-fn read_head(
+pub(crate) fn read_head(
     borrowed: &mut pool::Borrowed<'_>,
     path: &RemotePath,
     want: u64,
@@ -1941,7 +1655,7 @@ fn read_head(
 /// A head shorter than `want` is still returned. Its caller keeps only a
 /// head of exactly the length the listing promised, so a short one is
 /// dropped there rather than cached as if it were whole.
-fn read_head_bounded(
+pub(crate) fn read_head_bounded(
     want: u64,
     running: &AtomicBool,
     mut read: impl FnMut(u64, u32) -> Option<Vec<u8>>,
@@ -1980,7 +1694,7 @@ fn read_head_bounded(
 /// `Content-Length` promise can no longer be met, so the connection must
 /// be dropped, not reused for a next request) or when the write to `out`
 /// fails.
-fn stream_body(
+pub(crate) fn stream_body(
     borrowed: &mut pool::Borrowed<'_>,
     path: &RemotePath,
     start: u64,
@@ -2017,7 +1731,7 @@ fn stream_body(
 
 /// What to answer for one failed operation on the peer, and whether the
 /// connection that produced it should be dropped rather than reused.
-fn map_rpc_error(error: &RpcError) -> (&'static str, bool) {
+pub(crate) fn map_rpc_error(error: &RpcError) -> (&'static str, bool) {
     match error {
         RpcError::Remote(OpError::NotFound) => ("404 Not Found", false),
         // I1 only ever calls `stat`, `list`, and `read`, none of which the
