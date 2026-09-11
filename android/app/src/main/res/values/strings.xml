@@ -243,4 +243,17 @@
     <string name="settings_notifications_label">Notifications</string>
     <string name="settings_status_allowed">Allowed</string>
     <string name="settings_status_not_allowed">Not allowed</string>
+
+    <!-- The Mac's folders in the phone's Files app, job 8 and
+         docs/engine-contract.md item 19.
+
+         A root's summary says how Ferry reaches that Mac right now. It is
+         one of two keys: this one, with the transport named, or
+         transport_not_reachable. The transport words are the ones
+         TransportBadge already draws, so the Files app and the Devices
+         screen say the same thing about the same device. -->
+    <string name="documents_root_reachable">Reachable over %1$s</string>
+    <!-- An app can ask for an open mode Ferry does not serve. The mode is
+         the platform's own short string, so it is named as it arrives. -->
+    <string name="documents_open_mode_unsupported">The file was not opened. Ferry does not serve the open mode %1$s.</string>
 </resources>

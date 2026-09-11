@@ -66,6 +66,24 @@
             android:name=".ReachableService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Job 8: the Mac's folder inside the phone's own apps. This puts
+             every paired Mac's shared folders in the Files app and in every
+             app's open and save dialog, per docs/engine-contract.md item
+             19. MANAGE_DOCUMENTS is a signature permission the system's own
+             document picker holds, so it is the only caller the system lets
+             in, and the picker hands a chosen file's URI to another app
+             through a grant. -->
+        <provider
+            android:name=".provider.FerryDocumentsProvider"
+            android:authorities="app.ferry.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
     </application>
 
 </manifest>
