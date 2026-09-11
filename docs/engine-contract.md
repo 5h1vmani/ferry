@@ -980,7 +980,8 @@ the first time pairing starts, with the reason in the request. The name
 comes from a `ConnectivityManager` network callback registered for the
 Wi-Fi transport with location info included, reading the `WifiInfo` from
 the network capabilities; the quotes are stripped, and the unknown
-placeholder is None. One object owns the callback and calls
+placeholder is None. A placeholder on the same `Network` handle keeps the
+last known name, unchanged. One object owns the callback and calls
 `FerryEngine.setNetwork`. Settings gains the same "Networks" section as
 the Mac and a "Location" row under Permissions. The presence row shows the
 quiet-on-this-network line in that state, and the notification does not.

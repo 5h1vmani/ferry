@@ -40,6 +40,14 @@ object NetworkName {
     @Volatile
     private var lastKnown: String? = null
 
+    // The Network that lastKnown came from. Android hides the SSID from a
+    // background app unless it holds background location. The unknown
+    // placeholder can arrive for a network that never changed. So a
+    // placeholder for the same Network handle is ignored, not reported as
+    // null.
+    @Volatile
+    private var lastNetwork: Network? = null
+
     // Called once, from FerryApplication.onCreate.
     fun start(context: Context) {
         val appContext = context.applicationContext
@@ -82,19 +90,33 @@ object NetworkName {
                 network: Network,
                 networkCapabilities: NetworkCapabilities,
             ) {
-                setNetwork(nameFrom(networkCapabilities))
+                val name = nameFrom(networkCapabilities)
+                if (name != null) {
+                    setNetwork(name, network)
+                } else if (network != lastNetwork) {
+                    // A different Network than the one lastKnown came from,
+                    // reporting a name we cannot read yet. Track its handle
+                    // so a repeat of this placeholder is recognised as the
+                    // same network, but wait for a real name, or onLost,
+                    // before telling the engine anything.
+                    lastNetwork = network
+                }
+                // else: the same Network as lastKnown, now hidden behind the
+                // unknown placeholder. Keep the last known name and say
+                // nothing to the engine.
             }
 
             override fun onLost(network: Network) {
-                setNetwork(null)
+                setNetwork(null, null)
             }
         }
         callback = newCallback
         connectivityManager.registerNetworkCallback(request, newCallback)
     }
 
-    private fun setNetwork(name: String?) {
+    private fun setNetwork(name: String?, network: Network?) {
         lastKnown = name
+        lastNetwork = network
         FerryEngine.setNetwork(name)
     }
 
