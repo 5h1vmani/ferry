@@ -760,7 +760,19 @@ pub fn connect(
     key: &StaticKey,
     peer: &PublicKey,
 ) -> Result<Connection, TcpError> {
-    let stream = TcpStream::connect(addr)?;
+    // F3: a plain `TcpStream::connect` to an address nothing answers can
+    // cost tens of seconds of the OS's own connect timeout before it gives
+    // up, well past what a caller waiting on this handshake should ever
+    // sit through. `pair_ik` already bounds its own connect step this way.
+    let stream =
+        TcpStream::connect_timeout(&addr, Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS))
+            .map_err(|error| {
+                if is_timeout(&error) {
+                    TcpError::Timeout
+                } else {
+                    TcpError::Io(error)
+                }
+            })?;
     // As in `Listener::accept`: without this, a small write waits on a
     // delayed acknowledgement instead of reaching the wire at once.
     let _ = stream.set_nodelay(true);
@@ -794,7 +806,17 @@ pub fn connect(
 /// [`TcpError::Noise`] here means the handshake itself failed rather than
 /// that the peer's identity was wrong.
 pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpError> {
-    let stream = TcpStream::connect(addr)?;
+    // F3: as in `connect`, bound the connect step itself rather than let it
+    // run for however long the OS's own default timeout takes.
+    let stream =
+        TcpStream::connect_timeout(&addr, Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS))
+            .map_err(|error| {
+                if is_timeout(&error) {
+                    TcpError::Timeout
+                } else {
+                    TcpError::Io(error)
+                }
+            })?;
     // As in `Listener::accept`: without this, a small write waits on a
     // delayed acknowledgement instead of reaching the wire at once.
     let _ = stream.set_nodelay(true);
@@ -945,6 +967,45 @@ mod tests {
 
         assert_eq!(&buf, b"world");
         assert_eq!(&server.join().unwrap(), b"hello");
+    }
+
+    #[test]
+    fn connect_to_a_non_routable_address_times_out_within_the_handshake_timeout() {
+        // F3: `connect` used to reach for a plain `TcpStream::connect`,
+        // whose own timeout is however long the OS takes to decide nothing
+        // is there, tens of seconds on some networks. It must give up
+        // within `HANDSHAKE_TIMEOUT_SECS` instead, as `pair_ik` already
+        // does for its own connect step.
+        let unroutable = SocketAddr::from(([10, 255, 255, 1], 9));
+        let key = StaticKey::generate().unwrap();
+        let peer_public = StaticKey::generate().unwrap().public();
+
+        let started = Instant::now();
+        let result = connect(unroutable, &key, &peer_public);
+        let took = started.elapsed();
+
+        assert!(result.is_err(), "nothing answers this address");
+        assert!(
+            took < Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS) + Duration::from_secs(1),
+            "the connect step must give up within the handshake timeout, took {took:?}"
+        );
+    }
+
+    #[test]
+    fn pair_to_a_non_routable_address_times_out_within_the_handshake_timeout() {
+        // F3: as the test above, for `pair`'s own connect step.
+        let unroutable = SocketAddr::from(([10, 255, 255, 1], 9));
+        let key = StaticKey::generate().unwrap();
+
+        let started = Instant::now();
+        let result = pair(unroutable, &key);
+        let took = started.elapsed();
+
+        assert!(result.is_err(), "nothing answers this address");
+        assert!(
+            took < Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS) + Duration::from_secs(1),
+            "the connect step must give up within the handshake timeout, took {took:?}"
+        );
     }
 
     #[test]
