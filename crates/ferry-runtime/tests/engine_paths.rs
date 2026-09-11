@@ -42,7 +42,7 @@ use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
     AccessVerb, Actor, Config, DeviceKind as RuntimeDeviceKind, Direction, Engine, EngineListener,
-    FerryError, KeyPair, PairingState, Root, TransferState, generate_key,
+    FerryError, KeyPair, PairingMethod, PairingState, Root, TransferState, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -595,13 +595,16 @@ fn serve_one<F: FileOps + Send + Sync>(
     hello_delay: Duration,
     cut: &Arc<AtomicBool>,
 ) {
+    let Ok(negotiated) = pending.negotiate() else {
+        return;
+    };
     let stream: Box<dyn ReadWrite> = if pairing {
-        let Ok(paired) = pending.pair(key) else {
+        let Ok(paired) = negotiated.pair(key) else {
             return;
         };
         Box::new(paired.paired.stream)
     } else {
-        let Ok(connection) = pending.connect(key, &[engine]) else {
+        let Ok(connection) = negotiated.connect(key, &[engine]) else {
             return;
         };
         Box::new(connection.stream)
@@ -645,7 +648,7 @@ impl<F> Peer<F> {
 
 /// Pair one engine with a hand-driven peer, and leave the peer able to serve.
 fn pair_with_peer<F>(side: &Side, peer: &Peer<F>) {
-    side.engine.start_pairing();
+    side.engine.start_pairing_with(PairingMethod::Code);
     side.engine.offer_candidate(peer.addr);
     side.inbox.wait_pairing("a candidate", is_found);
     peer.expect_pair.store(true, Ordering::SeqCst);
@@ -1160,8 +1163,8 @@ fn stop_returns_when_only_one_side_confirmed() {
     let phone = build("Pixel 3 XL");
     let mac = build("Vamana");
     phone.engine.set_reachable(true);
-    phone.engine.start_pairing();
-    mac.engine.start_pairing();
+    phone.engine.start_pairing_with(PairingMethod::Code);
+    mac.engine.start_pairing_with(PairingMethod::Code);
     let phone_addr = loopback_addr(&phone);
     mac.engine.offer_candidate(phone_addr);
     mac.inbox.wait_pairing("a candidate", is_found);
@@ -1599,8 +1602,8 @@ fn a_record_for_a_device_that_is_not_paired_is_dropped() {
 /// this file does not answer, so this test cannot use `pair_with_peer`.
 fn pair_two_engines(phone: &Side, mac: &Side) -> String {
     phone.engine.set_reachable(true);
-    phone.engine.start_pairing();
-    mac.engine.start_pairing();
+    phone.engine.start_pairing_with(PairingMethod::Code);
+    mac.engine.start_pairing_with(PairingMethod::Code);
     let phone_addr = loopback_addr(phone);
     mac.engine.offer_candidate(phone_addr);
     mac.inbox.wait_pairing("a candidate", is_found);
@@ -2326,7 +2329,7 @@ fn no_callback_arrives_after_stop_returned() {
 fn the_candidate_list_is_capped_and_its_reports_are_rationed() {
     let mac = build("Vamana");
     mac.engine.set_pairing_timeout(Duration::from_secs(30));
-    mac.engine.start_pairing();
+    mac.engine.start_pairing_with(PairingMethod::Code);
 
     let started = Instant::now();
     for port in 20_000u16..20_200 {
@@ -2367,7 +2370,7 @@ fn picking_a_candidate_twice_is_refused_and_shows_one_code() {
     let mac = build("Vamana");
     let peer = start_peer(&mac.key, sample_bytes(16));
     mac.engine.set_pairing_timeout(Duration::from_secs(30));
-    mac.engine.start_pairing();
+    mac.engine.start_pairing_with(PairingMethod::Code);
     mac.engine.offer_candidate(peer.addr);
     mac.inbox.wait_pairing("a candidate", is_found);
     peer.expect_pair.store(true, Ordering::SeqCst);
@@ -2405,7 +2408,7 @@ fn a_confirm_after_the_watchdog_stores_nothing() {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Duration::from_millis(1500);
 
     mac.engine.set_pairing_timeout(Duration::from_millis(700));
-    mac.engine.start_pairing();
+    mac.engine.start_pairing_with(PairingMethod::Code);
     mac.engine.offer_candidate(peer.addr);
     mac.inbox.wait_pairing("a candidate", is_found);
     peer.expect_pair.store(true, Ordering::SeqCst);
@@ -2510,13 +2513,14 @@ fn first_bytes_from(addr: SocketAddr) -> Vec<u8> {
     stream
         .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("a read timeout should be accepted");
-    let mut hello = Vec::with_capacity(7);
+    let mut hello = Vec::with_capacity(8);
     hello.extend_from_slice(&MAGIC);
     hello.extend_from_slice(&VERSION_MAX.to_be_bytes());
+    hello.push(0); // Mode::Connect's wire byte.
     // A peer that is not welcome may close before this is written.
     drop(stream.write_all(&hello));
     drop(stream.flush());
-    let mut answer = [0u8; 7];
+    let mut answer = [0u8; 8];
     let mut got = 0usize;
     while got < answer.len() {
         match stream.read(&mut answer[got..]) {
@@ -2529,9 +2533,10 @@ fn first_bytes_from(addr: SocketAddr) -> Vec<u8> {
 
 #[test]
 fn a_stranger_cannot_tell_whether_the_device_has_a_peer() {
-    let mut expected = Vec::with_capacity(7);
+    let mut expected = Vec::with_capacity(8);
     expected.extend_from_slice(&MAGIC);
     expected.extend_from_slice(&VERSION_MAX.to_be_bytes());
+    expected.push(0); // The responder's own mode byte is always this filler.
 
     let alone = build("Pixel 3 XL");
     alone.engine.set_reachable(true);

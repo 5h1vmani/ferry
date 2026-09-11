@@ -53,7 +53,7 @@
 //!
 //! One engine type serves both devices. The phone calls
 //! [`Engine::set_reachable`] to advertise and accept. The Mac calls
-//! [`Engine::start_pairing`] to browse and, once paired, [`Engine::list`] to
+//! [`Engine::start_pairing_with`] to browse and, once paired, [`Engine::list`] to
 //! browse the phone's shared folder and [`Engine::pull`] to fetch a file.
 //! Nothing in the type knows which device it is on.
 //!
@@ -103,13 +103,20 @@
 //!     /// Change where a pulled file lands, making the folder if needed.
 //!     pub fn set_download_dir(&self, path: String) -> Result<(), FerryError>;
 //!
-//!     /// Enter pairing. The Mac browses mDNS and polls adb, and reports
-//!     /// candidates through the listener. The phone accepts one XX handshake
-//!     /// and reports the code. Times out after two minutes.
-//!     pub fn start_pairing(&self);
+//!     /// Enter pairing, by the given method. Replaces `start_pairing`.
+//!     /// `Code`: the Mac browses mDNS and polls adb, and reports candidates
+//!     /// through the listener; the phone accepts one XX handshake and
+//!     /// reports the code. `Qr`: the Mac makes a nonce and an offer, and
+//!     /// accepts one IK handshake whose nonce matches it. Both time out
+//!     /// after two minutes.
+//!     pub fn start_pairing_with(&self, method: PairingMethod);
 //!     /// Mac: dial the chosen candidate and run XX. The code is reported
 //!     /// through the listener.
 //!     pub fn pick_candidate(&self, id: String) -> Result<(), FerryError>;
+//!     /// Phone only. The bytes its camera decoded from the Mac's QR code.
+//!     /// Dials the offer's addresses and runs IK. Ends in `Confirmed` or
+//!     /// `Failed`; the phone never shows `Requested`.
+//!     pub fn offer_scanned(&self, payload: Vec<u8>) -> Result<(), FerryError>;
 //!     /// Both sides. Accept stores the peer and sends hello. Reject drops it.
 //!     pub fn confirm_pairing(&self, accept: bool);
 //!     pub fn cancel_pairing(&self);
@@ -156,8 +163,11 @@
 //! ```
 //!
 //! The pairing state machine: Idle, Waiting, Found (Mac, with candidates),
-//! Code (both, with the six digits), Confirmed, Failed. Exactly one pairing at
-//! a time. The listener receives every state change.
+//! Code (both, with the six digits), Offering (Mac, with the QR payload),
+//! Requested (Mac, with the scanning phone's name), Confirmed, Failed. Waiting,
+//! Found, and Code belong to the code method; Offering and Requested belong to
+//! the QR method. Exactly one pairing at a time. The listener receives every
+//! state change.
 //!
 //! Transports: the engine tries USB first when adb shows an authorised device
 //! that has a Ferry forward, then Wi-Fi from the last known address, then
@@ -564,29 +574,71 @@ pub struct PairingCandidate {
     pub short_code: String,
 }
 
+/// How two devices pair.
+///
+/// `docs/engine-contract.md` item 12.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PairingMethod {
+    /// A six digit code, shown on both screens and confirmed on both.
+    Code,
+    /// A code scanned from the other device's screen. `Offering` draws it,
+    /// `offer_scanned` reads it.
+    Qr,
+}
+
+/// What a Mac draws as a QR code while `PairingState::Offering`.
+///
+/// `docs/engine-contract.md` item 12.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PairingOffer {
+    /// ASCII: `"FERRY1:"` then base64url of version(1), the Mac's static
+    /// public key(32), expiry(8), nonce(16), then addresses as count(1) and
+    /// ip(16 or 4 with a tag) and port(2) each. Drawn as a QR code. See
+    /// `ferry_core::offer::Offer`, which this is encoded from.
+    pub payload: Vec<u8>,
+    /// When this offer stops accepting a scan.
+    pub expires_unix_secs: i64,
+}
+
 /// Where pairing is.
 #[derive(Debug, Clone, uniffi::Enum)]
 pub enum PairingState {
     /// Not pairing.
     Idle,
-    /// Looking for a device, or on the phone, waiting for a Mac.
+    /// Looking for a device, or on the phone, waiting for a Mac. Code
+    /// method.
     Waiting {
         /// When this pairing attempt gives up.
         expires_unix_secs: i64,
     },
-    /// The Mac has candidates to pick from.
+    /// The Mac has candidates to pick from. Code method.
     Found {
         /// What can be picked.
         candidates: Vec<PairingCandidate>,
         /// When this pairing attempt gives up.
         expires_unix_secs: i64,
     },
-    /// Both screens show the code.
+    /// Both screens show the code. Code method.
     Code {
         /// Six digits, zero padded.
         code: String,
         /// When this pairing attempt gives up.
         expires_unix_secs: i64,
+    },
+    /// The Mac is showing a QR code, and nobody has scanned it yet. QR
+    /// method.
+    Offering {
+        /// What to draw. `offer.expires_unix_secs` is this state's deadline.
+        offer: PairingOffer,
+    },
+    /// The Mac read a scan's hello and is waiting for `confirm_pairing`. QR
+    /// method. The phone never shows this: it asks no question of its own.
+    Requested {
+        /// The scanning phone's name, from its hello.
+        name: String,
+        /// How the phone reached this Mac. Always `Wifi`: QR pairing only
+        /// dials the Wi-Fi addresses in the offer.
+        transport: Transport,
     },
     /// Both sides confirmed. The device is now in `devices()`.
     Confirmed {

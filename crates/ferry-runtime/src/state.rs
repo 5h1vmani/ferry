@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferry_core::chunk::ChunkSize;
-use ferry_core::noise::PublicKey;
+use ferry_core::noise::{PublicKey, QR_NONCE_LEN, SecureStream};
 use ferry_core::path::RemotePath;
 use ferry_core::peers::PeerStore;
 use ferry_core::tcp::PairedConnection;
@@ -158,25 +158,56 @@ pub(crate) struct HeldPairing {
     pub(crate) accepted: bool,
 }
 
+/// A QR pairing handshake that finished and is waiting for `confirm_pairing`.
+///
+/// The QR method's counterpart to [`HeldPairing`]. There is no code to
+/// compare, so nothing plays the part [`HeldPairing::accepted`] plays for the
+/// code method: the Mac is always the side that accepted this connection,
+/// per `docs/engine-contract.md` item 12, so `finish_pairing` is always told
+/// `accepted: true` for one of these.
+///
+/// The name and kind message one's hello carried are not stored here: they
+/// already did their one job, showing `PairingState::Requested`, by the time
+/// this is built, and `finish_pairing`'s own hello exchange reads them
+/// again once `confirm_pairing` runs.
+pub(crate) struct RequestedPairing {
+    /// The encrypted channel, ready for `finish_pairing`'s hello exchange.
+    pub(crate) stream: SecureStream,
+    /// The phone's static public key, from the handshake.
+    pub(crate) peer: PublicKey,
+    /// The address the phone dialed from.
+    pub(crate) addr: SocketAddr,
+}
+
 /// Where pairing is, and what it is holding.
 pub(crate) struct Pairing {
     /// The state last reported to the app.
     pub(crate) shown: PairingState,
-    /// When pairing gives up, if it is running.
+    /// When pairing gives up, if it is running. Shared by both methods.
     pub(crate) deadline: Option<Instant>,
     /// The same deadline, in Unix seconds, for the wire. Set and cleared
     /// together with `deadline`.
     pub(crate) deadline_unix_secs: Option<i64>,
-    /// The connection waiting for a confirm.
+    /// The connection waiting for a confirm. Code method only.
     pub(crate) held: Option<HeldPairing>,
-    /// True while a chosen candidate is being dialed.
+    /// True while a chosen candidate is being dialed. Code method only.
     ///
     /// A handshake takes a moment, and until it finishes nothing is held. So
     /// without this a second tap on a candidate would start a second
     /// handshake, and the two would show two different codes.
     pub(crate) dialing: bool,
-    /// Candidates found so far, by identifier.
+    /// Candidates found so far, by identifier. Code method only.
     pub(crate) candidates: BTreeMap<String, Candidate>,
+    /// The nonce of the offer currently shown as `PairingState::Offering`, or
+    /// `None` while not offering. QR method only.
+    ///
+    /// Cleared the moment a scan's nonce matches it, before `Requested` is
+    /// shown, so the nonce is single use: a second scan of the same code,
+    /// even a genuine one racing the first, finds nothing to match and is
+    /// refused by [`ferry_core::noise::NoiseError::UnknownOffer`].
+    pub(crate) offer_nonce: Option<[u8; QR_NONCE_LEN]>,
+    /// The QR handshake waiting for a confirm. QR method only.
+    pub(crate) requested: Option<RequestedPairing>,
 }
 
 impl Pairing {
@@ -189,14 +220,17 @@ impl Pairing {
             held: None,
             dialing: false,
             candidates: BTreeMap::new(),
+            offer_nonce: None,
+            requested: None,
         }
     }
 
-    /// True while the engine is looking for a device or listing candidates.
+    /// True while the engine is looking for a device or listing candidates,
+    /// for the code method.
     ///
-    /// An inbound connection is offered the pairing handshake only in these
-    /// two states, and only while nothing is held and nothing is being
-    /// dialed.
+    /// An inbound connection is offered the `XX` pairing handshake only in
+    /// these two states, and only while nothing is held and nothing is
+    /// being dialed.
     pub(crate) fn is_open_to_pairing(&self) -> bool {
         self.held.is_none()
             && !self.dialing
@@ -206,11 +240,30 @@ impl Pairing {
             )
     }
 
-    /// True while pairing is running and has not reached an end state.
+    /// True while showing a QR offer nobody has scanned yet.
+    ///
+    /// An inbound connection is offered the `IK` pairing handshake only in
+    /// this state, and only while nothing is already `Requested`.
+    pub(crate) fn is_offering(&self) -> bool {
+        self.requested.is_none() && matches!(self.shown, PairingState::Offering { .. })
+    }
+
+    /// True while either method is open to a new inbound handshake attempt.
+    /// What `accept_loop`'s welcome check adds to `reachable`.
+    pub(crate) fn accepts_inbound(&self) -> bool {
+        self.is_open_to_pairing() || self.is_offering()
+    }
+
+    /// True while pairing is running and has not reached an end state,
+    /// under either method.
     pub(crate) fn is_running(&self) -> bool {
         matches!(
             self.shown,
-            PairingState::Waiting { .. } | PairingState::Found { .. } | PairingState::Code { .. }
+            PairingState::Waiting { .. }
+                | PairingState::Found { .. }
+                | PairingState::Code { .. }
+                | PairingState::Offering { .. }
+                | PairingState::Requested { .. }
         )
     }
 }

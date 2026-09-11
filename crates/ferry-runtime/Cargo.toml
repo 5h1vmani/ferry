@@ -26,6 +26,13 @@ ferry-core = { path = "../ferry-core" }
 # this is not a new source of randomness in the workspace, only a direct
 # dependency edge to reach the one this crate already trusts.
 getrandom = "0.3"
+# Used only by `engine::local_wifi_addresses`, to build a QR pairing offer:
+# the Mac has to state its own addresses, and unlike the phone it never
+# advertises over mDNS, so there is no existing list to read them from. This
+# is not a new crate in the workspace: `ferry-core` already pulls it in
+# through `mdns-sd`, which uses it the same way, to find the addresses it
+# advertises.
+if-addrs = "0.15"
 thiserror = "2"
 uniffi = { version = "0.32", features = ["cli"] }
 zeroize = "1"

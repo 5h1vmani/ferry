@@ -102,8 +102,8 @@ use ferry_core::peers::DeviceKind;
 use ferry_core::rpc::{FileOps, exchange_hello, serve};
 use ferry_core::tcp::{Listener, Pending};
 use ferry_runtime::{
-    Config, DeviceKind as RuntimeDeviceKind, Engine, EngineListener, KeyPair, PairingState, Root,
-    TransferState, generate_key,
+    Config, DeviceKind as RuntimeDeviceKind, Engine, EngineListener, KeyPair, PairingMethod,
+    PairingState, Root, TransferState, generate_key,
 };
 
 // ---------------------------------------------------------------------------
@@ -553,13 +553,16 @@ fn serve_one(
     fs: &Arc<OneFile>,
     pairing: bool,
 ) {
+    let Ok(negotiated) = pending.negotiate() else {
+        return;
+    };
     let mut stream: Box<dyn ReadWrite> = if pairing {
-        let Ok(paired) = pending.pair(key) else {
+        let Ok(paired) = negotiated.pair(key) else {
             return;
         };
         Box::new(paired.paired.stream)
     } else {
-        let Ok(connection) = pending.connect(key, &[engine]) else {
+        let Ok(connection) = negotiated.connect(key, &[engine]) else {
             return;
         };
         Box::new(connection.stream)
@@ -584,7 +587,7 @@ impl Peer {
 }
 
 fn pair_with_peer(side: &Side, peer: &Peer) {
-    side.engine.start_pairing();
+    side.engine.start_pairing_with(PairingMethod::Code);
     side.engine.offer_candidate(peer.addr);
     side.inbox.wait_pairing("a candidate", is_found);
     peer.expect_pair.store(true, Ordering::SeqCst);

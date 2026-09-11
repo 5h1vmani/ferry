@@ -40,6 +40,7 @@ use ferry_core::chunk::{ChunkSizeError, ManifestError};
 use ferry_core::discovery::DiscoveryError;
 use ferry_core::frame::FrameError;
 use ferry_core::noise::NoiseError;
+use ferry_core::offer::PairingError;
 use ferry_core::ops::OpError;
 use ferry_core::path::PathError;
 use ferry_core::peers::PeerError;
@@ -150,16 +151,19 @@ pub fn from_rpc(error: &RpcError) -> FerryError {
 /// The code for a failed Noise handshake.
 #[must_use]
 pub fn from_noise(error: &NoiseError) -> FerryError {
-    failed(match error {
-        NoiseError::Io(_) => "NoiseError::Io",
-        NoiseError::Crypto(_) => "NoiseError::Crypto",
-        NoiseError::BadPattern => "NoiseError::BadPattern",
-        NoiseError::BadKeyLength => "NoiseError::BadKeyLength",
-        NoiseError::CommitmentMismatch => "NoiseError::CommitmentMismatch",
-        NoiseError::HandshakeMessageTooLarge(_) => "NoiseError::HandshakeMessageTooLarge",
-        NoiseError::BadHandshakePayload => "NoiseError::BadHandshakePayload",
-        NoiseError::MissingPeerKey => "NoiseError::MissingPeerKey",
-    })
+    match error {
+        // The inner code names the field that failed, which this one cannot.
+        NoiseError::BadHello(inner) => from_rpc(inner),
+        NoiseError::Io(_) => failed("NoiseError::Io"),
+        NoiseError::Crypto(_) => failed("NoiseError::Crypto"),
+        NoiseError::BadPattern => failed("NoiseError::BadPattern"),
+        NoiseError::BadKeyLength => failed("NoiseError::BadKeyLength"),
+        NoiseError::CommitmentMismatch => failed("NoiseError::CommitmentMismatch"),
+        NoiseError::HandshakeMessageTooLarge(_) => failed("NoiseError::HandshakeMessageTooLarge"),
+        NoiseError::BadHandshakePayload => failed("NoiseError::BadHandshakePayload"),
+        NoiseError::MissingPeerKey => failed("NoiseError::MissingPeerKey"),
+        NoiseError::UnknownOffer => failed("NoiseError::UnknownOffer"),
+    }
 }
 
 /// The code for a failed version exchange.
@@ -169,6 +173,21 @@ pub fn from_version(error: &VersionError) -> FerryError {
         VersionError::Io(_) => "VersionError::Io",
         VersionError::NotFerry(_) => "VersionError::NotFerry",
         VersionError::NoSharedVersion { .. } => "VersionError::NoSharedVersion",
+        VersionError::UnknownMode(_) => "VersionError::UnknownMode",
+    })
+}
+
+/// The code for a refused QR pairing offer.
+#[must_use]
+pub fn from_offer(error: PairingError) -> FerryError {
+    failed(match error {
+        PairingError::OfferExpired => "PairingError::OfferExpired",
+        PairingError::OfferNotFerry => "PairingError::OfferNotFerry",
+        PairingError::AlreadyPaired => "PairingError::AlreadyPaired",
+        // Never raised by this crate; kept here so the match stays
+        // exhaustive if the app ever routes a camera refusal through this
+        // same function instead of building the `FerryError` itself.
+        PairingError::CameraRefused => "PairingError::CameraRefused",
     })
 }
 

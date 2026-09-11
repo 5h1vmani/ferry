@@ -376,6 +376,11 @@
       "why": "That candidate is no longer present.",
       "todo": "Pick another."
     },
+    "Runtime::NoRandomness": {
+      "stopped": "The QR code could not be made.",
+      "why": "The system supplied no randomness.",
+      "todo": "Try again, or pair by code instead."
+    },
     "Runtime::NotPaired": {
       "stopped": "The device is not paired.",
       "why": "Its key is not in this device's list.",

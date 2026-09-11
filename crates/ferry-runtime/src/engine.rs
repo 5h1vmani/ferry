@@ -12,7 +12,8 @@ use ferry_core::adb::{Adb, find_adb};
 use ferry_core::chunk::ChunkSize;
 use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
-use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
+use ferry_core::noise::{PublicKey, QR_NONCE_LEN, SecureStream, StaticKey};
+use ferry_core::offer::{Offer, PairingError as OfferError};
 use ferry_core::ops::{FileKind, OpError};
 use ferry_core::path::{PathError, RemotePath};
 // Aliased: `crate::DeviceKind` is the boundary enum `Config` and `DeviceInfo`
@@ -21,15 +22,19 @@ use ferry_core::peers::{DeviceKind as CoreDeviceKind, Peer, PeerStore};
 use ferry_core::roots::{RootSpec, Roots};
 use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
-use ferry_core::tcp::{self, Connection, Listener, PairedConnection, Pending};
+use ferry_core::tcp::{
+    self, Connection, IkPairedConnection, Listener, NegotiatedPending, PairedConnection, Pending,
+    TcpError,
+};
+use ferry_core::version::Mode;
 use zeroize::Zeroize;
 
 use crate::access::{self, AccessLog, EntryFields, RollUp};
 use crate::batch::{self, BatchRecord};
 use crate::dav;
 use crate::errors::{
-    bad_config, failed, failed_with, from_chunk_size, from_noise, from_op, from_path, from_peer,
-    from_roots, from_rpc, from_tcp,
+    bad_config, failed, failed_with, from_chunk_size, from_noise, from_offer, from_op, from_path,
+    from_peer, from_roots, from_rpc, from_tcp,
 };
 use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAware};
@@ -37,14 +42,15 @@ use crate::notify::{Change, Notify};
 use crate::push;
 use crate::record::{Record, read_record};
 use crate::state::{
-    BatchRow, Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward,
-    clear_gone_usb_forwards, hex_of, key_from_hex, lock, now_unix_secs,
+    BatchRow, Candidate, DeviceLive, HeldPairing, Pairing, RequestedPairing, State, TransferRow,
+    UsbForward, clear_gone_usb_forwards, hex_of, key_from_hex, lock, now_unix_secs,
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
     AccessEntry, AccessVerb, Actor, AutoCopy, BatchInfo, Config, DeviceInfo, DeviceKind, Direction,
     EngineListener, Entry, EntryKind, FerryError, KeyPair, MountEndpoint, Origin, PairingCandidate,
-    PairingState, Root, Status, TransferInfo, TransferState, Transport,
+    PairingMethod, PairingOffer, PairingState, Root, Status, TransferInfo, TransferState,
+    Transport,
 };
 
 /// The port a phone listens on, so the Mac can name it in an `adb forward`.
@@ -413,6 +419,8 @@ impl Shared {
                 state.pairing.held = None;
                 state.pairing.dialing = false;
                 state.pairing.candidates.clear();
+                state.pairing.offer_nonce = None;
+                state.pairing.requested = None;
             }
         }
         self.notify.pairing(next);
@@ -1168,34 +1176,83 @@ impl Engine {
         }
     }
 
-    /// Enter pairing. Times out after two minutes.
+    /// Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+    /// out after two minutes either way.
     ///
-    /// The Mac browses and polls `adb`, and reports candidates. The phone
-    /// waits for one pairing handshake and reports the code. Calling this
-    /// while a pairing is already running only reports the current state
-    /// again.
-    pub fn start_pairing(&self) {
-        let timeout = *lock(&self.shared.pairing_timeout);
-        let expires_unix_secs =
-            now_unix_secs() + i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX);
+    /// `Code`: the Mac browses and polls `adb`, and reports candidates. The
+    /// phone waits for one `XX` handshake and reports the code.
+    ///
+    /// `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+    /// and publishes `Offering`. While offering, one `IK` handshake whose
+    /// message one carries the current nonce is accepted; it shows
+    /// `Requested` and holds the connection for `confirm_pairing`. Meant for
+    /// the Mac; the phone's camera screen is not built yet, so nothing
+    /// today calls this with `Qr` on a phone.
+    ///
+    /// Calling this while a pairing is already running only reports the
+    /// current state again, under either method.
+    pub fn start_pairing_with(&self, method: PairingMethod) {
         {
-            let mut state = lock(&self.shared.state);
+            let state = lock(&self.shared.state);
             if state.pairing.is_running() {
                 let shown = state.pairing.shown.clone();
                 drop(state);
                 self.shared.notify.pairing(&shown);
                 return;
             }
-            state.pairing = Pairing::idle();
-            state.pairing.deadline = Some(Instant::now() + timeout);
-            state.pairing.deadline_unix_secs = Some(expires_unix_secs);
         }
+        match method {
+            PairingMethod::Code => {
+                let expires_unix_secs = begin_pairing_deadline(&self.shared);
+                self.shared
+                    .set_pairing(&PairingState::Waiting { expires_unix_secs });
+            }
+            PairingMethod::Qr => start_offering(&self.shared),
+        }
+    }
+
+    /// Phone only. The bytes its camera decoded from the Mac's QR code.
+    ///
+    /// Checked locally, in order: is this a Ferry offer at all, has it
+    /// expired, is its key one this device already holds. Any of those
+    /// three refuses at once, before a single byte reaches the network.
+    /// Past that point the dial and the `IK` handshake run on their own
+    /// thread, as `pick_candidate` runs its dial, and the outcome arrives
+    /// through the listener: `Confirmed` or `Failed`. This device asks no
+    /// question of its own; scanning the code was the answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+    /// or `PairingError::AlreadyPaired` for the three local checks above,
+    /// and `Runtime::PairingBusy` when a pairing attempt is already running
+    /// on this device.
+    pub fn offer_scanned(&self, payload: Vec<u8>) -> Result<(), FerryError> {
+        let offer = Offer::decode(&payload).map_err(from_offer)?;
+        if offer.is_expired(now_unix_secs()) {
+            return Err(from_offer(OfferError::OfferExpired));
+        }
+        if lock(&self.shared.state)
+            .peers
+            .get(&offer.static_key)
+            .is_some()
+        {
+            return Err(from_offer(OfferError::AlreadyPaired));
+        }
+        {
+            let state = lock(&self.shared.state);
+            if state.pairing.is_running() {
+                return Err(failed("Runtime::PairingBusy"));
+            }
+        }
+        let expires_unix_secs = begin_pairing_deadline(&self.shared);
         self.shared
             .set_pairing(&PairingState::Waiting { expires_unix_secs });
 
         let shared = Arc::clone(&self.shared);
         self.shared
-            .keep(std::thread::spawn(move || pairing_watchdog(&shared)));
+            .keep(std::thread::spawn(move || dial_offer(&shared, &offer)));
+        Ok(())
     }
 
     /// Dial the chosen candidate and run the pairing handshake.
@@ -1235,34 +1292,59 @@ impl Engine {
         Ok(())
     }
 
-    /// Accept or reject the device whose code is showing.
+    /// Accept or reject the device whose code, or scan, is showing.
     ///
     /// Accepting stores the peer and exchanges names. That takes a round
     /// trip, so it runs on its own thread and reports through the listener.
+    /// Works the same way for both pairing methods: whichever of `held`
+    /// (code) or `requested` (QR) is holding a connection is the one taken.
     pub fn confirm_pairing(&self, accept: bool) {
-        let held = lock(&self.shared.state).pairing.held.take();
-        let Some(held) = held else {
+        let held =
+            {
+                let mut state = lock(&self.shared.state);
+                state
+                    .pairing
+                    .held
+                    .take()
+                    .map(|held| {
+                        (
+                            held.connection.paired.peer,
+                            held.connection.paired.stream,
+                            held.addr,
+                            held.accepted,
+                        )
+                    })
+                    .or_else(|| {
+                        state.pairing.requested.take().map(|requested| {
+                            (requested.peer, requested.stream, requested.addr, true)
+                        })
+                    })
+            };
+        let Some((peer_key, stream, addr, accepted)) = held else {
             if !accept {
                 self.shared.set_pairing(&PairingState::Idle);
             }
             return;
         };
         if !accept {
-            drop(held);
+            drop(stream);
             self.shared.set_pairing(&PairingState::Idle);
             return;
         }
         let shared = Arc::clone(&self.shared);
-        self.shared
-            .keep(std::thread::spawn(move || finish_pairing(&shared, held)));
+        self.shared.keep(std::thread::spawn(move || {
+            finish_pairing(&shared, peer_key, stream, addr, accepted);
+        }));
     }
 
-    /// Stop pairing and drop whatever it was holding.
+    /// Stop pairing and drop whatever it was holding, under either method.
     pub fn cancel_pairing(&self) {
         {
             let mut state = lock(&self.shared.state);
             state.pairing.held = None;
             state.pairing.dialing = false;
+            state.pairing.requested = None;
+            state.pairing.offer_nonce = None;
         }
         self.shared.set_pairing(&PairingState::Idle);
     }
@@ -2082,7 +2164,7 @@ fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
         }
         let welcome = {
             let state = lock(&shared.state);
-            state.reachable || state.pairing.is_open_to_pairing()
+            state.reachable || state.pairing.accepts_inbound()
         };
         if !welcome {
             // This is what `set_reachable(false)` means. The connection is
@@ -2098,25 +2180,46 @@ fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
 }
 
 /// Decide what one accepted connection is, and run it.
+///
+/// `docs/engine-contract.md` item 12: the pre-handshake exchange now carries
+/// a mode byte, so this reads it once, with `Pending::negotiate`, before it
+/// picks a Noise pattern, rather than guessing purely from local state.
+/// Local state still gates each mode: a `PairByCode` or `PairByQr` request
+/// is only honoured while this device is actually open to that one method,
+/// and a mismatched request is simply dropped, the same way a `Connect`
+/// request from a stranger with no matching key already was.
 fn handle_inbound(shared: &Arc<Shared>, pending: Pending) {
     let remote = pending.remote();
-    let pair_this_one = lock(&shared.state).pairing.is_open_to_pairing();
-    if pair_this_one {
-        accept_pairing(shared, pending, remote);
+    let Ok(negotiated) = pending.negotiate() else {
+        // A version or a handshake timeout. Nothing to report: a peer that
+        // cannot even negotiate learns nothing more by being told so.
         return;
-    }
-
-    // With no stored peer there is nobody this connection could be, and
-    // `candidate_peers` still returns one candidate nobody holds, so a
-    // device with no peer and a device with one peer look the same from
-    // outside. Dropping the connection here instead would tell a stranger
-    // which of the two this device is.
-    let candidates = candidate_peers(shared, remote);
-    // A refused handshake is the design working: whoever called does not
-    // hold a key this device paired with. Nothing to report.
-    if let Ok(connection) = pending.connect(&shared.key, &candidates) {
-        let peer = connection.peer;
-        serve_connection(shared, connection, peer);
+    };
+    match negotiated.mode() {
+        Mode::PairByCode => {
+            if lock(&shared.state).pairing.is_open_to_pairing() {
+                accept_pairing(shared, negotiated, remote);
+            }
+        }
+        Mode::PairByQr => {
+            if lock(&shared.state).pairing.is_offering() {
+                accept_qr_offer(shared, negotiated, remote);
+            }
+        }
+        Mode::Connect => {
+            // With no stored peer there is nobody this connection could be, and
+            // `candidate_peers` still returns one candidate nobody holds, so a
+            // device with no peer and a device with one peer look the same from
+            // outside. Dropping the connection here instead would tell a stranger
+            // which of the two this device is.
+            let candidates = candidate_peers(shared, remote);
+            // A refused handshake is the design working: whoever called does not
+            // hold a key this device paired with. Nothing to report.
+            if let Ok(connection) = negotiated.connect(&shared.key, &candidates) {
+                let peer = connection.peer;
+                serve_connection(shared, connection, peer);
+            }
+        }
     }
 }
 
@@ -2130,12 +2233,23 @@ fn nobody(shared: &Arc<Shared>) -> PublicKey {
     StaticKey::generate().map_or_else(|_| shared.key.public(), |key| key.public())
 }
 
-/// Run the pairing handshake as the side that accepted the connection.
-fn accept_pairing(shared: &Arc<Shared>, pending: Pending, remote: SocketAddr) {
-    match pending.pair(&shared.key) {
+/// Run the code pairing handshake as the side that accepted the connection.
+fn accept_pairing(shared: &Arc<Shared>, negotiated: NegotiatedPending, remote: SocketAddr) {
+    match negotiated.pair(&shared.key) {
         // A refused hold means another pairing is already showing its code.
         // The person is looking at that one, so nothing is reported here.
         Ok(connection) => drop(hold_pairing(shared, connection, remote, true)),
+        Err(error) => report_pairing_failure(shared, &error),
+    }
+}
+
+/// Run the QR pairing handshake as the side whose key was in the offer.
+fn accept_qr_offer(shared: &Arc<Shared>, negotiated: NegotiatedPending, remote: SocketAddr) {
+    let expected_nonce = lock(&shared.state).pairing.offer_nonce;
+    match negotiated.pair_ik(&shared.key, expected_nonce.as_ref()) {
+        // A refused hold means another scan is already `Requested`. Nothing
+        // to report; see `hold_qr_pairing`.
+        Ok(connection) => drop(hold_qr_pairing(shared, connection, remote)),
         Err(error) => report_pairing_failure(shared, &error),
     }
 }
@@ -2144,7 +2258,7 @@ fn accept_pairing(shared: &Arc<Shared>, pending: Pending, remote: SocketAddr) {
 ///
 /// Someone who cancelled while the handshake ran must not see a failure for
 /// a pairing they already stopped.
-fn report_pairing_failure(shared: &Arc<Shared>, error: &ferry_core::tcp::TcpError) {
+fn report_pairing_failure(shared: &Arc<Shared>, error: &TcpError) {
     if !lock(&shared.state).pairing.is_running() {
         return;
     }
@@ -2209,6 +2323,48 @@ fn hold_pairing(
     Ok(())
 }
 
+/// Show `Requested` and hold the connection until someone confirms.
+///
+/// `NegotiatedPending::pair_ik` already checked the handshake's nonce
+/// against `expected_nonce` before this runs, so reaching this function at
+/// all means some handshake matched the offer. What is still checked here,
+/// under the same lock that spends the nonce, is whether another scan
+/// already won that race: the same check `hold_pairing` makes for the code
+/// method, guarding the same kind of race.
+///
+/// # Errors
+///
+/// Returns `Runtime::PairingBusy` when something is already `Requested`, or
+/// when pairing has moved on.
+fn hold_qr_pairing(
+    shared: &Arc<Shared>,
+    connection: IkPairedConnection,
+    addr: SocketAddr,
+) -> Result<(), FerryError> {
+    let IkPairedConnection { accepted, .. } = connection;
+    let name = accepted.name;
+    {
+        let mut state = lock(&shared.state);
+        if !state.pairing.is_offering() {
+            return Err(failed("Runtime::PairingBusy"));
+        }
+        // The nonce is single use. Spending it here, on the winning side of
+        // the race above, is what makes a second scan of the same code
+        // refused instead of merely unlucky.
+        state.pairing.offer_nonce = None;
+        state.pairing.requested = Some(RequestedPairing {
+            stream: accepted.stream,
+            peer: accepted.peer,
+            addr,
+        });
+    }
+    shared.set_pairing(&PairingState::Requested {
+        name,
+        transport: Transport::Wifi,
+    });
+    Ok(())
+}
+
 /// Report a failed pairing, unless pairing has already moved on.
 fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
     if !lock(&shared.state).pairing.is_running() {
@@ -2218,15 +2374,20 @@ fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
 }
 
 /// Exchange names, store the peer, and report the new device.
-fn finish_pairing(shared: &Arc<Shared>, held: HeldPairing) {
-    let HeldPairing {
-        connection,
-        addr,
-        accepted,
-    } = held;
-    let peer_key = connection.paired.peer;
-
-    let (name, kind, stream) = match hello_with_deadline(shared, connection.paired.stream) {
+///
+/// Shared by both pairing methods: `confirm_pairing` calls this with
+/// whichever of `HeldPairing` (code) or `RequestedPairing` (QR) it took,
+/// already unwrapped to the four fields this needs, and `dial_offer` calls
+/// it directly, with `accepted: false`, since the QR method's phone side
+/// asks no question of its own before this runs.
+fn finish_pairing(
+    shared: &Arc<Shared>,
+    peer_key: PublicKey,
+    stream: SecureStream,
+    addr: SocketAddr,
+    accepted: bool,
+) {
+    let (name, kind, stream) = match hello_with_deadline(shared, stream) {
         Ok(triple) => triple,
         Err(error) => {
             fail_pairing(shared, error);
@@ -2371,6 +2532,8 @@ fn pairing_watchdog(shared: &Arc<Shared>) {
         let running = state.pairing.is_running();
         state.pairing.held = None;
         state.pairing.dialing = false;
+        state.pairing.offer_nonce = None;
+        state.pairing.requested = None;
         running
     };
     if running {
@@ -2378,6 +2541,146 @@ fn pairing_watchdog(shared: &Arc<Shared>) {
             error: failed("Runtime::PairingTimeout"),
         });
     }
+}
+
+/// Reset pairing to idle, arm the shared two minute deadline, and start the
+/// watchdog that gives up once it passes. Returns the deadline in Unix
+/// seconds, for the caller's own first published state.
+///
+/// Shared by both of `start_pairing_with`'s branches and by
+/// `offer_scanned`'s dial, so "two minutes, one watchdog" stays one fact
+/// instead of three copies of it. `docs/engine-contract.md` item 12.
+fn begin_pairing_deadline(shared: &Arc<Shared>) -> i64 {
+    let timeout = *lock(&shared.pairing_timeout);
+    let expires_unix_secs = now_unix_secs() + i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX);
+    {
+        let mut state = lock(&shared.state);
+        state.pairing = Pairing::idle();
+        state.pairing.deadline = Some(Instant::now() + timeout);
+        state.pairing.deadline_unix_secs = Some(expires_unix_secs);
+    }
+    let watchdog_shared = Arc::clone(shared);
+    shared.keep(std::thread::spawn(move || {
+        pairing_watchdog(&watchdog_shared);
+    }));
+    expires_unix_secs
+}
+
+/// This device's non-loopback interface addresses, each paired with `port`.
+///
+/// Built for a QR pairing offer: the offering device has to state where it
+/// can be dialed, and unlike the phone (`ferry_core::discovery::Advertiser`)
+/// it never advertises over mDNS, so there is no existing list of its own
+/// addresses to read back. `if-addrs` enumerates the system's network
+/// interfaces directly instead.
+///
+/// This build does not try to tell a Wi-Fi interface apart from any other
+/// kind by name or platform API; a Mac used to show a pairing QR code has
+/// one non-loopback, non-link-local interface worth offering in the
+/// ordinary case, and a finer distinction is future work.
+///
+/// Two kinds of address are excluded outright, not merely deprioritised.
+/// Loopback, since neither Wi-Fi nor the cable is ever a loopback address,
+/// and a phone could not dial one anyway. Link-local (`169.254.0.0/16` and
+/// `fe80::/10`), since a link-local address is only meaningful together
+/// with the interface it came from, and the offer's wire format
+/// (`ferry_core::offer`) has no field for that interface index: an
+/// unqualified link-local address is not merely low priority, it is
+/// ambiguous, and a real machine hands back several of them at once, on
+/// tunnel and peer-to-peer interfaces nobody is dialing over. Trying to
+/// connect to one anyway does not fail fast; the OS holds the attempt open,
+/// so a handful of them ahead of the one real address in the list can cost
+/// most of a minute before `dial_offer` ever reaches it.
+///
+/// A machine with no usable interface gets an offer with zero addresses;
+/// the phone that scans it fails to dial any and reports
+/// `Runtime::NotReachable`, the same as it would for a paired device that
+/// dropped off the network.
+fn local_wifi_addresses(port: u16) -> Vec<SocketAddr> {
+    if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|interface| !interface.is_loopback() && !is_link_local(interface.ip()))
+        .map(|interface| SocketAddr::new(interface.ip(), port))
+        .collect()
+}
+
+/// True for an address that is only meaningful together with the interface
+/// it came from: `169.254.0.0/16`, or `fe80::/10`.
+///
+/// `Ipv4Addr::is_link_local` already exists in `std`. Its `Ipv6Addr`
+/// counterpart is not yet stable, so the top ten bits are checked by hand:
+/// `0xfe80` masked with `0xffc0` is exactly `fe80::/10`.
+fn is_link_local(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.segments()[0] & 0xffc0 == 0xfe80,
+    }
+}
+
+/// Make a QR offer and publish `Offering`, or `Failed` if the system has no
+/// randomness to make a nonce with.
+///
+/// The nonce is made before anything about this pairing attempt is touched,
+/// so a failure here can report `Failed` directly: nothing has reset
+/// `state.pairing` yet, no deadline is armed, and no watchdog is running to
+/// race against.
+fn start_offering(shared: &Arc<Shared>) {
+    let mut nonce = [0u8; QR_NONCE_LEN];
+    if getrandom::fill(&mut nonce).is_err() {
+        shared.set_pairing(&PairingState::Failed {
+            error: failed("Runtime::NoRandomness"),
+        });
+        return;
+    }
+
+    let expires_unix_secs = begin_pairing_deadline(shared);
+    let port = lock(&shared.net)
+        .as_ref()
+        .map_or(shared.listen_port, |net| net.local_addr().port());
+    let offer = Offer {
+        version: 1,
+        static_key: shared.key.public(),
+        expires_unix_secs,
+        nonce,
+        addresses: local_wifi_addresses(port),
+    };
+    lock(&shared.state).pairing.offer_nonce = Some(nonce);
+    shared.set_pairing(&PairingState::Offering {
+        offer: PairingOffer {
+            payload: offer.encode(),
+            expires_unix_secs,
+        },
+    });
+}
+
+/// Dial a scanned offer's addresses in order, run `IK` as the initiator, and
+/// finish exactly as the code method's dialing side does: straight into
+/// `finish_pairing`, with no local confirm step. `docs/engine-contract.md`
+/// item 12: the phone asks no question of its own; scanning the code was
+/// its answer.
+fn dial_offer(shared: &Arc<Shared>, offer: &Offer) {
+    let mut last_error = None;
+    for addr in &offer.addresses {
+        match tcp::pair_ik(
+            *addr,
+            &shared.key,
+            &offer.static_key,
+            &offer.nonce,
+            &shared.display_name,
+            shared.kind,
+        ) {
+            Ok(stream) => {
+                // The phone dialed, so it lets the stream go once names are
+                // exchanged; see `finish_pairing`.
+                finish_pairing(shared, offer.static_key, stream, *addr, false);
+                return;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let error = last_error.map_or_else(|| failed("Runtime::NotReachable"), |e| from_tcp(&e));
+    fail_pairing(shared, error);
 }
 
 /// The stored peers to offer `Pending::connect` as candidates, in the order
