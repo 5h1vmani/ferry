@@ -348,6 +348,11 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_mount_start(uint64_t ptr, RustB
 void uniffi_ferry_runtime_fn_method_engine_mount_stop(uint64_t ptr, RustBuffer device_key_hex, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_OFFER_SCANNED
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_OFFER_SCANNED
+void uniffi_ferry_runtime_fn_method_engine_offer_scanned(uint64_t ptr, RustBuffer payload, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PICK_CANDIDATE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PICK_CANDIDATE
 void uniffi_ferry_runtime_fn_method_engine_pick_candidate(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
@@ -423,9 +428,9 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_short_code(uint64_t ptr, RustCa
 void uniffi_ferry_runtime_fn_method_engine_start(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_START_PAIRING
-#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_START_PAIRING
-void uniffi_ferry_runtime_fn_method_engine_start_pairing(uint64_t ptr, RustCallStatus *_Nonnull out_status
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_START_PAIRING_WITH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_START_PAIRING_WITH
+void uniffi_ferry_runtime_fn_method_engine_start_pairing_with(uint64_t ptr, RustBuffer method, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_STATUS
@@ -792,6 +797,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_mount_stop(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_OFFER_SCANNED
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_OFFER_SCANNED
+uint16_t uniffi_ferry_runtime_checksum_method_engine_offer_scanned(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PICK_CANDIDATE
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PICK_CANDIDATE
 uint16_t uniffi_ferry_runtime_checksum_method_engine_pick_candidate(void
@@ -882,9 +893,9 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_start(void
     
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_START_PAIRING
-#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_START_PAIRING
-uint16_t uniffi_ferry_runtime_checksum_method_engine_start_pairing(void
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_START_PAIRING_WITH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_START_PAIRING_WITH
+uint16_t uniffi_ferry_runtime_checksum_method_engine_start_pairing_with(void
     
 );
 #endif

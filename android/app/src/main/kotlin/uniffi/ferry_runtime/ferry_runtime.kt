@@ -737,6 +737,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_mount_stop(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_offer_scanned(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pick_candidate(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pull(
@@ -767,7 +769,7 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_start(
     ): Int
-    external fun uniffi_ferry_runtime_checksum_method_engine_start_pairing(
+    external fun uniffi_ferry_runtime_checksum_method_engine_start_pairing_with(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_status(
     ): Int
@@ -830,6 +832,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_mount_stop(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_offer_scanned(`ptr`: Long,`payload`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_pick_candidate(`ptr`: Long,`id`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_pull(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`localName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -860,7 +864,7 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_start(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_ferry_runtime_fn_method_engine_start_pairing(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_ferry_runtime_fn_method_engine_start_pairing_with(`ptr`: Long,`method`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
     external fun uniffi_ferry_runtime_fn_method_engine_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -1008,10 +1012,10 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_batches() and 0xFFFF) != 62922) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() and 0xFFFF) != 37992) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() and 0xFFFF) != 50742) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() and 0xFFFF) != 15173) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() and 0xFFFF) != 48275) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_devices() and 0xFFFF) != 18169) {
@@ -1027,6 +1031,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_mount_stop() and 0xFFFF) != 21724) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_offer_scanned() and 0xFFFF) != 59759) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pick_candidate() and 0xFFFF) != 19467) {
@@ -1074,7 +1081,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_start() and 0xFFFF) != 60159) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_start_pairing() and 0xFFFF) != 608) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() and 0xFFFF) != 19085) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_status() and 0xFFFF) != 3994) {
@@ -1608,15 +1615,17 @@ public interface EngineInterface {
     fun `batches`(): List<BatchInfo>
     
     /**
-     * Stop pairing and drop whatever it was holding.
+     * Stop pairing and drop whatever it was holding, under either method.
      */
     fun `cancelPairing`()
     
     /**
-     * Accept or reject the device whose code is showing.
+     * Accept or reject the device whose code, or scan, is showing.
      *
      * Accepting stores the peer and exchanges names. That takes a round
      * trip, so it runs on its own thread and reports through the listener.
+     * Works the same way for both pairing methods: whichever of `held`
+     * (code) or `requested` (QR) is holding a connection is the one taken.
      */
     fun `confirmPairing`(`accept`: kotlin.Boolean)
     
@@ -1684,6 +1693,26 @@ public interface EngineInterface {
      * `docs/engine-contract.md`, item 6.
      */
     fun `mountStop`(`deviceKeyHex`: kotlin.String)
+    
+    /**
+     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     *
+     * Checked locally, in order: is this a Ferry offer at all, has it
+     * expired, is its key one this device already holds. Any of those
+     * three refuses at once, before a single byte reaches the network.
+     * Past that point the dial and the `IK` handshake run on their own
+     * thread, as `pick_candidate` runs its dial, and the outcome arrives
+     * through the listener: `Confirmed` or `Failed`. This device asks no
+     * question of its own; scanning the code was the answer.
+     *
+     * # Errors
+     *
+     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+     * or `PairingError::AlreadyPaired` for the three local checks above,
+     * and `Runtime::PairingBusy` when a pairing attempt is already running
+     * on this device.
+     */
+    fun `offerScanned`(`payload`: kotlin.ByteArray)
     
     /**
      * Dial the chosen candidate and run the pairing handshake.
@@ -1894,14 +1923,23 @@ public interface EngineInterface {
     fun `start`()
     
     /**
-     * Enter pairing. Times out after two minutes.
+     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+     * out after two minutes either way.
      *
-     * The Mac browses and polls `adb`, and reports candidates. The phone
-     * waits for one pairing handshake and reports the code. Calling this
-     * while a pairing is already running only reports the current state
-     * again.
+     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
+     * phone waits for one `XX` handshake and reports the code.
+     *
+     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+     * and publishes `Offering`. While offering, one `IK` handshake whose
+     * message one carries the current nonce is accepted; it shows
+     * `Requested` and holds the connection for `confirm_pairing`. Meant for
+     * the Mac; the phone's camera screen is not built yet, so nothing
+     * today calls this with `Qr` on a phone.
+     *
+     * Calling this while a pairing is already running only reports the
+     * current state again, under either method.
      */
-    fun `startPairing`()
+    fun `startPairingWith`(`method`: PairingMethod)
     
     /**
      * Everything this engine currently is: whether it accepts connections,
@@ -2127,7 +2165,7 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
-     * Stop pairing and drop whatever it was holding.
+     * Stop pairing and drop whatever it was holding, under either method.
      */override fun `cancelPairing`()
         = 
     callWithHandle {
@@ -2142,10 +2180,12 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
-     * Accept or reject the device whose code is showing.
+     * Accept or reject the device whose code, or scan, is showing.
      *
      * Accepting stores the peer and exchanges names. That takes a round
      * trip, so it runs on its own thread and reports through the listener.
+     * Works the same way for both pairing methods: whichever of `held`
+     * (code) or `requested` (QR) is holding a connection is the one taken.
      */override fun `confirmPairing`(`accept`: kotlin.Boolean)
         = 
     callWithHandle {
@@ -2280,6 +2320,38 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         it,
         
         FfiConverterString.lower(`deviceKeyHex`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     *
+     * Checked locally, in order: is this a Ferry offer at all, has it
+     * expired, is its key one this device already holds. Any of those
+     * three refuses at once, before a single byte reaches the network.
+     * Past that point the dial and the `IK` handshake run on their own
+     * thread, as `pick_candidate` runs its dial, and the outcome arrives
+     * through the listener: `Confirmed` or `Failed`. This device asks no
+     * question of its own; scanning the code was the answer.
+     *
+     * # Errors
+     *
+     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+     * or `PairingError::AlreadyPaired` for the three local checks above,
+     * and `Runtime::PairingBusy` when a pairing attempt is already running
+     * on this device.
+     */
+    @Throws(FerryException::class)override fun `offerScanned`(`payload`: kotlin.ByteArray)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_offer_scanned(
+        it,
+        
+        FfiConverterByteArray.lower(`payload`),_status)
 }
     }
     
@@ -2684,19 +2756,29 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 
     
     /**
-     * Enter pairing. Times out after two minutes.
+     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+     * out after two minutes either way.
      *
-     * The Mac browses and polls `adb`, and reports candidates. The phone
-     * waits for one pairing handshake and reports the code. Calling this
-     * while a pairing is already running only reports the current state
-     * again.
-     */override fun `startPairing`()
+     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
+     * phone waits for one `XX` handshake and reports the code.
+     *
+     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+     * and publishes `Offering`. While offering, one `IK` handshake whose
+     * message one carries the current nonce is accepted; it shows
+     * `Requested` and holds the connection for `confirm_pairing`. Meant for
+     * the Mac; the phone's camera screen is not built yet, so nothing
+     * today calls this with `Qr` on a phone.
+     *
+     * Calling this while a pairing is already running only reports the
+     * current state again, under either method.
+     */override fun `startPairingWith`(`method`: PairingMethod)
         = 
     callWithHandle {
     uniffiRustCall() { _status ->
-    UniffiLib.uniffi_ferry_runtime_fn_method_engine_start_pairing(
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_start_pairing_with(
         it,
-        _status)
+        
+        FfiConverterTypePairingMethod.lower(`method`),_status)
 }
     }
     
@@ -3576,6 +3658,58 @@ public object FfiConverterTypePairingCandidate: FfiConverterRustBuffer<PairingCa
 
 
 /**
+ * What a Mac draws as a QR code while `PairingState::Offering`.
+ *
+ * `docs/engine-contract.md` item 12.
+ */
+data class PairingOffer (
+    /**
+     * ASCII: `"FERRY1:"` then base64url of version(1), the Mac's static
+     * public key(32), expiry(8), nonce(16), then addresses as count(1) and
+     * ip(16 or 4 with a tag) and port(2) each. Drawn as a QR code. See
+     * `ferry_core::offer::Offer`, which this is encoded from.
+     */
+    var `payload`: kotlin.ByteArray
+    , 
+    /**
+     * When this offer stops accepting a scan.
+     */
+    var `expiresUnixSecs`: kotlin.Long
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePairingOffer: FfiConverterRustBuffer<PairingOffer> {
+    override fun read(buf: ByteBuffer): PairingOffer {
+        return PairingOffer(
+            FfiConverterByteArray.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: PairingOffer) = (
+            FfiConverterByteArray.allocationSize(value.`payload`) +
+            FfiConverterLong.allocationSize(value.`expiresUnixSecs`)
+    )
+
+    override fun write(value: PairingOffer, buf: ByteBuffer) {
+            FfiConverterByteArray.write(value.`payload`, buf)
+            FfiConverterLong.write(value.`expiresUnixSecs`, buf)
+    }
+}
+
+
+
+/**
  * One named, shared folder, as the peer sees it.
  *
  * `docs/engine-contract.md`, batch C, item 15.
@@ -4221,6 +4355,52 @@ public object FfiConverterTypeOrigin: FfiConverterRustBuffer<Origin> {
 
 
 /**
+ * How two devices pair.
+ *
+ * `docs/engine-contract.md` item 12.
+ */
+
+enum class PairingMethod {
+    
+    /**
+     * A six digit code, shown on both screens and confirmed on both.
+     */
+    CODE,
+    /**
+     * A code scanned from the other device's screen. `Offering` draws it,
+     * `offer_scanned` reads it.
+     */
+    QR;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypePairingMethod: FfiConverterRustBuffer<PairingMethod> {
+    override fun read(buf: ByteBuffer) = try {
+        PairingMethod.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: PairingMethod) = 4UL
+
+    override fun write(value: PairingMethod, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
  * Where pairing is.
  */
 sealed class PairingState {
@@ -4232,7 +4412,8 @@ sealed class PairingState {
     
     
     /**
-     * Looking for a device, or on the phone, waiting for a Mac.
+     * Looking for a device, or on the phone, waiting for a Mac. Code
+     * method.
      */
     data class Waiting(
         /**
@@ -4247,7 +4428,7 @@ sealed class PairingState {
     }
     
     /**
-     * The Mac has candidates to pick from.
+     * The Mac has candidates to pick from. Code method.
      */
     data class Found(
         /**
@@ -4266,7 +4447,7 @@ sealed class PairingState {
     }
     
     /**
-     * Both screens show the code.
+     * Both screens show the code. Code method.
      */
     data class Code(
         /**
@@ -4277,6 +4458,43 @@ sealed class PairingState {
          * When this pairing attempt gives up.
          */
         val `expiresUnixSecs`: kotlin.Long) : PairingState()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * The Mac is showing a QR code, and nobody has scanned it yet. QR
+     * method.
+     */
+    data class Offering(
+        /**
+         * What to draw. `offer.expires_unix_secs` is this state's deadline.
+         */
+        val `offer`: uniffi.ferry_runtime.PairingOffer) : PairingState()
+        
+    {
+        
+
+        companion object
+    }
+    
+    /**
+     * The Mac read a scan's hello and is waiting for `confirm_pairing`. QR
+     * method. The phone never shows this: it asks no question of its own.
+     */
+    data class Requested(
+        /**
+         * The scanning phone's name, from its hello.
+         */
+        val `name`: kotlin.String, 
+        /**
+         * How the phone reached this Mac. Always `Wifi`: QR pairing only
+         * dials the Wi-Fi addresses in the offer.
+         */
+        val `transport`: uniffi.ferry_runtime.Transport) : PairingState()
         
     {
         
@@ -4342,10 +4560,17 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
                 FfiConverterString.read(buf),
                 FfiConverterLong.read(buf),
                 )
-            5 -> PairingState.Confirmed(
+            5 -> PairingState.Offering(
+                FfiConverterTypePairingOffer.read(buf),
+                )
+            6 -> PairingState.Requested(
+                FfiConverterString.read(buf),
+                FfiConverterTypeTransport.read(buf),
+                )
+            7 -> PairingState.Confirmed(
                 FfiConverterTypeDeviceInfo.read(buf),
                 )
-            6 -> PairingState.Failed(
+            8 -> PairingState.Failed(
                 FfiConverterTypeFerryError.read(buf),
                 )
             else -> throw RuntimeException("invalid enum value, something is very wrong!!")
@@ -4380,6 +4605,21 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
                 4UL
                 + FfiConverterString.allocationSize(value.`code`)
                 + FfiConverterLong.allocationSize(value.`expiresUnixSecs`)
+            )
+        }
+        is PairingState.Offering -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterTypePairingOffer.allocationSize(value.`offer`)
+            )
+        }
+        is PairingState.Requested -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`name`)
+                + FfiConverterTypeTransport.allocationSize(value.`transport`)
             )
         }
         is PairingState.Confirmed -> {
@@ -4421,13 +4661,24 @@ public object FfiConverterTypePairingState : FfiConverterRustBuffer<PairingState
                 FfiConverterLong.write(value.`expiresUnixSecs`, buf)
                 Unit
             }
-            is PairingState.Confirmed -> {
+            is PairingState.Offering -> {
                 buf.putInt(5)
+                FfiConverterTypePairingOffer.write(value.`offer`, buf)
+                Unit
+            }
+            is PairingState.Requested -> {
+                buf.putInt(6)
+                FfiConverterString.write(value.`name`, buf)
+                FfiConverterTypeTransport.write(value.`transport`, buf)
+                Unit
+            }
+            is PairingState.Confirmed -> {
+                buf.putInt(7)
                 FfiConverterTypeDeviceInfo.write(value.`device`, buf)
                 Unit
             }
             is PairingState.Failed -> {
-                buf.putInt(6)
+                buf.putInt(8)
                 FfiConverterTypeFerryError.write(value.`error`, buf)
                 Unit
             }

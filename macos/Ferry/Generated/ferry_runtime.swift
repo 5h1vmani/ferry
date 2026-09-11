@@ -651,15 +651,17 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func batches()  -> [BatchInfo]
     
     /**
-     * Stop pairing and drop whatever it was holding.
+     * Stop pairing and drop whatever it was holding, under either method.
      */
     func cancelPairing() 
     
     /**
-     * Accept or reject the device whose code is showing.
+     * Accept or reject the device whose code, or scan, is showing.
      *
      * Accepting stores the peer and exchanges names. That takes a round
      * trip, so it runs on its own thread and reports through the listener.
+     * Works the same way for both pairing methods: whichever of `held`
+     * (code) or `requested` (QR) is holding a connection is the one taken.
      */
     func confirmPairing(accept: Bool) 
     
@@ -727,6 +729,26 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * `docs/engine-contract.md`, item 6.
      */
     func mountStop(deviceKeyHex: String) 
+    
+    /**
+     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     *
+     * Checked locally, in order: is this a Ferry offer at all, has it
+     * expired, is its key one this device already holds. Any of those
+     * three refuses at once, before a single byte reaches the network.
+     * Past that point the dial and the `IK` handshake run on their own
+     * thread, as `pick_candidate` runs its dial, and the outcome arrives
+     * through the listener: `Confirmed` or `Failed`. This device asks no
+     * question of its own; scanning the code was the answer.
+     *
+     * # Errors
+     *
+     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+     * or `PairingError::AlreadyPaired` for the three local checks above,
+     * and `Runtime::PairingBusy` when a pairing attempt is already running
+     * on this device.
+     */
+    func offerScanned(payload: Data) throws 
     
     /**
      * Dial the chosen candidate and run the pairing handshake.
@@ -937,14 +959,23 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func start() throws 
     
     /**
-     * Enter pairing. Times out after two minutes.
+     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+     * out after two minutes either way.
      *
-     * The Mac browses and polls `adb`, and reports candidates. The phone
-     * waits for one pairing handshake and reports the code. Calling this
-     * while a pairing is already running only reports the current state
-     * again.
+     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
+     * phone waits for one `XX` handshake and reports the code.
+     *
+     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+     * and publishes `Offering`. While offering, one `IK` handshake whose
+     * message one carries the current nonce is accepted; it shows
+     * `Requested` and holds the connection for `confirm_pairing`. Meant for
+     * the Mac; the phone's camera screen is not built yet, so nothing
+     * today calls this with `Qr` on a phone.
+     *
+     * Calling this while a pairing is already running only reports the
+     * current state again, under either method.
      */
-    func startPairing() 
+    func startPairingWith(method: PairingMethod) 
     
     /**
      * Everything this engine currently is: whether it accepts connections,
@@ -1107,7 +1138,7 @@ open func batches() -> [BatchInfo]  {
 }
     
     /**
-     * Stop pairing and drop whatever it was holding.
+     * Stop pairing and drop whatever it was holding, under either method.
      */
 open func cancelPairing()  {try! rustCall() {
         uniffiCallStatus in
@@ -1118,10 +1149,12 @@ open func cancelPairing()  {try! rustCall() {
 }
     
     /**
-     * Accept or reject the device whose code is showing.
+     * Accept or reject the device whose code, or scan, is showing.
      *
      * Accepting stores the peer and exchanges names. That takes a round
      * trip, so it runs on its own thread and reports through the listener.
+     * Works the same way for both pairing methods: whichever of `held`
+     * (code) or `requested` (QR) is holding a connection is the one taken.
      */
 open func confirmPairing(accept: Bool)  {try! rustCall() {
         uniffiCallStatus in
@@ -1231,6 +1264,33 @@ open func mountStop(deviceKeyHex: String)  {try! rustCall() {
     uniffi_ferry_runtime_fn_method_engine_mount_stop(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     *
+     * Checked locally, in order: is this a Ferry offer at all, has it
+     * expired, is its key one this device already holds. Any of those
+     * three refuses at once, before a single byte reaches the network.
+     * Past that point the dial and the `IK` handshake run on their own
+     * thread, as `pick_candidate` runs its dial, and the outcome arrives
+     * through the listener: `Confirmed` or `Failed`. This device asks no
+     * question of its own; scanning the code was the answer.
+     *
+     * # Errors
+     *
+     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+     * or `PairingError::AlreadyPaired` for the three local checks above,
+     * and `Runtime::PairingBusy` when a pairing attempt is already running
+     * on this device.
+     */
+open func offerScanned(payload: Data)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_offer_scanned(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(payload),uniffiCallStatus
     )
 }
 }
@@ -1561,17 +1621,27 @@ open func start()throws   {try rustCallWithError(FfiConverterTypeFerryError_lift
 }
     
     /**
-     * Enter pairing. Times out after two minutes.
+     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+     * out after two minutes either way.
      *
-     * The Mac browses and polls `adb`, and reports candidates. The phone
-     * waits for one pairing handshake and reports the code. Calling this
-     * while a pairing is already running only reports the current state
-     * again.
+     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
+     * phone waits for one `XX` handshake and reports the code.
+     *
+     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+     * and publishes `Offering`. While offering, one `IK` handshake whose
+     * message one carries the current nonce is accepted; it shows
+     * `Requested` and holds the connection for `confirm_pairing`. Meant for
+     * the Mac; the phone's camera screen is not built yet, so nothing
+     * today calls this with `Qr` on a phone.
+     *
+     * Calling this while a pairing is already running only reports the
+     * current state again, under either method.
      */
-open func startPairing()  {try! rustCall() {
+open func startPairingWith(method: PairingMethod)  {try! rustCall() {
         uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_start_pairing(
-            self.uniffiCloneHandle(),uniffiCallStatus
+    uniffi_ferry_runtime_fn_method_engine_start_pairing_with(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePairingMethod_lower(method),uniffiCallStatus
     )
 }
 }
@@ -2740,6 +2810,83 @@ public func FfiConverterTypePairingCandidate_lower(_ value: PairingCandidate) ->
 
 
 /**
+ * What a Mac draws as a QR code while `PairingState::Offering`.
+ *
+ * `docs/engine-contract.md` item 12.
+ */
+public struct PairingOffer: Equatable, Hashable {
+    /**
+     * ASCII: `"FERRY1:"` then base64url of version(1), the Mac's static
+     * public key(32), expiry(8), nonce(16), then addresses as count(1) and
+     * ip(16 or 4 with a tag) and port(2) each. Drawn as a QR code. See
+     * `ferry_core::offer::Offer`, which this is encoded from.
+     */
+    public var payload: Data
+    /**
+     * When this offer stops accepting a scan.
+     */
+    public var expiresUnixSecs: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * ASCII: `"FERRY1:"` then base64url of version(1), the Mac's static
+         * public key(32), expiry(8), nonce(16), then addresses as count(1) and
+         * ip(16 or 4 with a tag) and port(2) each. Drawn as a QR code. See
+         * `ferry_core::offer::Offer`, which this is encoded from.
+         */payload: Data, 
+        /**
+         * When this offer stops accepting a scan.
+         */expiresUnixSecs: Int64) {
+        self.payload = payload
+        self.expiresUnixSecs = expiresUnixSecs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PairingOffer: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePairingOffer: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PairingOffer {
+        return
+            try PairingOffer(
+                payload: FfiConverterData.read(from: &buf), 
+                expiresUnixSecs: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PairingOffer, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.payload, into: &buf)
+        FfiConverterInt64.write(value.expiresUnixSecs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePairingOffer_lift(_ buf: RustBuffer) throws -> PairingOffer {
+    return try FfiConverterTypePairingOffer.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePairingOffer_lower(_ value: PairingOffer) -> RustBuffer {
+    return FfiConverterTypePairingOffer.lower(value)
+}
+
+
+/**
  * One named, shared folder, as the peer sees it.
  *
  * `docs/engine-contract.md`, batch C, item 15.
@@ -3722,6 +3869,84 @@ public func FfiConverterTypeOrigin_lower(_ value: Origin) -> RustBuffer {
 
 
 /**
+ * How two devices pair.
+ *
+ * `docs/engine-contract.md` item 12.
+ */
+
+public enum PairingMethod: Equatable, Hashable {
+    
+    /**
+     * A six digit code, shown on both screens and confirmed on both.
+     */
+    case code
+    /**
+     * A code scanned from the other device's screen. `Offering` draws it,
+     * `offer_scanned` reads it.
+     */
+    case qr
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PairingMethod: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePairingMethod: FfiConverterRustBuffer {
+    typealias SwiftType = PairingMethod
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PairingMethod {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .code
+        
+        case 2: return .qr
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PairingMethod, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .code:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .qr:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePairingMethod_lift(_ buf: RustBuffer) throws -> PairingMethod {
+    return try FfiConverterTypePairingMethod.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePairingMethod_lower(_ value: PairingMethod) -> RustBuffer {
+    return FfiConverterTypePairingMethod.lower(value)
+}
+
+
+
+/**
  * Where pairing is.
  */
 
@@ -3732,7 +3957,8 @@ public enum PairingState: Equatable, Hashable {
      */
     case idle
     /**
-     * Looking for a device, or on the phone, waiting for a Mac.
+     * Looking for a device, or on the phone, waiting for a Mac. Code
+     * method.
      */
     case waiting(
         /**
@@ -3740,7 +3966,7 @@ public enum PairingState: Equatable, Hashable {
          */expiresUnixSecs: Int64
     )
     /**
-     * The Mac has candidates to pick from.
+     * The Mac has candidates to pick from. Code method.
      */
     case found(
         /**
@@ -3751,7 +3977,7 @@ public enum PairingState: Equatable, Hashable {
          */expiresUnixSecs: Int64
     )
     /**
-     * Both screens show the code.
+     * Both screens show the code. Code method.
      */
     case code(
         /**
@@ -3760,6 +3986,28 @@ public enum PairingState: Equatable, Hashable {
         /**
          * When this pairing attempt gives up.
          */expiresUnixSecs: Int64
+    )
+    /**
+     * The Mac is showing a QR code, and nobody has scanned it yet. QR
+     * method.
+     */
+    case offering(
+        /**
+         * What to draw. `offer.expires_unix_secs` is this state's deadline.
+         */offer: PairingOffer
+    )
+    /**
+     * The Mac read a scan's hello and is waiting for `confirm_pairing`. QR
+     * method. The phone never shows this: it asks no question of its own.
+     */
+    case requested(
+        /**
+         * The scanning phone's name, from its hello.
+         */name: String, 
+        /**
+         * How the phone reached this Mac. Always `Wifi`: QR pairing only
+         * dials the Wi-Fi addresses in the offer.
+         */transport: Transport
     )
     /**
      * Both sides confirmed. The device is now in `devices()`.
@@ -3809,10 +4057,16 @@ public struct FfiConverterTypePairingState: FfiConverterRustBuffer {
         case 4: return .code(code: try FfiConverterString.read(from: &buf), expiresUnixSecs: try FfiConverterInt64.read(from: &buf)
         )
         
-        case 5: return .confirmed(device: try FfiConverterTypeDeviceInfo.read(from: &buf)
+        case 5: return .offering(offer: try FfiConverterTypePairingOffer.read(from: &buf)
         )
         
-        case 6: return .failed(error: try FfiConverterTypeFerryError.read(from: &buf)
+        case 6: return .requested(name: try FfiConverterString.read(from: &buf), transport: try FfiConverterTypeTransport.read(from: &buf)
+        )
+        
+        case 7: return .confirmed(device: try FfiConverterTypeDeviceInfo.read(from: &buf)
+        )
+        
+        case 8: return .failed(error: try FfiConverterTypeFerryError.read(from: &buf)
         )
         
         default: throw UniffiInternalError.unexpectedEnumCase
@@ -3844,13 +4098,24 @@ public struct FfiConverterTypePairingState: FfiConverterRustBuffer {
             FfiConverterInt64.write(expiresUnixSecs, into: &buf)
             
         
-        case let .confirmed(device):
+        case let .offering(offer):
             writeInt(&buf, Int32(5))
+            FfiConverterTypePairingOffer.write(offer, into: &buf)
+            
+        
+        case let .requested(name,transport):
+            writeInt(&buf, Int32(6))
+            FfiConverterString.write(name, into: &buf)
+            FfiConverterTypeTransport.write(transport, into: &buf)
+            
+        
+        case let .confirmed(device):
+            writeInt(&buf, Int32(7))
             FfiConverterTypeDeviceInfo.write(device, into: &buf)
             
         
         case let .failed(error):
-            writeInt(&buf, Int32(6))
+            writeInt(&buf, Int32(8))
             FfiConverterTypeFerryError.write(error, into: &buf)
             
         }
@@ -4708,10 +4973,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_batches() != 62922) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 37992) {
+    if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 50742) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 15173) {
+    if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 48275) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_devices() != 18169) {
@@ -4727,6 +4992,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_mount_stop() != 21724) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_offer_scanned() != 59759) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 19467) {
@@ -4774,7 +5042,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_start() != 60159) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_start_pairing() != 608) {
+    if (uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() != 19085) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_status() != 3994) {
