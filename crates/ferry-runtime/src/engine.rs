@@ -369,6 +369,17 @@ pub(crate) struct Shared {
     /// rule: it reads it on every pass, and drops its `Browser` while the
     /// flag is false, because a browse query is a sound on the network.
     pub(crate) browsing: AtomicBool,
+    /// Held by whichever thread is applying the presence rule.
+    ///
+    /// [`apply_presence`] takes this before it reads the state, and holds it
+    /// across the advertiser write and the `browsing` write. Without it two
+    /// threads can read the inputs in one order and write the advertiser in
+    /// the other, which leaves the advertiser off while the rule says on, or
+    /// on while the rule says off, and nothing reapplies the rule until the
+    /// next input changes. No caller of [`apply_presence`] holds the state
+    /// lock when it calls, so taking this first and the state lock second is
+    /// the one order every thread uses.
+    pub(crate) presence: Mutex<()>,
 }
 
 impl Shared {
@@ -837,6 +848,7 @@ impl Engine {
             cut: Mutex::new(None),
             wire_bytes: Arc::new(AtomicU64::new(0)),
             peers_write: Mutex::new(()),
+            presence: Mutex::new(()),
             dir_lock,
             access_log: Arc::new(Mutex::new(None)),
             next_connection: AtomicU64::new(0),
@@ -2582,6 +2594,10 @@ fn load_saved_batches(shared: &Arc<Shared>) {
 /// pairing list, so a restart during pairing would change the code a person
 /// is reading off two screens.
 pub(crate) fn apply_presence(shared: &Shared) {
+    // One rule, applied by one thread at a time. Held across the state read
+    // and both writes below, so two threads cannot read the inputs in one
+    // order and write the advertiser in the other.
+    let _presence = lock(&shared.presence);
     let (browsing, present, port) = {
         let state = lock(&shared.state);
         (
