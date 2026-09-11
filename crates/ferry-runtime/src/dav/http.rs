@@ -31,17 +31,57 @@ const MAX_HEADERS: usize = 64;
 /// anything I1 browsing sends (a `PROPFIND` body and a sidecar `PUT` are
 /// both small); `server.rs` and `probes.rs` apply their own, tighter bound
 /// to a sidecar's actual bytes once the body is in hand.
+///
+/// A `PUT` of a real file uses [`MAX_PUT_BODY_LEN`] instead: this bound is
+/// for everything else, which this bridge always reads whole into memory.
 pub(crate) const MAX_BODY_LEN: u64 = 256 * 1024;
 
-/// One parsed request line, its headers, and its body.
+/// The largest body a `PUT` of a real file may carry.
+///
+/// `docs/engine-contract.md`, item 6, I2: the body is streamed to the
+/// spool file in pieces and never held whole in memory, so this bound is
+/// not about memory. It matches the largest file whose manifest, built at
+/// the spool's own one mebibyte chunk size
+/// ([`ferry_core::localfs::LocalFs::manifest`]), still fits
+/// [`ferry_core::limits::MAX_MANIFEST_CHUNKS`]: one mebibyte times that
+/// many chunks. A body any larger could spool successfully but could
+/// never land, since its own manifest would refuse to decode once sent to
+/// the peer, so it is refused here instead, before a single byte reaches
+/// the spool file.
+pub(crate) const MAX_PUT_BODY_LEN: u64 = 32 * 1024 * 1024 * 1024;
+
+/// One parsed request line and its headers, with the body not yet read.
 ///
 /// Header names are lowercased on the way in, so a caller never has to
 /// guess a peer's capitalisation.
-pub(crate) struct Request {
+pub(crate) struct RequestHead {
     pub(crate) method: String,
     /// The request target exactly as sent, still percent-encoded. The
     /// caller decodes it once, per `docs/engine-contract.md`, item 6.
     pub(crate) target: String,
+    pub(crate) headers: HashMap<String, String>,
+}
+
+impl RequestHead {
+    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).map(String::as_str)
+    }
+
+    /// The `Content-Length` header's value, or `None` when it is absent or
+    /// is not a plain number. A `PUT` of a real file treats either of
+    /// those the same way: 411, since there is no other way to know how
+    /// much body follows.
+    pub(crate) fn content_length(&self) -> Option<u64> {
+        self.header("content-length")?.parse().ok()
+    }
+}
+
+/// One request's method, headers, and body, once its target has already
+/// been read, decoded, and routed on. Every verb function takes the
+/// target as its own `&str` parameter instead, so it is not repeated
+/// here.
+pub(crate) struct Request {
+    pub(crate) method: String,
     pub(crate) headers: HashMap<String, String>,
     pub(crate) body: Vec<u8>,
 }
@@ -52,10 +92,10 @@ impl Request {
     }
 }
 
-/// What [`read_request`] found on the wire.
-pub(crate) enum ReadOutcome {
-    /// A full request, within every bound below.
-    Request(Request),
+/// What [`read_head`] found on the wire.
+pub(crate) enum HeadOutcome {
+    /// A full request line and header block, within every bound below.
+    Head(RequestHead),
     /// The connection closed before a request line arrived. The ordinary
     /// end of a connection between requests, not a fault.
     Closed,
@@ -64,31 +104,32 @@ pub(crate) enum ReadOutcome {
     /// closes the connection: with the head only partly read, there is no
     /// safe place left to resume parsing the next request from.
     HeadTooLarge,
-    /// `Content-Length` claimed more than [`MAX_BODY_LEN`]. The caller
-    /// answers 413, without this function having allocated a buffer for
-    /// it.
-    BodyTooLarge,
 }
 
-/// Reads one request, refusing to grow a buffer past the bounds
-/// `docs/engine-contract.md`, item 6's threat model requires: every
-/// process on this Mac can reach this loopback port, and only the
+/// Reads one request line and its headers, refusing to grow a buffer past
+/// the bounds `docs/engine-contract.md`, item 6's threat model requires:
+/// every process on this Mac can reach this loopback port, and only the
 /// per-start password tells them apart from Finder, so nothing before
 /// that password check may cost unbounded memory.
-pub(crate) fn read_request(reader: &mut impl BufRead) -> io::Result<ReadOutcome> {
+///
+/// The body is deliberately not read here. `server::respond` reads it
+/// afterward, once it knows from the method and the target whether to
+/// buffer it whole (every route but a `PUT` of a real file) or stream it
+/// straight to a spool file (`docs/engine-contract.md`, item 6, I2).
+pub(crate) fn read_head(reader: &mut impl BufRead) -> io::Result<HeadOutcome> {
     let mut limited = Read::take(reader, MAX_HEAD_LEN);
 
     let mut request_line = String::new();
     let read = limited.read_line(&mut request_line)?;
     if read == 0 {
-        return Ok(ReadOutcome::Closed);
+        return Ok(HeadOutcome::Closed);
     }
     if !request_line.ends_with('\n') {
-        return Ok(ReadOutcome::HeadTooLarge);
+        return Ok(HeadOutcome::HeadTooLarge);
     }
     let request_line = request_line.trim_end();
     if request_line.is_empty() {
-        return Ok(ReadOutcome::Closed);
+        return Ok(HeadOutcome::Closed);
     }
 
     let mut parts = request_line.split_whitespace();
@@ -102,48 +143,67 @@ pub(crate) fn read_request(reader: &mut impl BufRead) -> io::Result<ReadOutcome>
         if read == 0 {
             // A connection that closes mid-headers has sent no request
             // this side can answer.
-            return Ok(ReadOutcome::Closed);
+            return Ok(HeadOutcome::Closed);
         }
         if !line.ends_with('\n') {
-            return Ok(ReadOutcome::HeadTooLarge);
+            return Ok(HeadOutcome::HeadTooLarge);
         }
         let line = line.trim_end();
         if line.is_empty() {
             break;
         }
         if headers.len() >= MAX_HEADERS {
-            return Ok(ReadOutcome::HeadTooLarge);
+            return Ok(HeadOutcome::HeadTooLarge);
         }
         if let Some((key, value)) = line.split_once(':') {
             headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_owned());
         }
     }
 
-    // The head budget only covers the request line and headers; a body is
-    // bounded by `Content-Length` itself, checked here before a single
-    // byte of it is allocated. `into_inner` hands back the same reader
-    // `limited` borrowed, so reading the body is not itself capped at
-    // `MAX_HEAD_LEN`.
-    let reader = limited.into_inner();
-    let body_len: u64 = headers
-        .get("content-length")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    if body_len > MAX_BODY_LEN {
-        return Ok(ReadOutcome::BodyTooLarge);
-    }
-    let body_len = usize::try_from(body_len).unwrap_or(usize::MAX);
-    let mut body = vec![0u8; body_len];
-    if body_len > 0 {
-        reader.read_exact(&mut body)?;
-    }
-
-    Ok(ReadOutcome::Request(Request {
+    Ok(HeadOutcome::Head(RequestHead {
         method,
         target,
         headers,
-        body,
     }))
+}
+
+/// What [`read_bounded_body`] found.
+pub(crate) enum BodyOutcome {
+    /// The body, read whole.
+    Body(Vec<u8>),
+    /// `content_length` was over `max`. Nothing was allocated for it.
+    TooLarge,
+}
+
+/// Reads exactly `content_length` bytes of body into memory, bounded by
+/// `max`, checked before a single byte is allocated.
+pub(crate) fn read_bounded_body(
+    reader: &mut impl BufRead,
+    content_length: u64,
+    max: u64,
+) -> io::Result<BodyOutcome> {
+    if content_length > max {
+        return Ok(BodyOutcome::TooLarge);
+    }
+    let len = usize::try_from(content_length).unwrap_or(usize::MAX);
+    let mut body = vec![0u8; len];
+    if len > 0 {
+        reader.read_exact(&mut body)?;
+    }
+    Ok(BodyOutcome::Body(body))
+}
+
+/// Copies exactly `content_length` bytes of request body from `reader` to
+/// `sink`, in bounded pieces, never holding more than one piece in
+/// memory. Returns the number of bytes actually copied, which is less
+/// than `content_length` only when the connection ended early.
+pub(crate) fn copy_body(
+    reader: &mut impl BufRead,
+    content_length: u64,
+    sink: &mut impl Write,
+) -> io::Result<u64> {
+    let mut limited = Read::take(reader, content_length);
+    io::copy(&mut limited, sink)
 }
 
 /// Writes a status line and headers, plus a fresh `Date` header and the
@@ -398,8 +458,8 @@ pub(crate) fn iso8601(unix_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        RangeOutcome, base64_decode, constant_time_eq, iso8601, parse_range, percent_decode,
-        read_request, rfc1123,
+        RangeOutcome, base64_decode, constant_time_eq, iso8601, parse_range,
+        percent_decode, read_head, rfc1123,
     };
 
     /// Asserts a [`RangeOutcome::Satisfiable`] and returns its span, so a
@@ -513,12 +573,12 @@ mod tests {
 
     /// B3: `server.rs::accept_loop` sets a read timeout on every accepted
     /// stream, so a connection that sends nothing is closed rather than
-    /// held forever. This proves the half `read_request` is responsible
-    /// for: once a read times out, it gives up and returns promptly
-    /// instead of blocking again or looping, using a short timeout this
-    /// test sets itself rather than waiting out the real 30 second one.
+    /// held forever. This proves the half `read_head` is responsible for:
+    /// once a read times out, it gives up and returns promptly instead of
+    /// blocking again or looping, using a short timeout this test sets
+    /// itself rather than waiting out the real 30 second one.
     #[test]
-    fn read_request_gives_up_once_the_socket_times_out() {
+    fn read_head_gives_up_once_the_socket_times_out() {
         use std::io::BufReader;
         use std::net::{TcpListener, TcpStream};
         use std::time::{Duration, Instant};
@@ -526,7 +586,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
         let addr = listener.local_addr().expect("a bound address");
         // Held for the life of the test and never written to: the silent
-        // peer `read_request` is refusing to wait forever on.
+        // peer `read_head` is refusing to wait forever on.
         let _silent_peer = TcpStream::connect(addr).expect("a silent connection");
 
         let (accepted, _) = listener.accept().expect("the silent connection to accept");
@@ -536,7 +596,7 @@ mod tests {
         let mut reader = BufReader::new(accepted);
 
         let started = Instant::now();
-        let result = read_request(&mut reader);
+        let result = read_head(&mut reader);
         assert!(
             result.is_err(),
             "a read that times out must surface as an error, not a request"

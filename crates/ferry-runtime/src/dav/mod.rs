@@ -1,10 +1,10 @@
 //! The `WebDAV` bridge: turns one paired device's shared roots into a
 //! loopback HTTP server Finder can mount.
 //!
-//! `docs/engine-contract.md`, item 6, and ADR 0008. I1 only: browsing.
+//! `docs/engine-contract.md`, item 6, and ADR 0008. I1: browsing.
 //! `OPTIONS`, `PROPFIND` at depth 0 and 1, `GET`, `HEAD`, `LOCK`, `UNLOCK`,
-//! and a `PUT` of a sidecar name. Every other write verb answers 403; item
-//! I2 builds them.
+//! and a `PUT` of a sidecar name. I2 begins here with `PUT` of a real
+//! file, and its delta on save.
 //!
 //! One [`MountRegistry`] lives in [`crate::engine::Shared`], one entry per
 //! device that has ever had [`MountRegistry::start`] called for it. Each
@@ -27,6 +27,8 @@
 //! - `cache.rs`: the two second depth 1 listing cache.
 //! - `pool.rs`: a small pool of the engine's own [`ferry_core::rpc::Client`]
 //!   connections to the peer, four at most.
+//! - `put.rs`: item I2's landing rule for `PUT` of a real file, reusing
+//!   item 5's push rule.
 //! - `server.rs`: the accept loop, the connection loop, and the verbs.
 
 mod cache;
@@ -34,6 +36,7 @@ mod http;
 mod lock;
 mod pool;
 mod probes;
+mod put;
 mod server;
 mod xml;
 

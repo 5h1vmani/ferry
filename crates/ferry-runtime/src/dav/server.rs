@@ -1,18 +1,21 @@
 //! The accept loop, the per-connection loop, and the verbs.
 //!
-//! `docs/engine-contract.md`, item 6, I1: `OPTIONS`; `PROPFIND` at depth 0
+//! `docs/engine-contract.md`, item 6. I1: `OPTIONS`; `PROPFIND` at depth 0
 //! and 1; `GET` and `HEAD`, with one `Range`; `LOCK` and `UNLOCK`; and a
-//! `PUT` of a sidecar name. Every other write verb answers 403; item I2
-//! builds `PUT` of a real file, `DELETE`, `MOVE`, `MKCOL`, `COPY`, and
-//! `PROPPATCH`.
+//! `PUT` of a sidecar name. I2 begins here with `PUT` of a real file: a
+//! spool file staged on this Mac, then landed on the peer with the push
+//! rule (item 5) for a new destination, or with only the chunks that
+//! differ, in place, for one that already exists.
 
-use std::io::{self, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
+use ferry_core::chunk::Manifest;
+use ferry_core::localfs::LocalFs;
 use ferry_core::noise::SecureStream;
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
@@ -26,6 +29,7 @@ use super::cache::Cache;
 use super::lock::{LockError, LockTable};
 use super::pool::{self, Pool};
 use super::probes::{self, SidecarStore, SidecarWriteError};
+use super::put;
 use super::{http, xml};
 
 /// How many connections one bridge serves at once. A 33rd is refused at
@@ -169,34 +173,26 @@ fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStr
     };
     let mut reader = BufReader::new(read_half);
     loop {
-        let Ok(outcome) = http::read_request(&mut reader) else {
+        let Ok(outcome) = http::read_head(&mut reader) else {
             return;
         };
         let Ok(mut out) = stream.try_clone() else {
             return;
         };
-        let request = match outcome {
-            http::ReadOutcome::Request(request) => request,
-            http::ReadOutcome::Closed => return,
+        let head = match outcome {
+            http::HeadOutcome::Head(head) => head,
+            http::HeadOutcome::Closed => return,
             // B2: the head ran past its budget, or carried too many
             // headers. There is no safe place left to resume parsing the
             // next request from, so this answers once and closes.
-            http::ReadOutcome::HeadTooLarge => {
+            http::HeadOutcome::HeadTooLarge => {
                 let _ = no_body(&mut out, "431 Request Header Fields Too Large");
                 return;
             }
-            // B1: `Content-Length` claimed more than this bridge will
-            // allocate for, checked before a single byte of the body was
-            // read. Closing rather than continuing: the peer's declared
-            // body is still sitting unread on the wire, and would be
-            // misread as the start of the next request.
-            http::ReadOutcome::BodyTooLarge => {
-                let _ = no_body(&mut out, "413 Payload Too Large");
-                return;
-            }
         };
-        if respond(shared, bridge, &request, &mut out).is_err() {
-            return;
+        match respond(shared, bridge, &head, &mut reader, &mut out) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return,
         }
         if out.flush().is_err() {
             return;
@@ -204,47 +200,89 @@ fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStr
     }
 }
 
-/// Answers one request: `Host` and Basic auth first, then the verb.
+/// Answers one request: `Host` and Basic auth first, from the head alone,
+/// then the body and the verb.
+///
+/// Returns whether this connection may serve another request. `Host` and
+/// auth failures close it: `docs/engine-contract.md`, item 6, I2, gives a
+/// `PUT` of a real file a body far larger than [`http::MAX_BODY_LEN`], so
+/// there is no bound this function could drain up to before answering
+/// without paying for whatever a stranger on loopback claims to be
+/// sending. Every other refusal keeps the connection open, once its own
+/// declared body (bounded to [`http::MAX_BODY_LEN`] the same way as I1)
+/// has actually been read.
 fn respond(
     shared: &Arc<Shared>,
     bridge: &Bridge,
-    request: &http::Request,
+    head: &http::RequestHead,
+    reader: &mut impl BufRead,
     out: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let expected_host = format!("127.0.0.1:{}", bridge.port);
-    if request.header("host") != Some(expected_host.as_str()) {
-        return no_body(out, "400 Bad Request");
+    if head.header("host") != Some(expected_host.as_str()) {
+        no_body(out, "400 Bad Request")?;
+        return Ok(false);
     }
-    if !authorized(bridge, request) {
-        return http::write_head(
+    if !authorized(bridge, head.header("authorization")) {
+        http::write_head(
             out,
             "401 Unauthorized",
             &[
                 ("WWW-Authenticate", "Basic realm=\"Ferry\"".to_owned()),
                 ("Content-Length", "0".to_owned()),
             ],
-        );
-    }
-    if request.method == "OPTIONS" {
-        return options(out);
+        )?;
+        return Ok(false);
     }
 
-    let decoded = http::percent_decode(&request.target);
+    let decoded = http::percent_decode(&head.target);
     let target = decoded.trim_start_matches('/').trim_end_matches('/');
     let is_probe = probes::is_probe_name(probes::last_segment(target));
 
+    // `docs/engine-contract.md`, item 6, I2: a `PUT` of a real file is
+    // streamed straight to its spool file, never buffered whole, so it
+    // is handled before the body is read the way every other route's is.
+    if head.method == "PUT" && !is_probe {
+        return put_file(shared, bridge, target, head, reader, out);
+    }
+
+    let content_length = head.content_length().unwrap_or(0);
+    let body = match http::read_bounded_body(reader, content_length, http::MAX_BODY_LEN)? {
+        // B1: unchanged from I1: refused before a single byte of the
+        // (never sent, in a real client) body is read.
+        http::BodyOutcome::TooLarge => {
+            no_body(out, "413 Payload Too Large")?;
+            return Ok(false);
+        }
+        http::BodyOutcome::Body(body) => body,
+    };
+    let request = http::Request {
+        method: head.method.clone(),
+        headers: head.headers.clone(),
+        body,
+    };
+
+    if request.method == "OPTIONS" {
+        return options(out).map(|()| true);
+    }
+
+    // `docs/engine-contract.md`, item 6, I2: a `.ferry-part` name is 404
+    // on `GET` and `HEAD`, checked before the peer or the sidecar store,
+    // since Finder must never see a file still landing.
+    let is_partial = put::is_partial_name(probes::last_segment(target));
+
     match request.method.as_str() {
         "LOCK" => lock_verb(bridge, target, out),
-        "UNLOCK" => unlock_verb(bridge, request, target, out),
-        "PUT" if is_probe => put_sidecar(bridge, target, request, out),
-        "PROPFIND" if is_probe => propfind_probe(bridge, target, request, out),
+        "UNLOCK" => unlock_verb(bridge, &request, target, out),
+        "PUT" => put_sidecar(bridge, target, &request, out),
+        "GET" | "HEAD" if is_partial => no_body(out, "404 Not Found"),
+        "PROPFIND" if is_probe => propfind_probe(bridge, target, &request, out),
         "GET" | "HEAD" if is_probe => get_probe(bridge, target, &request.method, out),
-        "PROPFIND" => propfind(shared, bridge, target, request, out),
-        "GET" | "HEAD" => get_file(shared, bridge, target, &request.method, request, out),
-        // I2 builds these. `docs/engine-contract.md`, item 6.
-        "PUT" | "DELETE" | "MOVE" | "MKCOL" | "COPY" | "PROPPATCH" => no_body(out, "403 Forbidden"),
+        "PROPFIND" => propfind(shared, bridge, target, &request, out),
+        "GET" | "HEAD" => get_file(shared, bridge, target, &request.method, &request, out),
         _ => method_not_allowed(out),
     }
+    .map(|()| true)
 }
 
 fn no_body(out: &mut impl Write, status: &str) -> io::Result<()> {
@@ -272,8 +310,12 @@ fn unavailable(out: &mut impl Write) -> io::Result<()> {
 /// password. `bridge.user` is checked in the ordinary way; only the
 /// password compare needs to be constant-time, since the user name is
 /// fixed and not a secret.
-fn authorized(bridge: &Bridge, request: &http::Request) -> bool {
-    let Some(header) = request.header("authorization") else {
+///
+/// Takes the header's value directly, rather than a whole request, so it
+/// reads the same from the head alone (before any body is touched) as it
+/// does once a request is fully buffered.
+fn authorized(bridge: &Bridge, header: Option<&str>) -> bool {
+    let Some(header) = header else {
         return false;
     };
     let Some(encoded) = header.strip_prefix("Basic ") else {
@@ -293,7 +335,8 @@ fn authorized(bridge: &Bridge, request: &http::Request) -> bool {
 
 /// The methods this bridge answers at all, I1 and I2 together. Shared by
 /// `OPTIONS` and by a 405's `Allow` header (N3).
-const ALLOWED_METHODS: &str = "OPTIONS, GET, HEAD, PUT, PROPFIND, LOCK, UNLOCK";
+const ALLOWED_METHODS: &str =
+    "OPTIONS, GET, HEAD, PUT, PROPFIND, LOCK, UNLOCK";
 
 fn options(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
@@ -433,6 +476,176 @@ fn parent_of(path: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
+// I2: the write verbs. `docs/engine-contract.md`, item 6, "I2, saving".
+// ---------------------------------------------------------------------------
+
+/// What to answer when a write verb's RPC call to the peer fails, and
+/// whether the connection that produced it should be dropped rather than
+/// reused.
+///
+/// Unlike `map_rpc_error` (I1, read only), `OpError::PermissionDenied`
+/// here is exactly what it says: the receiver's writable flag on the root
+/// (item 5), not a stand-in for the peer going away. I1 never calls an
+/// operation the peer refuses for that reason; every I2 write verb can.
+fn map_write_error(error: &RpcError) -> (&'static str, bool) {
+    match error {
+        RpcError::Remote(OpError::NotFound) => ("404 Not Found", false),
+        RpcError::Remote(OpError::PermissionDenied) => ("403 Forbidden", false),
+        RpcError::Remote(OpError::AlreadyExists) => ("405 Method Not Allowed", false),
+        RpcError::Remote(OpError::NotADirectory | OpError::IsADirectory | OpError::NotEmpty) => {
+            ("409 Conflict", false)
+        }
+        // `docs/engine-contract.md`, item 6: "across roots it is 502",
+        // since `Roots::rename`'s own refusal (`Unsupported`) is the
+        // peer's structure, not this bridge's, to answer for.
+        RpcError::Remote(OpError::Unsupported) => ("502 Bad Gateway", false),
+        RpcError::Remote(OpError::RangeTooLarge | OpError::Internal) => {
+            ("500 Internal Server Error", false)
+        }
+        // Anything that is not an answer from the peer is the connection
+        // itself failing, the same reasoning `map_rpc_error` carries for
+        // I1: the peer stopped (item 16c), the cable went, or the stream
+        // broke.
+        _ => ("503 Service Unavailable", true),
+    }
+}
+
+/// `PUT` of a real file. `docs/engine-contract.md`, item 6, I2: the body
+/// is spooled to disk in pieces as it arrives, never held whole in
+/// memory. A new destination lands the push way
+/// ([`put::land_new`]); an existing one lands the chunks that differ, in
+/// place ([`put::land_delta`]), which is the delta on save.
+fn put_file(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    target: &str,
+    head: &http::RequestHead,
+    reader: &mut impl BufRead,
+    out: &mut impl Write,
+) -> io::Result<bool> {
+    let Some(content_length) = head.content_length() else {
+        // No declared length at all: there is nothing safe to drain
+        // before the next request, so this closes rather than guessing,
+        // the same reasoning `BodyTooLarge` already carries in `respond`.
+        no_body(out, "411 Length Required")?;
+        return Ok(false);
+    };
+    if content_length > http::MAX_PUT_BODY_LEN {
+        // A declared length is known here, but paying to drain up to 32
+        // GiB just to keep a connection alive is not worth it either;
+        // Finder reconnects, the same as after a 413 anywhere else in
+        // this bridge.
+        no_body(out, "413 Payload Too Large")?;
+        return Ok(false);
+    }
+
+    // From here on, `content_length` is known and within bounds, so a
+    // refusal drains the declared body (in bounded pieces, to
+    // `io::sink()`, never held in memory) and keeps the connection open,
+    // the way Finder expects across an ordinary `LOCK`-`PUT`-`UNLOCK`
+    // sequence on one connection.
+    macro_rules! refuse {
+        ($status:expr) => {{
+            http::copy_body(reader, content_length, &mut io::sink())?;
+            no_body(out, $status)?;
+            return Ok(true);
+        }};
+    }
+
+    let Ok(path) = RemotePath::parse(target) else {
+        refuse!("404 Not Found");
+    };
+    if path.is_root() {
+        refuse!("404 Not Found");
+    }
+    let Some(spool_path) = put::new_spool_path(shared, &bridge.device_key_hex) else {
+        refuse!("500 Internal Server Error");
+    };
+
+    // A short body or an I/O failure here propagates as an `Err`, closing
+    // the connection: the same reasoning `stream_body`'s own S2 carries
+    // for a `GET`, in the write direction. Everything from here on
+    // answers a real response instead, since the body has, by this
+    // point, been received in full and correctly.
+    put::spool_body(reader, content_length, &spool_path)?;
+
+    let Some((fs, leaf, manifest)) = put::open_spool(&spool_path) else {
+        let _ = std::fs::remove_file(&spool_path);
+        return no_body(out, "500 Internal Server Error").map(|()| true);
+    };
+    let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        let _ = std::fs::remove_file(&spool_path);
+        return unavailable(out).map(|()| true);
+    };
+    let landing = put_landing(&mut borrowed, &path, &fs, &leaf, &manifest);
+    let _ = std::fs::remove_file(&spool_path);
+
+    match landing {
+        Ok(kind) => {
+            bridge.cache.invalidate(parent_of(target));
+            record_this(
+                shared,
+                &bridge.device_key_hex,
+                AccessVerb::Write,
+                path.as_str(),
+                Some(manifest.length()),
+                None,
+                None,
+            );
+            let status = match kind {
+                Landing::New => "201 Created",
+                Landing::Delta => "204 No Content",
+            };
+            no_body(out, status).map(|()| true)
+        }
+        // A `PUT` onto an existing folder's path fits no verb this
+        // bridge otherwise answers with 409, so it is named here rather
+        // than folded into `map_write_error`'s generic mapping.
+        Err(RpcError::Remote(OpError::IsADirectory)) => no_body(out, "409 Conflict").map(|()| true),
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            no_body(out, status).map(|()| true)
+        }
+    }
+}
+
+/// Which of `put.rs`'s two landing rules [`put_landing`] used, so
+/// `put_file` answers 201 or 204.
+enum Landing {
+    New,
+    Delta,
+}
+
+/// Stats `destination` to decide which landing rule applies, then runs
+/// it. One function so `put_file` never holds two overlapping mutable
+/// borrows of `borrowed`'s connection at once.
+fn put_landing(
+    borrowed: &mut pool::Borrowed<'_>,
+    destination: &RemotePath,
+    fs: &LocalFs,
+    leaf: &RemotePath,
+    manifest: &Manifest,
+) -> Result<Landing, RpcError> {
+    match borrowed.client().stat(destination) {
+        Ok(entry) if entry.kind == FileKind::Directory => {
+            Err(RpcError::Remote(OpError::IsADirectory))
+        }
+        Ok(_) => {
+            put::land_delta(borrowed.client(), destination, fs, leaf, manifest)?;
+            Ok(Landing::Delta)
+        }
+        Err(RpcError::Remote(OpError::NotFound)) => {
+            put::land_new(borrowed.client(), destination, fs, leaf, manifest)?;
+            Ok(Landing::New)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Real paths: served through the pool.
 // ---------------------------------------------------------------------------
 
@@ -514,7 +727,9 @@ fn propfind(
             // A real file that happens to share a probe name is still
             // never shown: those names belong to the sidecar store in
             // this bridge's model. `docs/engine-contract.md`, item 6.
-            if probes::is_probe_name(&child.name) {
+            // Neither is a landing file's own `.ferry-part` name, item 6,
+            // I2: Finder must never see one.
+            if probes::is_probe_name(&child.name) || put::is_partial_name(&child.name) {
                 continue;
             }
             let child_path = if target.is_empty() {
