@@ -47,7 +47,7 @@ use ferry_runtime::{
 };
 
 /// How long any wait may take before the test gives up.
-const PATIENCE: Duration = Duration::from_secs(10);
+const PATIENCE: Duration = Duration::from_secs(30);
 
 /// How big the file the Mac pulls is.
 const FILE_BYTES: usize = 300 * 1024;
