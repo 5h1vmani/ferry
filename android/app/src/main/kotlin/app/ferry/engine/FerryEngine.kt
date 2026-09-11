@@ -56,6 +56,11 @@ object FerryEngine {
     private const val KEY_FILE_NAME = "device.key"
     private const val KEY_PART_BYTES = 32
 
+    // Not an engine code: there is no entry for a phone-side rename
+    // failure in the generated table, so this falls back to the unknown
+    // code words, which is a fault the person cannot fix by retrying.
+    private const val KEY_RENAME_FAILED_CODE = "Android::KeyRenameFailed"
+
     // What the peer sees as the first segment of every path it asks for.
     // The phone serves one root, and this is the name a person recognises.
     private const val PHONE_ROOT_NAME = "Internal storage"
@@ -436,7 +441,13 @@ object FerryEngine {
         // through leaves the old file whole rather than half a key.
         val temporary = File(context.filesDir, "$KEY_FILE_NAME.new")
         temporary.writeBytes(whole)
-        temporary.renameTo(file)
+        if (!temporary.renameTo(file)) {
+            // A failed rename here means the next launch finds no
+            // device.key, generates another, and every paired Mac stops
+            // recognising this phone. create()'s catch reports this the
+            // same way it reports any other failure to build the engine.
+            throw FerryException.Failed(KEY_RENAME_FAILED_CODE, null)
+        }
         return fresh
     }
 }
