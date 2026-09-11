@@ -61,6 +61,12 @@
     <string name="presence_stop">Stop advertising</string>
     <string name="cd_presence_on">Advertising, on</string>
     <string name="cd_presence_off">Not advertising, off. %1$s</string>
+    <!-- Shared by PresenceControl, the reachable notification, and the
+         Networks section of Settings: advertising is on, and reachability
+         is quiet because this network is not trusted.
+         docs/engine-contract.md, item 18. -->
+    <string name="presence_quiet_on_network">Ferry is quiet on this network.</string>
+    <string name="cd_presence_quiet">Advertising, on. %1$s</string>
 
     <!-- Sizes and durations, for the numbers the engine reports. Units are
          decimal, the way a disk and a network count them. -->
@@ -256,4 +262,16 @@
     <!-- An app can ask for an open mode Ferry does not serve. The mode is
          the platform's own short string, so it is named as it arrives. -->
     <string name="documents_open_mode_unsupported">The file was not opened. Ferry does not serve the open mode %1$s.</string>
+    <string name="settings_location_label">Location</string>
+
+    <!-- The Networks section, docs/engine-contract.md item 18. The current
+         network can be trusted only once it is known; each trusted name
+         can be removed on its own. -->
+    <string name="settings_group_networks">Networks</string>
+    <string name="settings_network_current_label">Current network</string>
+    <string name="settings_network_trust">Trust this network</string>
+    <string name="action_remove">Remove</string>
+    <!-- The unknown case: distinct from presence_quiet_on_network because
+         the cause is different and this line offers a fix. -->
+    <string name="settings_network_unknown_name">Ferry cannot read the network name.</string>
 </resources>

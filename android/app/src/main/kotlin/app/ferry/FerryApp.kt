@@ -109,6 +109,7 @@ fun FerryApp(
     val notificationsAllowed by Permissions.notifications.collectAsState()
     val cameraGranted by Permissions.camera.collectAsState()
     val cameraRefused by Permissions.cameraRefused.collectAsState()
+    val locationGranted by Permissions.location.collectAsState()
     val firstRunDone by Permissions.firstRunDone.collectAsState()
 
     val engineDevices by FerryEngine.devices.collectAsState()
@@ -117,6 +118,9 @@ fun FerryApp(
     val engineAccessLog by FerryEngine.accessLog.collectAsState()
     val engineError by FerryEngine.error.collectAsState()
     val isAdvertising by FerryEngine.reachable.collectAsState()
+    val currentNetwork by FerryEngine.network.collectAsState()
+    val wifiPresence by FerryEngine.wifiPresence.collectAsState()
+    val trustedNetworks by FerryEngine.trustedNetworks.collectAsState()
 
     val devices = engineDevices.map { it.toUi() }
     val accessDays = accessDaysOf(engineAccessLog.map { it.toUi() })
@@ -161,6 +165,7 @@ fun FerryApp(
                     )
                 },
                 isAdvertising = isAdvertising,
+                wifiPresence = wifiPresence,
                 error = errorWords,
                 errorActionLabel = errorActionLabel,
                 onErrorAction = errorAction,
@@ -208,9 +213,19 @@ fun FerryApp(
                 devices = devices,
                 allFilesAccessGranted = allFilesAccess,
                 notificationsAllowed = notificationsAllowed,
+                locationGranted = locationGranted,
+                currentNetworkName = currentNetwork,
+                trustedNetworks = trustedNetworks,
+                isAdvertising = isAdvertising,
+                wifiPresence = wifiPresence,
                 onOpenAllFilesAccess = onOpenAllFilesAccess,
                 onOpenNotificationSettings = onOpenNotificationSettings,
+                onOpenAppSettings = onOpenAppSettings,
                 onOpenAccessLog = { goTo(Screen.AccessLog) },
+                onTrustCurrentNetwork = {
+                    currentNetwork?.let { FerryEngine.trustNetwork(it) }
+                },
+                onForgetNetwork = { name -> FerryEngine.forgetNetwork(name) },
                 onForget = { device ->
                     FerryEngine.forget(device.id)
                     goTo(Screen.Devices)

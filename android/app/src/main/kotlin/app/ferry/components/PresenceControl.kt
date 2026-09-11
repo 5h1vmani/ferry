@@ -36,6 +36,10 @@ import app.ferry.R
 @Composable
 fun PresenceControl(
     isAdvertising: Boolean,
+    // True while this device advertises, browses, and accepts over Wi-Fi.
+    // Meaningless while isAdvertising is false: reachable being off is
+    // already the whole story then. docs/engine-contract.md item 18.
+    wifiPresence: Boolean,
     onChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -47,25 +51,39 @@ fun PresenceControl(
     // Stated because the failure it causes is silent: Wi-Fi transfers stop
     // working and a person who cannot see why has no way to guess.
     val consequence = stringResource(R.string.presence_consequence)
-    val description = if (isAdvertising) {
-        stringResource(R.string.cd_presence_on)
-    } else {
-        stringResource(R.string.cd_presence_off, consequence)
+    // Advertising is on, but this network is not trusted, so nothing is
+    // actually reachable on it. Shared with the reachable notification's
+    // own text, so both surfaces say the same thing about the same state.
+    val quiet = stringResource(R.string.presence_quiet_on_network)
+    val description = when {
+        !isAdvertising -> stringResource(R.string.cd_presence_off, consequence)
+        !wifiPresence -> stringResource(R.string.cd_presence_quiet, quiet)
+        else -> stringResource(R.string.cd_presence_on)
     }
 
     ListItem(
         modifier = modifier.clearAndSetSemantics { contentDescription = description },
         headlineContent = { Text(text = label, style = FerryFont.body()) },
-        supportingContent = if (isAdvertising) {
-            null
-        } else {
-            {
-                Text(
-                    text = consequence,
-                    style = FerryFont.caption(),
-                    color = FerryColor.textSecondary(),
-                )
+        supportingContent = when {
+            !isAdvertising -> {
+                {
+                    Text(
+                        text = consequence,
+                        style = FerryFont.caption(),
+                        color = FerryColor.textSecondary(),
+                    )
+                }
             }
+            !wifiPresence -> {
+                {
+                    Text(
+                        text = quiet,
+                        style = FerryFont.caption(),
+                        color = FerryColor.textSecondary(),
+                    )
+                }
+            }
+            else -> null
         },
         leadingContent = {
             Icon(

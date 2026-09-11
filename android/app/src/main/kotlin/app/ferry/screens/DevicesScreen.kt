@@ -58,6 +58,7 @@ fun DevicesScreen(
     // and does not know whether a row is a batch or a lone transfer.
     groupsFor: (DeviceInfo) -> List<TransferGroup>,
     isAdvertising: Boolean,
+    wifiPresence: Boolean,
     error: ThreePartError?,
     errorActionLabel: String?,
     onErrorAction: (() -> Unit)?,
@@ -90,6 +91,7 @@ fun DevicesScreen(
         Column(modifier = Modifier.padding(padding)) {
             PresenceControl(
                 isAdvertising = isAdvertising,
+                wifiPresence = wifiPresence,
                 onChange = onSetAdvertising,
             )
             HorizontalDivider(color = FerryColor.border())

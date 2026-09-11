@@ -30,6 +30,7 @@ import app.ferry.FerrySpace
 import app.ferry.R
 import app.ferry.formatDate
 import app.ferry.model.DeviceInfo
+import app.ferry.model.isCurrentNetworkTrusted
 
 // Settings. docs-v2/ia.md, Settings, the phone.
 //
@@ -37,10 +38,11 @@ import app.ferry.model.DeviceInfo
 // preferences; it is a mode with a consequence, and it now lives where
 // presence lives — pinned on Devices and in the notification.
 //
-// What is here instead: the two facts about this phone, the two permissions
-// Android owns, the access log, and the paired device with Forget. Forget
-// is here rather than on Devices because a phone has one Mac and no device
-// detail screen, so this is that screen's four facts, folded in.
+// What is here instead: the two facts about this phone, the three
+// permissions Android owns, the Networks section, the access log, and the
+// paired device with Forget. Forget is here rather than on Devices because
+// a phone has one Mac and no device detail screen, so this is that
+// screen's four facts, folded in.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -49,9 +51,19 @@ fun SettingsScreen(
     devices: List<DeviceInfo>,
     allFilesAccessGranted: Boolean,
     notificationsAllowed: Boolean,
+    locationGranted: Boolean,
+    // The Networks section, docs/engine-contract.md item 18. Null when the
+    // network cannot be read: Wi-Fi off, location refused, or unknown.
+    currentNetworkName: String?,
+    trustedNetworks: List<String>,
+    isAdvertising: Boolean,
+    wifiPresence: Boolean,
     onOpenAllFilesAccess: () -> Unit,
     onOpenNotificationSettings: () -> Unit,
+    onOpenAppSettings: () -> Unit,
     onOpenAccessLog: () -> Unit,
+    onTrustCurrentNetwork: () -> Unit,
+    onForgetNetwork: (String) -> Unit,
     onForget: (DeviceInfo) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -110,6 +122,23 @@ fun SettingsScreen(
                 grantedWord = stringResource(R.string.settings_status_allowed),
                 notGrantedWord = stringResource(R.string.settings_status_not_allowed),
                 onClick = onOpenNotificationSettings,
+            )
+            Permission(
+                label = stringResource(R.string.settings_location_label),
+                granted = locationGranted,
+                grantedWord = stringResource(R.string.settings_status_granted),
+                notGrantedWord = stringResource(R.string.settings_status_not_granted),
+                onClick = onOpenAppSettings,
+            )
+
+            NetworksSection(
+                currentNetworkName = currentNetworkName,
+                trustedNetworks = trustedNetworks,
+                isAdvertising = isAdvertising,
+                wifiPresence = wifiPresence,
+                onTrustCurrentNetwork = onTrustCurrentNetwork,
+                onForgetNetwork = onForgetNetwork,
+                onOpenAppSettings = onOpenAppSettings,
             )
 
             GroupHeader(stringResource(R.string.settings_group_record))
@@ -207,6 +236,106 @@ private fun Fact(
         },
         colors = ListItemDefaults.colors(containerColor = FerryColor.surface()),
     )
+}
+
+// The Networks section. docs/engine-contract.md item 18, docs-v2/ia.md
+// Settings, the phone.
+//
+// The current network row offers Trust only while it is known and not
+// already trusted: an unknown network cannot be trusted by name, and a
+// trusted one has nothing left to offer here. The explanatory line at the
+// bottom appears only while advertising is on and Wi-Fi presence is off,
+// because that is the one state a person cannot otherwise explain to
+// themselves — presence being off while not advertising needs no further
+// word, that is what the switch above already says.
+@Composable
+private fun NetworksSection(
+    currentNetworkName: String?,
+    trustedNetworks: List<String>,
+    isAdvertising: Boolean,
+    wifiPresence: Boolean,
+    onTrustCurrentNetwork: () -> Unit,
+    onForgetNetwork: (String) -> Unit,
+    onOpenAppSettings: () -> Unit,
+) {
+    GroupHeader(stringResource(R.string.settings_group_networks))
+
+    if (currentNetworkName != null) {
+        val trusted = isCurrentNetworkTrusted(currentNetworkName, trustedNetworks)
+        ListItem(
+            headlineContent = {
+                Text(
+                    text = stringResource(R.string.settings_network_current_label),
+                    style = FerryFont.body(),
+                )
+            },
+            supportingContent = {
+                Text(
+                    text = currentNetworkName,
+                    style = FerryFont.caption(),
+                    color = FerryColor.textSecondary(),
+                )
+            },
+            trailingContent = if (trusted) {
+                null
+            } else {
+                {
+                    TextButton(onClick = onTrustCurrentNetwork) {
+                        Text(stringResource(R.string.settings_network_trust))
+                    }
+                }
+            },
+            colors = ListItemDefaults.colors(containerColor = FerryColor.surface()),
+        )
+    }
+
+    trustedNetworks.forEach { name ->
+        ListItem(
+            headlineContent = { Text(text = name, style = FerryFont.body()) },
+            trailingContent = {
+                TextButton(onClick = { onForgetNetwork(name) }) {
+                    Text(
+                        text = stringResource(R.string.action_remove),
+                        color = FerryColor.text(),
+                    )
+                }
+            },
+            colors = ListItemDefaults.colors(containerColor = FerryColor.surface()),
+        )
+    }
+
+    if (isAdvertising && !wifiPresence) {
+        if (currentNetworkName == null) {
+            ListItem(
+                headlineContent = {
+                    Text(
+                        text = stringResource(R.string.settings_network_unknown_name),
+                        style = FerryFont.body(),
+                    )
+                },
+                trailingContent = {
+                    IconButton(onClick = onOpenAppSettings) {
+                        Icon(
+                            imageVector = Icons.Outlined.OpenInNew,
+                            contentDescription = stringResource(R.string.action_open_settings),
+                            tint = FerryColor.textSecondary(),
+                        )
+                    }
+                },
+                colors = ListItemDefaults.colors(containerColor = FerryColor.surface()),
+            )
+        } else {
+            ListItem(
+                headlineContent = {
+                    Text(
+                        text = stringResource(R.string.presence_quiet_on_network),
+                        style = FerryFont.body(),
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = FerryColor.surface()),
+            )
+        }
+    }
 }
 
 // One permission Android owns, with the word for its state and a way to the

@@ -308,6 +308,13 @@ fun pairingStepOf(
     }
 }
 
+// Whether the phone's current Wi-Fi network is already in the trusted
+// list. A null name is never trusted: an unknown network cannot be told
+// apart from the list, so Settings offers no "Trust this network" control
+// for it. docs/engine-contract.md, item 18.
+fun isCurrentNetworkTrusted(currentNetworkName: String?, trustedNetworks: List<String>): Boolean =
+    currentNetworkName != null && trustedNetworks.contains(currentNetworkName)
+
 // Bytes per second as whole megabytes per second. A speed under half a
 // megabyte reads as zero, which is what the number is.
 fun megabytesPerSecond(bytesPerSec: Long): Int =
