@@ -13,3 +13,9 @@ pub(crate) use browse::{propfind, propfind_probe, proppatch_verb};
 mod read;
 
 pub(crate) use read::{get_file, get_probe};
+
+mod write;
+
+pub(crate) use write::{
+    copy_verb, delete_verb, map_write_error, mkcol_verb, move_verb, put_file, put_sidecar,
+};
