@@ -124,6 +124,12 @@ impl MountRegistry {
             return Ok(mount.endpoint.clone());
         }
 
+        // A fresh start only: a bridge already running for this device may
+        // hold live spool files of its own, which this must never touch.
+        // Anything still here is left over from a crash or an ungraceful
+        // quit before this device's bridge last stopped.
+        put::sweep_spool(shared, device_key_hex);
+
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|error| failed_with("Runtime::MountFailed", &error.to_string()))?;
         let port = listener
