@@ -26,6 +26,12 @@ ferry-core = { path = "../ferry-core" }
 # this is not a new source of randomness in the workspace, only a direct
 # dependency edge to reach the one this crate already trusts.
 getrandom = "0.3"
+# Used only by `engine::shared::DirLock`, for `flock` without unsafe code.
+# The standard library's file lock is not supported on the Android target,
+# so the engine calls the one system call both platforms share. Not a new
+# crate in the workspace: `ferry-core` already pulls it in through
+# `cap-std`, which opens the shared roots with it.
+rustix = { version = "1", features = ["fs"] }
 # Used only by `engine::local_wifi_addresses`, to build a QR pairing offer:
 # the Mac has to state its own addresses, and unlike the phone it never
 # advertises over mDNS, so there is no existing list to read them from. This

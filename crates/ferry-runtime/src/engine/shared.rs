@@ -370,7 +370,7 @@ impl DirLock {
             .truncate(false)
             .open(path)
             .map_err(|_| bad_config("The lock file could not be opened."))?;
-        match file.try_lock() {
+        match try_lock_exclusive(&file) {
             Ok(()) => {
                 // Clear whatever an earlier holder left, then write this
                 // process's identifier for a person to read. Nothing
@@ -386,12 +386,10 @@ impl DirLock {
                     held: AtomicBool::new(true),
                 })
             }
-            Err(std::fs::TryLockError::WouldBlock) => Err(bad_config(
+            Err(LockFailure::Held) => Err(bad_config(
                 "Another copy of Ferry is running. Quit it and try again.",
             )),
-            Err(std::fs::TryLockError::Error(_)) => {
-                Err(bad_config("The lock file could not be locked."))
-            }
+            Err(LockFailure::Other) => Err(bad_config("The lock file could not be locked.")),
         }
     }
 
@@ -400,9 +398,53 @@ impl DirLock {
         if self.held.swap(false, Ordering::SeqCst) {
             // An unlock that fails leaves nothing worse than closing the
             // file does on its own: the kernel drops the lock either way.
-            drop(self.file.unlock());
+            drop(unlock(&self.file));
         }
     }
+}
+
+/// Why an exclusive lock was not taken.
+enum LockFailure {
+    /// Another process holds it.
+    Held,
+    /// The file system or the platform refused the lock itself.
+    Other,
+}
+
+/// Take an exclusive, non-blocking advisory lock on `file`.
+///
+/// This calls `flock` through `rustix` instead of
+/// `std::fs::File::try_lock`. The standard library's lock is not supported
+/// on the Android target and reports an error there for every file, which
+/// made every `Engine::new` on the phone fail on 11 September 2026.
+/// `flock` is one system call on macOS, Linux, and Android, and the kernel
+/// releases it when the process ends, however it ends.
+#[cfg(unix)]
+fn try_lock_exclusive(file: &std::fs::File) -> Result<(), LockFailure> {
+    match rustix::fs::flock(file, rustix::fs::FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(()),
+        Err(rustix::io::Errno::WOULDBLOCK) => Err(LockFailure::Held),
+        Err(_) => Err(LockFailure::Other),
+    }
+}
+
+#[cfg(unix)]
+fn unlock(file: &std::fs::File) -> std::io::Result<()> {
+    rustix::fs::flock(file, rustix::fs::FlockOperation::Unlock).map_err(std::io::Error::from)
+}
+
+#[cfg(not(unix))]
+fn try_lock_exclusive(file: &std::fs::File) -> Result<(), LockFailure> {
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(std::fs::TryLockError::WouldBlock) => Err(LockFailure::Held),
+        Err(std::fs::TryLockError::Error(_)) => Err(LockFailure::Other),
+    }
+}
+
+#[cfg(not(unix))]
+fn unlock(file: &std::fs::File) -> std::io::Result<()> {
+    file.unlock()
 }
 
 impl Drop for DirLock {
