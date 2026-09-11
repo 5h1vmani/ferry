@@ -8,7 +8,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Job 5: invisible to strangers. Android 13 and later require this to
-         show the "reachable" notification the foreground service posts. -->
+         show the notification the foreground service posts. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Job 1: use the phone's files like any other folder. Ferry cannot
@@ -26,6 +26,19 @@
     <!-- Job 1: use the phone's files like any other folder. mDNS discovery,
          which finds the Mac on Wi-Fi, needs multicast. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
+    <!-- Job 4: trust a device once. Reading the Mac's QR code is one of the
+         two ways to pair, and it is the quicker one when both devices are
+         in reach. Asked for at the moment a person taps to scan, never at
+         first run, so a person who pairs by code is never asked at all. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- A camera is not required to install Ferry. Pairing by code needs
+         none, and every other job works without one, so a phone with a
+         broken or absent camera is not excluded from the Play listing. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:name=".FerryApplication"

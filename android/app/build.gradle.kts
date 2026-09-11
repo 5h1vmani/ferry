@@ -93,6 +93,16 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.material.icons.extended)
+    // The camera, for pairing by scan. One screen reads it, and CameraX is
+    // the platform's own answer, so nothing here wraps it.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    // Reads the QR code out of a camera frame. The bundled model, so the
+    // first pairing of a new phone does not depend on the network — the one
+    // moment Ferry may have none. See the note in libs.versions.toml.
+    implementation(libs.mlkit.barcode.scanning)
     // The generated Kotlin bindings in uniffi/ferry_runtime load
     // libferry_runtime.so through JNA. The Android build of JNA ships as an
     // aar, so it is asked for by that classifier.

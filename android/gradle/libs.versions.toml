@@ -23,6 +23,24 @@
 #                  10 September 2026. Used for Dispatchers.IO. This artifact
 #                  ships as a `jar` with a Gradle module file, not as an
 #                  `aar`, so it carries no classifier.
+#
+# Added for QR pairing. Both are needed by one screen, and neither has a
+# version in the Compose BOM, so both are pinned here:
+#   camera         androidx.camera, for the preview and the frame analyser.
+#                  Nothing else reads the camera, and CameraX is the
+#                  platform's own answer, so no wrapper is written.
+#   mlkitBarcode   com.google.mlkit:barcode-scanning, the bundled build. The
+#                  unbundled `play-services-mlkit-barcode-scanning` is
+#                  smaller but downloads its model on first use, which would
+#                  make the first pairing of a new phone depend on the
+#                  network — the one moment Ferry may have none. The bundled
+#                  model is about 2.5 MB of APK and always works.
+#
+# Not used: com.google.android.gms:play-services-code-scanner. It needs no
+# camera permission, which is tempting, but it opens its own full-screen
+# Play Services UI. That UI cannot carry "Use a pairing code instead", and
+# the alternative has to be in reach at the moment the camera fails. It also
+# requires Play Services, which the engine does not.
 
 [versions]
 agp = "9.4.0"
@@ -37,6 +55,8 @@ activityCompose = "1.13.0"
 coreKtx = "1.18.0"
 jna = "5.19.1"
 coroutines = "1.11.0"
+camera = "1.5.2"
+mlkitBarcode = "17.3.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -48,6 +68,11 @@ androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
+androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camera" }
+androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camera" }
+androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camera" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camera" }
+mlkit-barcode-scanning = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkitBarcode" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 
