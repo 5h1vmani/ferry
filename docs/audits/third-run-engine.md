@@ -19,6 +19,58 @@ Count: ten findings. Five high, two medium, three low.
 | 9 | 19 | `crates/ferry-runtime/src/engine.rs:1903` to `:2120` | Every one of `stat`, `read_at`, `write_at`, `truncate`, `mkdir`, `delete` and `rename` puts `record_this` after the `?` on `borrowed.call`. A call the peer refuses returns before the log is touched. `list` at `:1858` does the same. | The phone's access log shows only the calls that worked. A refused write or a rejected delete leaves no line at all. | Give `EntryFields` an outcome field and record one entry on both paths. |
 | 10 | 19 | `crates/ferry-runtime/src/dav/mod.rs` `MountRegistry::start` and `stop_all` | `stop_all` copies the keys, then stops each one. `start` has no check on `Shared::stopping`. A `mount_start` call that lands after the key copy inserts a mount that `Engine::stop` never joins. | One loopback port and two threads stay alive after `stop` returned, each holding an `Arc<Shared>`. No file is served, because `transfer::dial` and `StopAware` both refuse once `stopping` is set. | Refuse `MountRegistry::start` when `Shared::stopping` is true. |
 
+## Fix pass
+
+Date: 11 September 2026. One commit per finding, in finding order.
+
+Fixed: 1, 2, 3, 4, 5, 6, 7, 8 and 10. Three of them took a rule the
+orchestrator chose rather than the one the auditor proposed, and each of
+those rules is now in `docs/engine-contract.md`.
+
+- Finding 4. A full `GET` is not truncated. A response whose body comes
+  entirely from the head cache may take its size and time from the listing
+  cache and touch the wire for nothing. A response that needs any byte from
+  the wire stats on the wire first and uses the head only when the fresh
+  size and time match the head's key. Otherwise it streams the whole body
+  from the wire, as before item 17. Item 17's "Serving" paragraph holds the
+  rule.
+- Findings 5 and 6. `forget` closes the device's pool: it shuts every idle
+  connection down and marks the pool closed, so `take` and `take_dialing`
+  both refuse with `Runtime::NotReachable`. `pool_for` makes no pool for a
+  key that is not paired, and holds the pools lock across that check.
+  `forget` holds the same lock across its removal, its close, and the peer
+  list write. Item 19's "One pool" paragraph holds both.
+- Finding 8. `apply_presence` returns at once when the engine is stopped,
+  and `stop` turns the advertiser and the browse flag off itself. The state
+  rule `browse_allowed` is false for a stopped engine, so `status()` reports
+  no presence for one. Item 18's "Applying it" paragraph holds the rule.
+
+One thing this pass did not write. `Engine::trust_network`'s own doc
+comment still names three refusals and not the control character. uniffi
+copies a public doc comment into the generated bindings and into a checksum
+both apps check, so changing it would change generated files this pass must
+leave alone. The rule is in item 18 of the contract and in
+`networks::TrustedNetworks::add`, and a comment at the call site says why.
+
+Not fixed: 9, by decision. The access log records what happened, and a
+refused call did not happen. An outcome field would change the log format
+and both apps' screens, which is a cost the finding does not earn. Item
+19's paragraph after the code block says a refused call records nothing.
+
+Findings with no test, and why:
+
+- 1, 6 and 7 are a race or a timing. A test that proves the fix would have
+  to sleep and hope, which `docs/agent-runs.md` rule 8 refuses. Audit 2
+  finding 13 was accepted on the same ground.
+- 9 has no fix, so there is nothing to test.
+
+Every other finding has a test that failed before its fix. Findings 2, 8
+and 10 are in `tests/item_18_networks.rs` and `tests/item_19_remote_ops.rs`,
+finding 4 is in `tests/item_17_prefetch.rs`, and finding 5 is in
+`tests/item_19_remote_ops.rs`. Finding 3 is proved by two unit tests inside
+`src/dav/server.rs`: the read loop moved behind a closure, so a reader that
+answers one byte per call drives it without a peer.
+
 ## Found safe
 
 - The lock file works as written. `stop` calls `dir_lock.release()` at `engine.rs:1048`, so a second `Engine::new` in the same process takes the lock.

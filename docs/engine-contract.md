@@ -937,7 +937,9 @@ fn rename(&self, device_key_hex: String, from: String, to: String) -> Result<(),
 Every call borrows from the pool, maps wire errors exactly as `list`
 and the bridge map them today, and records itself through `record_this`
 with its verb, `bytes` for a read or a write, so the phone's own access
-log shows what it did to the Mac, as the Mac's log shows the bridge.
+log shows what it did to the Mac, as the Mac's log shows the bridge. A
+call the peer refuses records nothing: the log says what happened, and a
+refused call did not happen.
 
 **The provider.** `android/app/src/main/kotlin/app/ferry/provider/
 FerryDocumentsProvider.kt`, declared in the manifest with the

@@ -1193,8 +1193,14 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Runtime::NetworkName` for an empty name, a name over 32
-    /// bytes, a name holding a control character, or a 33rd name. Returns
-    /// `TransferError::Local` when local storage refuses the write.
+    /// bytes, or a 33rd name. Returns `TransferError::Local` when local
+    /// storage refuses the write.
+    // A name holding a control character is refused too, with the same row.
+    // That sentence is deliberately not part of the public documentation:
+    // uniffi copies a public doc comment into the generated bindings and
+    // into the checksum both apps check, so adding it would change files
+    // this fix pass must leave alone. `networks::TrustedNetworks::add` and
+    // `docs/engine-contract.md`, item 18, both carry the rule.
     pub fn trust_network(&self, name: String) -> Result<(), FerryError> {
         let changed = save_networks(&self.shared, |list| list.add(&name))?;
         if changed {
