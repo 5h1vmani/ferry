@@ -364,11 +364,15 @@ calling side; the folder entry covers it. `set_mtime` is not logged: it
 always follows a write that is.
 
 **Storage.** `data_dir/access_log/<YYYYMMDD>`, one file per UTC day, a
-version byte first, the same encoder as the peer store. A day holds at
-most 10,000 entries; after that the day records nothing more. Files older
-than 30 days are deleted at start and once an hour. `forget` keeps the
-device's entries: a log that erases the record of the device you just
-distrusted is not a log.
+version byte first, the same encoder as the peer store. Each device holds
+at most 10,000 entries on a day; after that, nothing more is recorded for
+that device until the next day, while every other device's entries keep
+landing. `docs/audits/fable-security.md`, finding 2: the cap counted every
+device together at first, so one device's 10,000 cheap calls blinded the
+log for every device for the rest of the day. Files older than 30 days
+are deleted at start and once an hour. `forget` keeps the device's
+entries: a log that erases the record of the device you just distrusted
+is not a log.
 
 **Thirty days.** Stated on screen, because a log that quietly forgets is
 worse than no log.

@@ -22,12 +22,17 @@
 //! One file per UTC day, at `<data_dir>/access_log/<YYYYMMDD>`, written by
 //! opening in append mode and writing one framed entry. The whole file is
 //! never rewritten to add an entry, unlike `record.rs` and `ferry-core`'s
-//! `peers.rs`, which hold one value that changes as a whole. A day holds at
-//! most 10,000 entries; [`AccessLog::append`] returns `Ok(false)` and writes
-//! nothing once a day is full. An entry's id is `"<day>-<sequence>"`, where
-//! `<sequence>` counts from 1 within the day and is never stored: it is
-//! always just the entry's position among the whole entries in its day
-//! file, so it is stable across restarts for free.
+//! `peers.rs`, which hold one value that changes as a whole. Each device
+//! holds at most 10,000 entries in a day; [`AccessLog::append`] returns
+//! `Ok(false)` and writes nothing once that device's own count is full,
+//! while every other device's entries keep landing. `docs/audits/fable-security.md`,
+//! finding 2: the cap counted every device together at first, so one device
+//! making 10,000 cheap calls in a few seconds blinded the log for the rest
+//! of the day, for every device. An entry's id is `"<day>-<sequence>"`,
+//! where `<sequence>` counts from 1 within the day and is never stored: it
+//! is always just the entry's position among the whole entries in its day
+//! file, whichever device wrote each one, so it is stable across restarts
+//! for free.
 //!
 //! # Rolling up
 //!
@@ -111,7 +116,7 @@ const MAX_ENTRY_FRAME_BYTES: usize = 2048;
 /// frame's four byte length prefix plus its content, at the largest content
 /// [`decode_day_file`] will ever accept. An undecodable remainder longer
 /// than this is not a torn tail; it is damage somewhere the file's own
-/// framing cannot explain, and [`AccessLog::next_sequence`] treats it
+/// framing cannot explain, and [`AccessLog::load_day_state`] treats it
 /// differently. See the module documentation, "Framing".
 const MAX_TORN_TAIL_BYTES: usize = MAX_ENTRY_FRAME_BYTES + 4;
 
@@ -475,6 +480,20 @@ fn decode_day_file(bytes: &[u8]) -> Result<(Vec<StoredEntry>, usize), AccessLogE
     Ok((out, good_len))
 }
 
+/// How many of `entries` belong to each device, by `device_key_hex`.
+///
+/// `docs/audits/fable-security.md`, finding 2: [`AccessLog::load_day_state`]
+/// calls this to seed [`DayState::entries_by_device`] from what a day file
+/// already holds, so the per-device cap [`AccessLog::append`] enforces
+/// counts correctly even for a day this build is only now loading from disk.
+fn device_counts(entries: &[StoredEntry]) -> HashMap<String, u32> {
+    let mut counts = HashMap::new();
+    for entry in entries {
+        *counts.entry(entry.fields.device_key_hex.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
 /// Whether `name` is exactly eight ASCII digits, the shape of a day file's
 /// name.
 fn is_day_file_name(name: &str) -> bool {
@@ -482,7 +501,7 @@ fn is_day_file_name(name: &str) -> bool {
 }
 
 /// Whether `name` is a day file set aside as damaged: an eight digit day
-/// followed by `.damaged`. See [`AccessLog::next_sequence`].
+/// followed by `.damaged`. See [`AccessLog::load_day_state`].
 fn is_damaged_file_name(name: &str) -> bool {
     name.strip_suffix(".damaged").is_some_and(is_day_file_name)
 }
@@ -535,11 +554,33 @@ fn open_day_file(path: &Path) -> io::Result<fs::File> {
 #[derive(Debug)]
 pub(crate) struct AccessLog {
     dir: PathBuf,
-    /// The next sequence number to hand out for a day, once that day has
-    /// been looked at. Filled in lazily, the first time a day is appended
-    /// to or found already on disk, and kept from then on so appending
-    /// never rescans a day file it already knows.
-    sequences: HashMap<String, u32>,
+    /// One day's cached state, keyed by its `"YYYYMMDD"` name. Filled in
+    /// lazily, the first time a day is appended to or found already on
+    /// disk, and kept from then on so appending never rescans a day file it
+    /// already knows.
+    days: HashMap<String, DayState>,
+}
+
+/// What [`AccessLog`] caches about one day, once it has looked at it.
+///
+/// `docs/audits/fable-security.md`, finding 2: `next_sequence` used to be
+/// the only thing cached, and [`AccessLog::append`] refused once it passed
+/// [`MAX_ENTRIES_PER_DAY`], so one device making that many cheap calls in a
+/// few seconds blinded the log for every other device for the rest of the
+/// day. `entries_by_device` is what makes the cap per device instead:
+/// `next_sequence` still counts every entry in the day file, because an
+/// entry's id is still its position among all of them, but whether a
+/// further append is allowed is now decided from this device's own count
+/// alone.
+#[derive(Debug, Default)]
+struct DayState {
+    /// The next sequence number this day would hand out. See
+    /// [`AccessLog::load_day_state`]'s doc comment: an
+    /// entry's id is `"<day>-<sequence>"`, its position among every entry
+    /// in the day file, whichever device wrote it.
+    next_sequence: u32,
+    /// How many entries each device has in this day file so far.
+    entries_by_device: HashMap<String, u32>,
 }
 
 impl AccessLog {
@@ -555,7 +596,7 @@ impl AccessLog {
         set_dir_private(&dir)?;
         Ok(Self {
             dir,
-            sequences: HashMap::new(),
+            days: HashMap::new(),
         })
     }
 
@@ -565,15 +606,15 @@ impl AccessLog {
         self.dir.join(day)
     }
 
-    /// Where `day`'s file is moved when [`AccessLog::next_sequence`] finds
+    /// Where `day`'s file is moved when [`AccessLog::load_day_state`] finds
     /// more wrong with it than a torn tail.
     fn damaged_path(&self, day: &str) -> PathBuf {
         self.dir.join(format!("{day}.damaged"))
     }
 
-    /// The sequence number the next entry appended to `day` would get,
-    /// learning it from the file on disk the first time `day` is asked
-    /// about and caching it after that.
+    /// Load `day`'s [`DayState`] into the cache, reading its file on disk
+    /// the first time `day` is asked about, and doing nothing when it is
+    /// already cached.
     ///
     /// A day file is only ever appended to, so the one way a crash can leave
     /// it wrong is a single unfinished frame at the very end; this cuts the
@@ -585,53 +626,80 @@ impl AccessLog {
     /// [`decode_day_file`] simply has no way to reach once it has stopped at
     /// the bad one before them. That file is set aside as `<day>.damaged`
     /// instead, kept for a person to look at, and a fresh file starts under
-    /// `day`'s own name so new entries keep landing somewhere readable.
-    fn next_sequence(&mut self, day: &str) -> Result<u32, AccessLogError> {
-        if let Some(&next) = self.sequences.get(day) {
-            return Ok(next);
+    /// `day`'s own name so new entries keep landing somewhere readable; a
+    /// damaged file's entries count toward nothing, the same as a day this
+    /// build has never seen at all.
+    fn load_day_state(&mut self, day: &str) -> Result<(), AccessLogError> {
+        if self.days.contains_key(day) {
+            return Ok(());
         }
         let path = self.day_path(day);
-        let count = match fs::read(&path) {
+        let (count, entries_by_device) = match fs::read(&path) {
             Ok(bytes) => {
                 let (entries, good_len) = decode_day_file(&bytes)?;
                 let bad_len = bytes.len() - good_len;
                 if bad_len == 0 {
-                    entries.len()
+                    (entries.len(), device_counts(&entries))
                 } else if bad_len <= MAX_TORN_TAIL_BYTES {
                     let file = fs::OpenOptions::new().write(true).open(&path)?;
                     file.set_len(u64::try_from(good_len).unwrap_or(u64::MAX))?;
-                    entries.len()
+                    (entries.len(), device_counts(&entries))
                 } else {
                     fs::rename(&path, self.damaged_path(day))?;
-                    0
+                    (0, HashMap::new())
                 }
             }
-            Err(err) if err.kind() == io::ErrorKind::NotFound => 0,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => (0, HashMap::new()),
             Err(err) => return Err(AccessLogError::Io(err)),
         };
-        let next = u32::try_from(count).unwrap_or(u32::MAX).saturating_add(1);
-        self.sequences.insert(day.to_owned(), next);
-        Ok(next)
+        let next_sequence = u32::try_from(count).unwrap_or(u32::MAX).saturating_add(1);
+        self.days.insert(
+            day.to_owned(),
+            DayState {
+                next_sequence,
+                entries_by_device,
+            },
+        );
+        Ok(())
     }
 
     /// Append one entry, dated `at_unix_secs`, to its day's file.
     ///
     /// Returns `Ok(true)` when the entry was written, and `Ok(false)`
-    /// without writing anything when that day already holds
-    /// [`MAX_ENTRIES_PER_DAY`] entries.
+    /// without writing anything when `fields.device_key_hex` already holds
+    /// [`MAX_ENTRIES_PER_DAY`] entries on this day. `docs/audits/fable-security.md`,
+    /// finding 2: the cap used to count every device's entries together, so
+    /// one device reaching it blinded the log for every other device for
+    /// the rest of the day. It is per device now, so a device that fills
+    /// its own budget stops only its own entries; every other device's
+    /// still land.
     ///
     /// # Errors
     ///
     /// Returns [`AccessLogError`] when the day's existing file cannot be
-    /// read to learn the next sequence, or when the write itself fails.
+    /// read to learn its state, or when the write itself fails.
     pub(crate) fn append(
         &mut self,
         at_unix_secs: i64,
         fields: &EntryFields,
     ) -> Result<bool, AccessLogError> {
         let day = day_key(at_unix_secs);
-        let next_sequence = self.next_sequence(&day)?;
-        if next_sequence > MAX_ENTRIES_PER_DAY {
+        self.load_day_state(&day)?;
+        let (next_sequence, device_count) = {
+            let state = self
+                .days
+                .get(&day)
+                .expect("load_day_state just inserted this day");
+            (
+                state.next_sequence,
+                state
+                    .entries_by_device
+                    .get(&fields.device_key_hex)
+                    .copied()
+                    .unwrap_or(0),
+            )
+        };
+        if device_count >= MAX_ENTRIES_PER_DAY {
             return Ok(false);
         }
         let path = self.day_path(&day);
@@ -645,7 +713,16 @@ impl AccessLog {
         frame.bytes(&encode_entry(fields, at_unix_secs));
         let mut file = open_day_file(&path)?;
         file.write_all(&frame.finish())?;
-        self.sequences.insert(day, next_sequence + 1);
+
+        let state = self
+            .days
+            .get_mut(&day)
+            .expect("load_day_state just inserted this day");
+        state.next_sequence = next_sequence + 1;
+        *state
+            .entries_by_device
+            .entry(fields.device_key_hex.clone())
+            .or_insert(0) += 1;
         Ok(true)
     }
 
@@ -712,7 +789,7 @@ impl AccessLog {
         out
     }
 
-    /// Every damaged day file's name (see [`AccessLog::next_sequence`]), in
+    /// Every damaged day file's name (see [`AccessLog::load_day_state`]), in
     /// no particular order: [`AccessLog::prune`] only checks each one's own
     /// age, never sequences through them the way it does ordinary day files.
     fn damaged_file_names(&self) -> Vec<String> {
@@ -742,7 +819,7 @@ impl AccessLog {
         for name in self.day_files_newest_first() {
             if name < cutoff {
                 fs::remove_file(self.day_path(&name))?;
-                self.sequences.remove(&name);
+                self.days.remove(&name);
             }
         }
         for name in self.damaged_file_names() {
@@ -926,7 +1003,9 @@ impl RollUp {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessLog, AccessLogError, AccessVerb, Actor, Entry, EntryFields, RollUp};
+    use super::{
+        AccessLog, AccessLogError, AccessVerb, Actor, DayState, Entry, EntryFields, RollUp,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1155,24 +1234,62 @@ mod tests {
     }
 
     #[test]
-    fn a_full_day_refuses_a_further_append() {
+    fn a_device_that_fills_its_day_refuses_a_further_append_from_it() {
         let dir = temp_dir("day-cap");
         let mut log = AccessLog::open(&dir).expect("the store should open");
         // Seed the cache directly rather than writing 10,000 real entries,
-        // which this test does not need to prove the cap. A cached next
-        // sequence of 10,001 means the day already holds 10,000 entries.
+        // which this test does not need to prove the cap. A cached count of
+        // 10,000 for "device" means it already holds that many entries on
+        // this day.
         let day = super::day_key(BASE_TIME);
-        log.sequences.insert(day, 10_001);
+        log.days.insert(
+            day,
+            DayState {
+                next_sequence: 10_001,
+                entries_by_device: [("device".to_owned(), 10_000)].into_iter().collect(),
+            },
+        );
 
         let wrote = log
             .append(BASE_TIME, &fields("device", AccessVerb::Read, "f", Some(1)))
-            .expect("append should not error even when the day is full");
-        assert!(!wrote, "the day already holds 10,000 entries");
+            .expect("append should not error even when a device's day is full");
+        assert!(!wrote, "\"device\" already holds 10,000 entries today");
 
         assert!(
             log.query(None, 10).is_empty(),
             "nothing should have been written"
         );
+    }
+
+    /// `docs/audits/fable-security.md`, finding 2: the cap used to count
+    /// every device's entries together, so one device filling it blinded
+    /// the log for every other device too, for the rest of the day. Fails
+    /// before the fix: with one shared cap per day, "other-device"'s
+    /// append below would also return `Ok(false)`, since the day already
+    /// held 10,000 entries either way.
+    #[test]
+    fn a_different_device_still_logs_after_one_device_fills_its_day() {
+        let dir = temp_dir("day-cap-isolation");
+        let mut log = AccessLog::open(&dir).expect("the store should open");
+        let day = super::day_key(BASE_TIME);
+        log.days.insert(
+            day,
+            DayState {
+                next_sequence: 10_001,
+                entries_by_device: [("full-device".to_owned(), 10_000)].into_iter().collect(),
+            },
+        );
+
+        let wrote = log
+            .append(
+                BASE_TIME,
+                &fields("other-device", AccessVerb::Read, "f", Some(1)),
+            )
+            .expect("append should not error");
+        assert!(wrote, "a different device's own budget is untouched");
+
+        let found = log.query(Some("other-device"), 10);
+        assert_eq!(found.len(), 1, "the other device's entry should be logged");
     }
 
     #[test]
