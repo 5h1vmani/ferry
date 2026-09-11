@@ -26,6 +26,8 @@
 //! - `lock.rs`: the lock table `LOCK` and `UNLOCK` share, with tokens and a
 //!   timeout.
 //! - `cache.rs`: the two second depth 1 listing cache.
+//! - `heads.rs`: item 17's head cache, and the queue the prefetch thread
+//!   reads listings from.
 //! - `pool.rs`: a small pool of the engine's own [`ferry_core::rpc::Client`]
 //!   connections to the peer, four at most.
 //! - `put.rs`: item I2's landing rule for `PUT` of a real file and for
@@ -36,6 +38,7 @@
 
 mod cache;
 mod delete;
+mod heads;
 mod http;
 mod lock;
 mod pool;
@@ -74,13 +77,17 @@ pub(crate) fn random_hex(n_bytes: usize) -> Result<String, FerryError> {
     Ok(out)
 }
 
-/// One running bridge: the endpoint it answers as, and the handle to stop
+/// One running bridge: the endpoint it answers as, and the handles to stop
 /// it.
 struct Mount {
     endpoint: MountEndpoint,
     port: u16,
     running: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    /// Item 17's prefetch thread, and the bridge whose queue wakes it.
+    /// Both are needed to end it, so `stop` holds both.
+    bridge: Arc<server::Bridge>,
+    prefetch: Option<JoinHandle<()>>,
 }
 
 /// Every device's `WebDAV` bridge, by device key hex.
@@ -167,6 +174,19 @@ impl MountRegistry {
             );
         });
 
+        // Item 17: one prefetch thread per bridge, ended by the same
+        // `running` flag as the accept thread and joined the same way.
+        let shared_for_prefetch = Arc::clone(shared);
+        let bridge_for_prefetch = Arc::clone(&bridge);
+        let running_for_prefetch = Arc::clone(&running);
+        let prefetch = std::thread::spawn(move || {
+            server::prefetch_loop(
+                &shared_for_prefetch,
+                &bridge_for_prefetch,
+                &running_for_prefetch,
+            );
+        });
+
         mounts.insert(
             device_key_hex.to_owned(),
             Mount {
@@ -174,6 +194,8 @@ impl MountRegistry {
                 port,
                 running,
                 handle: Some(handle),
+                bridge,
+                prefetch: Some(prefetch),
             },
         );
         Ok(endpoint)
@@ -196,8 +218,15 @@ impl MountRegistry {
         // own port is the only way to bring it back, the same trick
         // `engine::wake_the_listener` uses for the peer-facing listener.
         drop(std::net::TcpStream::connect(("127.0.0.1", mount.port)));
+        // The prefetch thread is either waiting for a listing or between
+        // two files. Ending its queue covers the first case; the `running`
+        // flag above covers the second (item 17).
+        mount.bridge.stop_prefetch();
         if let Some(handle) = mount.handle.take() {
             drop(handle.join());
+        }
+        if let Some(prefetch) = mount.prefetch.take() {
+            drop(prefetch.join());
         }
     }
 

@@ -27,6 +27,7 @@ use crate::guard::StopAware;
 
 use super::cache::Cache;
 use super::delete;
+use super::heads::{self, HeadCache, Prefetch};
 use super::lock::{LockError, LockTable, UnlockOutcome};
 use super::pool::{self, Pool};
 use super::probes::{self, SidecarStore, SidecarWriteError};
@@ -82,6 +83,10 @@ pub(crate) struct Bridge {
     sidecars: SidecarStore,
     pool: Pool,
     cache: Cache,
+    /// Item 17: the first bytes of each recently listed image.
+    heads: HeadCache,
+    /// Item 17: the listing the prefetch thread works on next.
+    prefetch: Prefetch,
     locks: LockTable,
     /// Live connections right now, checked at accept against
     /// [`MAX_LIVE_CONNECTIONS`] (B3).
@@ -101,6 +106,8 @@ impl Bridge {
             pool: Pool::new(device_key_hex.clone()),
             sidecars: SidecarStore::new(sidecar_dir),
             cache: Cache::new(),
+            heads: HeadCache::new(),
+            prefetch: Prefetch::new(),
             locks: LockTable::new(),
             connections: Arc::new(AtomicU32::new(0)),
             device_key_hex,
@@ -109,6 +116,13 @@ impl Bridge {
             password,
             port,
         }
+    }
+
+    /// Ends the prefetch queue, so this bridge's prefetch thread leaves
+    /// instead of waiting for a listing. Called by `MountRegistry::stop`,
+    /// which lives in the parent module and cannot reach the field itself.
+    pub(crate) fn stop_prefetch(&self) {
+        self.prefetch.stop();
     }
 }
 
@@ -1358,7 +1372,16 @@ fn propfind(
             modified_unix_secs: entry.modified_unix_secs,
         })
         .collect();
-    write_multistatus(out, &items, &props)
+    let written = write_multistatus(out, &items, &props);
+
+    // Item 17: the response is out, so the person is already looking at
+    // the folder. Hand its children to the prefetch thread, which is what
+    // makes the thumbnail requests that follow cost nothing on the wire.
+    // `named[0]` is the folder itself, which has no head to read.
+    if listed {
+        bridge.prefetch.submit(path.as_str(), &named[1..]);
+    }
+    written
 }
 
 fn write_multistatus(
@@ -1422,19 +1445,9 @@ fn get_file(
         return no_body(out, "404 Not Found");
     }
 
-    let Ok(mut borrowed) = bridge.pool.take(shared) else {
-        return unavailable(out);
-    };
-
-    let entry = match borrowed.client().stat(&path) {
-        Ok(entry) => entry,
-        Err(error) => {
-            let (status, unhealthy) = map_rpc_error(&error);
-            if unhealthy {
-                borrowed.mark_unhealthy();
-            }
-            return no_body(out, status);
-        }
+    let (entry, borrowed) = match file_entry(shared, bridge, target, &path) {
+        Ok(found) => found,
+        Err(status) => return no_body(out, status),
     };
     if entry.kind == FileKind::Directory {
         return no_body(out, "404 Not Found");
@@ -1490,11 +1503,14 @@ fn get_file(
     let sent = if method == "HEAD" || len == 0 {
         0
     } else {
-        // S2: a peer read failing mid body propagates as an `Err`, so
-        // `handle_connection` drops the connection instead of trying to
-        // parse a next request off a socket whose promised
-        // `Content-Length` was never met.
-        stream_body(&mut borrowed, &path, start, end.saturating_add(1), out)?
+        let body = BodyPlan {
+            target,
+            entry: &entry,
+            path: &path,
+            start,
+            end,
+        };
+        send_body(shared, bridge, &body, borrowed, out)?
     };
     // S3: a bridge `GET` leaves a `This` entry in the Mac's own access
     // log, once the peer round trip is done.
@@ -1508,6 +1524,258 @@ fn get_file(
         None,
     );
     Ok(())
+}
+
+/// What `GET` and `HEAD` need to know about the file: its entry, and the
+/// pooled connection the answer already holds, if it took one.
+///
+/// Item 17: the parent folder's listing is taken first, so a thumbnail
+/// request that follows its own listing costs no `Stat` on the wire. Only
+/// a miss borrows a connection and stats, and that borrow is handed back
+/// to the caller, which still needs it for the body.
+///
+/// # Errors
+///
+/// Returns the status to answer with when the device is unreachable or the
+/// peer refused the `stat`.
+fn file_entry<'a>(
+    shared: &Arc<Shared>,
+    bridge: &'a Bridge,
+    target: &str,
+    path: &RemotePath,
+) -> Result<(Entry, Option<pool::Borrowed<'a>>), &'static str> {
+    if let Some(entry) = listed_entry(bridge, target) {
+        return Ok((entry, None));
+    }
+    let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        return Err("503 Service Unavailable");
+    };
+    match borrowed.client().stat(path) {
+        Ok(entry) => Ok((entry, Some(borrowed))),
+        Err(error) => {
+            let (status, unhealthy) = map_rpc_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            Err(status)
+        }
+    }
+}
+
+/// Writes `[start, end]` of the file, and answers how many bytes went out.
+///
+/// Item 17: a range that starts inside the cached head, or a whole file,
+/// is served from the head for as many bytes as the head holds. Only what
+/// is left goes to the wire, on `borrowed` when `file_entry` already took
+/// one, and on a fresh borrow otherwise.
+///
+/// # Errors
+///
+/// Returns an error when the peer's read fails or the write to `out`
+/// fails. The response head, with its `Content-Length`, is already
+/// written by then, so there is no status left to answer with: S2 has
+/// `handle_connection` drop the connection instead.
+fn send_body(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    body: &BodyPlan<'_>,
+    borrowed: Option<pool::Borrowed<'_>>,
+    out: &mut impl Write,
+) -> io::Result<u64> {
+    let from_head = write_cached_head(bridge, body, out)?;
+    let next = body.start.saturating_add(from_head);
+    if next > body.end {
+        return Ok(from_head);
+    }
+    let mut borrowed = match borrowed {
+        Some(borrowed) => borrowed,
+        None => bridge.pool.take(shared).map_err(|_| {
+            io::Error::other("the device went away before the declared Content-Length was met")
+        })?,
+    };
+    let streamed = stream_body(
+        &mut borrowed,
+        body.path,
+        next,
+        body.end.saturating_add(1),
+        out,
+    )?;
+    Ok(from_head.saturating_add(streamed))
+}
+
+/// One `GET`'s body: which file, and which bytes of it the response head
+/// already promised.
+struct BodyPlan<'a> {
+    /// The DAV target, which is also the head cache key.
+    target: &'a str,
+    /// What the listing or the `stat` said the file is.
+    entry: &'a Entry,
+    path: &'a RemotePath,
+    start: u64,
+    /// The last byte to send, not one past it.
+    end: u64,
+}
+
+/// The file's own entry from its parent folder's cached listing, when that
+/// listing is still within its two second TTL.
+///
+/// `docs/engine-contract.md`, item 17: `GET` and `HEAD` take the file's
+/// size and modified time from the listing cache, and stat on the wire
+/// only otherwise. The listing cache drops a folder on any write through
+/// this bridge to it, so a file this answers for is one nothing here has
+/// changed since the listing.
+fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
+    let (parent, name) = target.rsplit_once('/').unwrap_or(("", target));
+    let children = bridge.cache.get(parent)?;
+    children.into_iter().find(|child| child.name == name)
+}
+
+/// Writes as much of the planned range as the cached head of the file
+/// holds, and answers how many bytes that was. Zero when nothing is cached
+/// for this exact size and modified time, or when the range starts past
+/// the end of the head.
+///
+/// `docs/engine-contract.md`, item 17.
+///
+/// # Errors
+///
+/// Returns an error when the write to `out` fails, the same as
+/// [`stream_body`].
+fn write_cached_head(
+    bridge: &Bridge,
+    body: &BodyPlan<'_>,
+    out: &mut impl Write,
+) -> io::Result<u64> {
+    let Some(head) = bridge
+        .heads
+        .get(body.target, body.entry.size, body.entry.modified_unix_secs)
+    else {
+        return Ok(0);
+    };
+    let cached_bytes = u64::try_from(head.len()).unwrap_or(0);
+    if body.start >= cached_bytes {
+        return Ok(0);
+    }
+    let stop_at = body.end.saturating_add(1).min(cached_bytes);
+    let from = usize::try_from(body.start).unwrap_or(usize::MAX);
+    let to = usize::try_from(stop_at).unwrap_or(usize::MAX);
+    out.write_all(&head[from..to])?;
+    Ok(stop_at - body.start)
+}
+
+/// Reads the heads of one listing's images into the head cache, one
+/// listing at a time, until `running` clears.
+///
+/// `docs/engine-contract.md`, item 17. One of these runs per bridge,
+/// started and joined by `MountRegistry`.
+pub(crate) fn prefetch_loop(shared: &Arc<Shared>, bridge: &Arc<Bridge>, running: &Arc<AtomicBool>) {
+    while running.load(Ordering::SeqCst) {
+        let Some(job) = bridge.prefetch.next() else {
+            return;
+        };
+        prefetch_job(shared, bridge, running, &job);
+    }
+}
+
+/// Reads the head of every image in one listing that is not cached
+/// already, and leaves one `Read` entry in this side's access log for the
+/// whole listing.
+///
+/// Each file is read under its own pool borrow, so the prefetch holds at
+/// most one of the bridge's four connections and Finder's own requests
+/// interleave with it. `running` is read between files, so
+/// `MountRegistry::stop` never waits for a whole folder.
+fn prefetch_job(
+    shared: &Arc<Shared>,
+    bridge: &Arc<Bridge>,
+    running: &Arc<AtomicBool>,
+    job: &heads::Job,
+) {
+    let mut files = 0u32;
+    let mut bytes = 0u64;
+    for file in &job.files {
+        if !running.load(Ordering::SeqCst) {
+            break;
+        }
+        if !heads::is_image(&file.name) {
+            continue;
+        }
+        if bridge
+            .heads
+            .holds(&file.path, file.size, file.modified_unix_secs)
+        {
+            continue;
+        }
+        let want = file.size.min(heads::HEAD_LEN);
+        if want == 0 {
+            continue;
+        }
+        let Ok(path) = RemotePath::parse(&file.path) else {
+            continue;
+        };
+        let Ok(mut borrowed) = bridge.pool.take(shared) else {
+            // The device is not reachable. Nothing else in this listing
+            // will read either, so the rest of it is dropped rather than
+            // tried file by file.
+            break;
+        };
+        let head = read_head(&mut borrowed, &path, want);
+        drop(borrowed);
+        // A head shorter than the listing said means the file changed
+        // under the prefetch. Its new size and time are its own key, so
+        // there is nothing here worth storing.
+        let Some(head) = head.filter(|head| u64::try_from(head.len()) == Ok(want)) else {
+            continue;
+        };
+        bytes = bytes.saturating_add(want);
+        files = files.saturating_add(1);
+        bridge
+            .heads
+            .put(&file.path, file.size, file.modified_unix_secs, head);
+    }
+    // Item 17: the prefetch of one listing is one `Read` entry on this
+    // side, naming the folder, the bytes read, and the file count. A
+    // listing that read nothing leaves no entry, since there is nothing
+    // true to say about the wire.
+    if files > 0 {
+        record_this(
+            shared,
+            &bridge.device_key_hex,
+            AccessVerb::Read,
+            &job.folder,
+            Some(bytes),
+            None,
+            Some(files),
+        );
+    }
+}
+
+/// Reads the first `want` bytes of `path` from the peer. `None` when the
+/// peer's read fails, which marks the borrowed connection unhealthy the
+/// same way [`stream_body`] does.
+fn read_head(borrowed: &mut pool::Borrowed<'_>, path: &RemotePath, want: u64) -> Option<Vec<u8>> {
+    let mut head: Vec<u8> = Vec::new();
+    while u64::try_from(head.len()).unwrap_or(want) < want {
+        let read_so_far = u64::try_from(head.len()).unwrap_or(0);
+        let ask = u32::try_from(want - read_so_far)
+            .unwrap_or(ferry_core::limits::MAX_READ_LEN)
+            .min(ferry_core::limits::MAX_READ_LEN);
+        let bytes = match borrowed.client().read(path, read_so_far, ask) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let (_, unhealthy) = map_rpc_error(&error);
+                if unhealthy {
+                    borrowed.mark_unhealthy();
+                }
+                return None;
+            }
+        };
+        if bytes.is_empty() {
+            break;
+        }
+        head.extend_from_slice(&bytes);
+    }
+    Some(head)
 }
 
 /// Streams `[start, stop_at)` of `path` from the peer to `out`, in pieces
