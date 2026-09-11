@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -54,7 +55,6 @@ fun QrScanner(
 
     DisposableEffect(lifecycleOwner) {
         val providerFuture = ProcessCameraProvider.getInstance(context)
-        val provider = providerFuture.get()
 
         val preview = Preview.Builder().build().also {
             it.surfaceProvider = previewView.surfaceProvider
@@ -110,16 +110,28 @@ fun QrScanner(
                 .addOnCompleteListener { imageProxy.close() }
         }
 
-        provider.unbindAll()
-        provider.bindToLifecycle(
-            lifecycleOwner,
-            CameraSelector.DEFAULT_BACK_CAMERA,
-            preview,
-            analysis,
+        // get() on this future blocks until the whole CameraX stack has
+        // started, which is slow on first call on a Pixel 3 XL. addListener
+        // with the main executor returns at once and binds once the
+        // provider is actually ready, instead of freezing this thread.
+        providerFuture.addListener(
+            {
+                val provider = providerFuture.get()
+                provider.unbindAll()
+                provider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    analysis,
+                )
+            },
+            ContextCompat.getMainExecutor(context),
         )
 
         onDispose {
-            provider.unbindAll()
+            if (providerFuture.isDone) {
+                providerFuture.get().unbindAll()
+            }
             analysis.clearAnalyzer()
             scanner.close()
             executor.shutdown()
