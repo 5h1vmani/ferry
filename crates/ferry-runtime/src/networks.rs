@@ -1,4 +1,5 @@
-//! The trusted Wi-Fi networks, and the one rule that decides Wi-Fi presence.
+//! The trusted Wi-Fi networks, and the two rules that decide what this
+//! device does over Wi-Fi.
 //!
 //! `docs/engine-contract.md`, item 18. A device that paired at home stays
 //! silent in a café. The app reads the Wi-Fi network name, because only the
@@ -7,7 +8,8 @@
 //!
 //! This module owns two things and nothing more. It owns the file
 //! `data_dir/networks`, which holds the trusted names, one name per line in
-//! UTF-8. It owns [`wifi_presence`], the rule.
+//! UTF-8. It owns [`browse_allowed`], which does not need `reachable`, and
+//! [`wifi_presence`], which does.
 //!
 //! The file is written the way `record.rs` and `auto_copy.rs` write theirs:
 //! the bytes go to a temporary name, are flushed to the disk, and only then
@@ -42,18 +44,40 @@ pub(crate) const NETWORK_LIMIT: usize = 32;
 /// The name of the file under the data directory.
 const FILE_NAME: &str = "networks";
 
-/// True when this device should advertise, browse, and accept over Wi-Fi.
+/// True when this device should browse for other devices over Wi-Fi.
+///
+/// The rule, with every input as an argument, so a test can run one case per
+/// branch without building an engine. [`browse_allowed`] is the only caller
+/// that matters; it reads the inputs off the engine's state.
+///
+/// Browsing is allowed when one of three things holds: the trusted list is
+/// empty, the current network is in the list, or pairing is in progress. An
+/// unknown network with a non-empty list is not. This does not read
+/// `reachable`: a browse query is quiet enough to run on any network, and a
+/// Mac with its presence switch off must still find and mount a phone, as it
+/// did before this item.
+#[doc(hidden)]
+#[must_use]
+pub fn browse_allowed_rule(
+    trusted: &[String],
+    network: Option<&str>,
+    pairing_in_progress: bool,
+) -> bool {
+    trusted.is_empty()
+        || network.is_some_and(|name| trusted.iter().any(|known| known == name))
+        || pairing_in_progress
+}
+
+/// True when this device should advertise and accept over Wi-Fi.
 ///
 /// The rule, with every input as an argument, so a test can run one case per
 /// branch without building an engine. [`wifi_presence`] is the only caller
 /// that matters; it reads the inputs off the engine's state.
 ///
-/// Presence is on when `reachable` is on and one of three things holds: the
-/// trusted list is empty, the current network is in the list, or pairing is
-/// in progress. An unknown network with a non-empty list is off. So a person
-/// who never granted the location permission sees no change from before this
-/// item, and a person who granted it once is quiet on every network they did
-/// not pair on or trust by hand.
+/// Presence is on when `reachable` is on and [`browse_allowed_rule`] is
+/// true. So a person who never granted the location permission sees no
+/// change from before this item, and a person who granted it once is quiet
+/// on every network they did not pair on or trust by hand.
 #[doc(hidden)]
 #[must_use]
 pub fn wifi_presence_rule(
@@ -62,27 +86,33 @@ pub fn wifi_presence_rule(
     network: Option<&str>,
     pairing_in_progress: bool,
 ) -> bool {
-    reachable
-        && (trusted.is_empty()
-            || network.is_some_and(|name| trusted.iter().any(|known| known == name))
-            || pairing_in_progress)
+    reachable && browse_allowed_rule(trusted, network, pairing_in_progress)
 }
 
-/// True when this device should advertise, browse, and accept over Wi-Fi.
+/// True when this device should browse for other devices over Wi-Fi.
 ///
-/// The one place the rule is read off the engine's state. Everything that
-/// acts on presence calls this, and `engine::apply_presence` is what turns
-/// the answer into a running advertiser and browser.
-///
-/// "Pairing is in progress" is `Pairing::is_running`, which is every pairing
-/// state but `Idle`, `Confirmed`, and `Failed`.
-pub(crate) fn wifi_presence(state: &State) -> bool {
-    wifi_presence_rule(
-        state.reachable,
+/// The one place [`browse_allowed_rule`] is read off the engine's state.
+/// `engine::apply_presence` is what turns the answer into a browse loop that
+/// holds a `Browser`. Unlike [`wifi_presence`], this does not gate on
+/// `reachable`, so the person's own switch never silences browsing.
+pub(crate) fn browse_allowed(state: &State) -> bool {
+    browse_allowed_rule(
         state.trusted.names(),
         state.network.as_deref(),
         state.pairing.is_running(),
     )
+}
+
+/// True when this device should advertise and accept over Wi-Fi.
+///
+/// The one place the rule is read off the engine's state. Everything that
+/// acts on presence calls this, and `engine::apply_presence` is what turns
+/// the answer into a running advertiser.
+///
+/// "Pairing is in progress" is `Pairing::is_running`, which is every pairing
+/// state but `Idle`, `Confirmed`, and `Failed`.
+pub(crate) fn wifi_presence(state: &State) -> bool {
+    state.reachable && browse_allowed(state)
 }
 
 /// The trusted Wi-Fi network names, and the file they live in.

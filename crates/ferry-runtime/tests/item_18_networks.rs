@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use ferry_runtime::{
     Config, DeviceKind, Engine, EngineListener, KeyPair, PairingCandidate, PairingMethod,
-    PairingState, Root, generate_key, welcomes_inbound, wifi_presence_rule,
+    PairingState, Root, browse_allowed_rule, generate_key, welcomes_inbound, wifi_presence_rule,
 };
 
 /// How long any wait may take before the test gives up.
@@ -325,6 +325,36 @@ fn the_wifi_presence_rule_covers_every_branch() {
     );
 }
 
+#[test]
+fn browsing_does_not_need_reachable() {
+    // A Mac with its presence switch off, and an empty trusted list, still
+    // browses: this is what let it find and mount a phone before item 18,
+    // and `reachable` off must not take that away.
+    assert!(
+        browse_allowed_rule(&[], None, false),
+        "an empty trusted list allows browsing with reachable off"
+    );
+    assert!(
+        !wifi_presence_rule(false, &[], None, false),
+        "reachable off is still off for Wi-Fi presence, which gates the \
+         advertiser and inbound acceptance"
+    );
+
+    let home = names(&["Home"]);
+    assert!(
+        browse_allowed_rule(&home, Some("Home"), false),
+        "browsing is allowed on a trusted network"
+    );
+    assert!(
+        !browse_allowed_rule(&home, Some("Cafe"), false),
+        "browsing is refused on an untrusted, non-empty list"
+    );
+    assert!(
+        browse_allowed_rule(&home, None, true),
+        "pairing in progress allows browsing on any network"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The welcome decision, with a loopback and a non-loopback address.
 // ---------------------------------------------------------------------------
@@ -514,6 +544,60 @@ fn setting_the_network_turns_wifi_presence_off_and_on() {
     );
 
     side.engine.stop();
+}
+
+#[test]
+fn a_wish_set_before_start_survives_start() {
+    let data = tempfile::tempdir().expect("a temporary folder for engine files");
+    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
+    let key: KeyPair = generate_key().expect("a fresh key pair");
+    let inbox = Arc::new(Inbox::default());
+    let config = Config {
+        data_dir: data.path().to_string_lossy().into_owned(),
+        shared_roots: vec![Root {
+            name: "Root".to_owned(),
+            path: shared.path().to_string_lossy().into_owned(),
+            writable: true,
+        }],
+        download_dir: download.path().to_string_lossy().into_owned(),
+        display_name: "Dushyanta".to_owned(),
+        listen_port: 0,
+        key,
+        kind: DeviceKind::Mac,
+    };
+    let engine = Engine::new(
+        config,
+        Box::new(Recorder {
+            inbox: Arc::clone(&inbox),
+        }),
+    )
+    .expect("the engine should build from a good config");
+
+    // The wish is set before `start`, while there is no port yet for the
+    // advertiser to use.
+    engine.set_reachable(true);
+    engine.start().expect("the engine should start");
+
+    let status = engine.status();
+    assert!(status.reachable, "reachable was set before start");
+    assert!(
+        status.wifi_presence,
+        "an empty trusted list is present once reachable"
+    );
+    // `status().wifi_presence` recomputes the rule fresh, so it is not proof
+    // that `start` applied it. `short_code` is: it reads the advertiser
+    // `Shared::advertiser` actually holds, which only exists once
+    // `apply_presence` has run with a bound port. Before `start` calls
+    // `apply_presence` itself, the wish set here is recorded but never
+    // acted on, and the advertiser never starts for the rest of the run.
+    assert!(
+        engine.short_code().is_some(),
+        "start should apply the rule now that it has a port, and start the \
+         advertiser the earlier set_reachable(true) could not"
+    );
+
+    engine.stop();
 }
 
 // ---------------------------------------------------------------------------

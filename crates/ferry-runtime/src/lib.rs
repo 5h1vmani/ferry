@@ -277,7 +277,7 @@ mod state;
 mod transfer;
 
 pub use engine::{Engine, FERRY_PHONE_PORT, generate_key, welcomes_inbound};
-pub use networks::wifi_presence_rule;
+pub use networks::{browse_allowed_rule, wifi_presence_rule};
 
 use std::fmt;
 

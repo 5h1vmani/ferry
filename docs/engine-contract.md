@@ -780,33 +780,39 @@ pub network: Option<String>,
 pub wifi_presence: bool,
 ```
 
-**The rule, in one place.** A new module,
-`crates/ferry-runtime/src/networks.rs`, gains one function,
-`wifi_presence(&State) -> bool`, and nothing else decides. That module owns
-the trusted list file, this rule, and nothing else. It holds one constant,
-`NETWORK_LIMIT`, which is 32: the list holds at most 32 names, and each name
-holds at most 32 bytes. `State` gains the two fields the rule reads, the
-current network name and the trusted list. Wi-Fi presence
-is on when `reachable` is on and one of three things holds: the trusted
-list is empty; the current network is in the list; pairing is in
-progress, which is any state but `Idle`, `Confirmed`, and `Failed`. An
-unknown network with a non-empty list is off. So a person who never
-granted the location permission sees no change from today, and a person
-who granted it once is quiet on every network they did not pair on or
-trust by hand.
+**The rule, in two functions.** A new module,
+`crates/ferry-runtime/src/networks.rs`, gains two functions, and nothing
+else decides. `browse_allowed(&State) -> bool` gates the browser. It is
+true when one of three things holds: the trusted list is empty; the
+current network is in the list; pairing is in progress, which is any
+state but `Idle`, `Confirmed`, and `Failed`. It does not read `reachable`,
+because a browse query is quiet enough to run on any network.
+`wifi_presence(&State) -> bool` gates the advertiser and inbound
+acceptance. It is `reachable` and `browse_allowed`. The module owns the
+trusted list file, both functions, and nothing else. It holds one
+constant, `NETWORK_LIMIT`, which is 32: the list holds at most 32 names,
+and each name holds at most 32 bytes. `State` gains the two fields the
+rule reads, the current network name and the trusted list. An unknown
+network with a non-empty list is off for both functions. So a person who
+never granted the location permission sees no change from today, and a
+person who granted it once is quiet on
+every network they did not pair on or trust by hand.
 
-**Applying it.** One function, `apply_presence(shared)`, compares the
-rule to what is running and starts or stops the advertiser and the
-browser. Every site that changes an input calls it: `set_reachable`,
-`set_network`, `trust_network`, `forget_network`, every pairing start,
-every pairing end, and `stop`. `set_reachable` no longer starts the
-advertiser itself; there is one start site and it is `apply_presence`.
-The browse loop keeps its thread and drops its `Browser` while presence
-is off, because a browse query is a sound on the network. The
-`accept_loop` welcome check refuses a connection from a non-loopback
-address while presence is off and no pairing is open to an inbound
-handshake. Loopback is the adb tunnel, so the cable still works on a network
-this device is quiet on, which is job 2. The loopback term needs `reachable`,
+**Applying it.** One function, `apply_presence(shared)`, compares both
+rules to what is running. It starts and stops the browser by
+`browse_allowed`, and the advertiser by `wifi_presence`. Every site that
+changes an input calls it: `set_reachable`, `set_network`,
+`trust_network`, `forget_network`, every pairing start, every pairing
+end, `start`, and `stop`. `start` calls `apply_presence` once its
+listener has a port, so a wish set before `start` still takes effect.
+`set_reachable` no longer starts the advertiser itself; there is one
+start site and it is `apply_presence`. The browse loop keeps its thread
+and drops its `Browser` while browsing is not allowed, because a browse
+query is a sound on the network. The `accept_loop` welcome check refuses
+a connection from a non-loopback address while Wi-Fi presence is off and
+no pairing is open to an inbound handshake. Loopback is the adb tunnel,
+so the cable still works on a network this device is quiet on, which is
+job 2. The loopback term needs `reachable`,
 not presence: `reachable` is the person's own switch, and off refuses every
 connection, over the cable as well. What loopback survives is the network
 half of the rule, which is the half a person never set. The pairing term is

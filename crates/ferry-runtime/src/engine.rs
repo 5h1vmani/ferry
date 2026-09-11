@@ -361,13 +361,14 @@ pub(crate) struct Shared {
     /// per device at a time.
     pub(crate) auto_copy_running: Mutex<std::collections::HashSet<String>>,
     // ---- Item 18: trusted networks. See `networks.rs`. ----
-    /// What [`apply_presence`] last decided about Wi-Fi presence.
+    /// What [`apply_presence`] last decided about
+    /// [`networks::browse_allowed`], which does not need `reachable`.
     ///
     /// The `Browser` is created and owned by [`browse_loop`]'s own thread,
     /// so nothing else can drop it. This flag is how that loop sees the
     /// rule: it reads it on every pass, and drops its `Browser` while the
     /// flag is false, because a browse query is a sound on the network.
-    pub(crate) presence: AtomicBool,
+    pub(crate) browsing: AtomicBool,
 }
 
 impl Shared {
@@ -847,7 +848,7 @@ impl Engine {
             auto_copy: Mutex::new(auto_copy),
             held: Mutex::new(held),
             auto_copy_running: Mutex::new(std::collections::HashSet::new()),
-            presence: AtomicBool::new(false),
+            browsing: AtomicBool::new(false),
         });
 
         load_saved_transfers(&shared);
@@ -945,6 +946,14 @@ impl Engine {
         let shared = Arc::clone(&self.shared);
         self.shared
             .keep(std::thread::spawn(move || access_log_loop(&shared)));
+
+        // docs/engine-contract.md item 18: applies whatever `set_reachable`,
+        // `set_network`, `trust_network`, or `forget_network` recorded
+        // before `start` ran. The listener now has a port for the
+        // advertiser, and the browse loop just spawned has a thread to read
+        // the flag, so this is the only thing that starts the advertiser or
+        // lets the browse loop hold a `Browser`.
+        apply_presence(&self.shared);
 
         transfer::resume_all(&self.shared);
         // docs/engine-contract.md item 14: the third of the run's three
@@ -2555,13 +2564,17 @@ fn load_saved_batches(shared: &Arc<Shared>) {
     }
 }
 
-/// Compare the Wi-Fi presence rule to what is running, and start or stop
-/// the advertiser and the browser to match.
+/// Compare the browse-allowed and Wi-Fi presence rules to what is running,
+/// and start or stop the advertiser and the browser to match.
 ///
 /// `docs/engine-contract.md`, item 18. This is the only place the advertiser
-/// is started. Every site that changes an input calls it: `set_reachable`,
-/// `set_network`, `trust_network`, `forget_network`, `Shared::set_pairing`,
-/// which covers every pairing start and every pairing end, and `stop`.
+/// is started, and the only place that decides whether the browse loop holds
+/// a `Browser`. It gates the browser by [`networks::browse_allowed`], which
+/// does not need `reachable`, and the advertiser by
+/// [`networks::wifi_presence`], which does. Every site that changes an input
+/// calls it: `set_reachable`, `set_network`, `trust_network`,
+/// `forget_network`, `Shared::set_pairing`, which covers every pairing start
+/// and every pairing end, `start`, and `stop`.
 ///
 /// An advertiser that is already running is left alone. Restarting one gives
 /// it a fresh random instance name, and [`Engine::short_code`] shows the last
@@ -2569,14 +2582,15 @@ fn load_saved_batches(shared: &Arc<Shared>) {
 /// pairing list, so a restart during pairing would change the code a person
 /// is reading off two screens.
 pub(crate) fn apply_presence(shared: &Shared) {
-    let (present, port) = {
+    let (browsing, present, port) = {
         let state = lock(&shared.state);
         (
+            networks::browse_allowed(&state),
             networks::wifi_presence(&state),
             state.listen_addr.map(|addr| addr.port()),
         )
     };
-    shared.presence.store(present, Ordering::SeqCst);
+    shared.browsing.store(browsing, Ordering::SeqCst);
     {
         let mut advertiser = lock(&shared.advertiser);
         if present {
@@ -3461,17 +3475,19 @@ fn release_serving(shared: &Arc<Shared>, key_hex: &str, allowed: &Arc<AtomicBool
     live.serving.retain(|switch| !Arc::ptr_eq(switch, allowed));
 }
 
-/// Watch mDNS for the whole session, while Wi-Fi presence is on.
+/// Watch mDNS for the whole session, while browsing is allowed.
 ///
 /// `docs/engine-contract.md`, item 18. The thread runs for the whole session
-/// as it always did, but the `Browser` only exists while `Shared::presence`
+/// as it always did, but the `Browser` only exists while `Shared::browsing`
 /// is true, because a browse query is a sound on the network and a device in
-/// a café makes none. A `Browser` this loop drops shuts its own mDNS daemon
-/// down, so nothing is left querying.
+/// a café makes none. This does not need `reachable`: it is what lets a Mac
+/// with its presence switch off still find and mount a phone. A `Browser`
+/// this loop drops shuts its own mDNS daemon down, so nothing is left
+/// querying.
 fn browse_loop(shared: &Arc<Shared>) {
     let mut browser: Option<Browser> = None;
     while !shared.stopping() {
-        if !shared.presence.load(Ordering::SeqCst) {
+        if !shared.browsing.load(Ordering::SeqCst) {
             browser = None;
             if !shared.rest(BROWSE_TICK) {
                 break;
@@ -3485,8 +3501,8 @@ fn browse_loop(shared: &Arc<Shared>) {
                 // again on the next pass costs one daemon start per
                 // `BROWSE_TICK`, which is what a healthy loop spends on one
                 // `next` call anyway, and it is what lets a browser appear
-                // when presence comes back on a network that does allow
-                // multicast.
+                // when browsing becomes allowed again on a network that does
+                // allow multicast.
                 if !shared.rest(BROWSE_TICK) {
                     break;
                 }
