@@ -23,3 +23,7 @@ pub(crate) use write::{
 mod locks;
 
 pub(crate) use locks::{lock_verb, unlock_verb};
+
+mod options;
+
+pub(crate) use options::{ALLOWED_METHODS, authorized, options};
