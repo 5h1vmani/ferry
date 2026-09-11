@@ -340,12 +340,14 @@ pub(crate) struct TransferRow {
     /// runs.
     ///
     /// Set once at row creation to whichever chunk size the engine's own
-    /// setting names at that moment, and updated in `transfer::first_pass`
-    /// once the source's real size is known. `set_chunk_size` only decides
-    /// the next first pass, so a later change to it must not retroactively
-    /// change what `chunks_total` reports for a transfer already under way,
-    /// nor for one loaded back from a record written under an earlier
-    /// setting. See `chunk_counts`.
+    /// setting names at that moment, a placeholder until `transfer::
+    /// first_pass` fetches the peer's manifest and overwrites it with the
+    /// manifest's own chunk size, the one this transfer actually verifies
+    /// against from then on. `set_chunk_size` only decides the next first
+    /// pass, so a later change to it must not retroactively change what
+    /// `chunks_total` reports for a transfer already under way, nor for one
+    /// loaded back from a record written under an earlier setting. See
+    /// `chunk_counts`.
     pub(crate) chunk_size: ChunkSize,
 }
 

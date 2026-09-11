@@ -668,6 +668,13 @@ fn first_pass<S: Read + Write>(
             row.bytes_total = size;
             row.source_size = Some(size);
             row.source_mtime = Some(entry.modified_unix_secs);
+            // F6: the row started out with whichever chunk size
+            // `set_chunk_size` named when it was created, a placeholder
+            // until the peer's own manifest is known. That manifest is the
+            // one this transfer actually verifies against, so `chunks_total`
+            // and `chunks_verified` must be counted at its chunk size from
+            // here on, not the placeholder.
+            row.chunk_size = manifest.chunk_size();
         }
     }
 
