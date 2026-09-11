@@ -12,7 +12,7 @@ use ferry_core::adb::{Adb, find_adb};
 use ferry_core::chunk::ChunkSize;
 use ferry_core::discovery::{Advertiser, Browser, Event};
 use ferry_core::localfs::LocalFs;
-use ferry_core::noise::{PublicKey, QR_NONCE_LEN, SecureStream, StaticKey};
+use ferry_core::noise::{NoiseError, PublicKey, QR_NONCE_LEN, SecureStream, StaticKey};
 use ferry_core::offer::{Offer, PairingError as OfferError};
 use ferry_core::ops::{FileKind, OpError};
 use ferry_core::path::{PathError, RemotePath};
@@ -1192,22 +1192,20 @@ impl Engine {
     /// Calling this while a pairing is already running only reports the
     /// current state again, under either method.
     pub fn start_pairing_with(&self, method: PairingMethod) {
-        {
-            let state = lock(&self.shared.state);
-            if state.pairing.is_running() {
-                let shown = state.pairing.shown.clone();
-                drop(state);
-                self.shared.notify.pairing(&shown);
-                return;
-            }
-        }
+        // The running check and the claim below happen under one lock, in
+        // `begin_pairing_deadline`: a second call cannot land in the gap
+        // between them the way two separate lock acquisitions would allow.
+        let Some(expires_unix_secs) = begin_pairing_deadline(&self.shared) else {
+            let shown = lock(&self.shared.state).pairing.shown.clone();
+            self.shared.notify.pairing(&shown);
+            return;
+        };
         match method {
             PairingMethod::Code => {
-                let expires_unix_secs = begin_pairing_deadline(&self.shared);
                 self.shared
                     .set_pairing(&PairingState::Waiting { expires_unix_secs });
             }
-            PairingMethod::Qr => start_offering(&self.shared),
+            PairingMethod::Qr => start_offering(&self.shared, expires_unix_secs),
         }
     }
 
@@ -1239,13 +1237,11 @@ impl Engine {
         {
             return Err(from_offer(OfferError::AlreadyPaired));
         }
-        {
-            let state = lock(&self.shared.state);
-            if state.pairing.is_running() {
-                return Err(failed("Runtime::PairingBusy"));
-            }
-        }
-        let expires_unix_secs = begin_pairing_deadline(&self.shared);
+        // The running check and the claim happen under one lock; see
+        // `begin_pairing_deadline`.
+        let Some(expires_unix_secs) = begin_pairing_deadline(&self.shared) else {
+            return Err(failed("Runtime::PairingBusy"));
+        };
         self.shared
             .set_pairing(&PairingState::Waiting { expires_unix_secs });
 
@@ -1299,28 +1295,34 @@ impl Engine {
     /// Works the same way for both pairing methods: whichever of `held`
     /// (code) or `requested` (QR) is holding a connection is the one taken.
     pub fn confirm_pairing(&self, accept: bool) {
-        let held =
-            {
-                let mut state = lock(&self.shared.state);
-                state
-                    .pairing
-                    .held
-                    .take()
-                    .map(|held| {
+        let held = {
+            let mut state = lock(&self.shared.state);
+            state
+                .pairing
+                .held
+                .take()
+                .map(|held| {
+                    (
+                        held.connection.paired.peer,
+                        held.connection.paired.stream,
+                        held.addr,
+                        held.accepted,
+                        None,
+                    )
+                })
+                .or_else(|| {
+                    state.pairing.requested.take().map(|requested| {
                         (
-                            held.connection.paired.peer,
-                            held.connection.paired.stream,
-                            held.addr,
-                            held.accepted,
+                            requested.peer,
+                            requested.stream,
+                            requested.addr,
+                            true,
+                            Some((requested.name, requested.kind)),
                         )
                     })
-                    .or_else(|| {
-                        state.pairing.requested.take().map(|requested| {
-                            (requested.peer, requested.stream, requested.addr, true)
-                        })
-                    })
-            };
-        let Some((peer_key, stream, addr, accepted)) = held else {
+                })
+        };
+        let Some((peer_key, stream, addr, accepted, expected_hello)) = held else {
             if !accept {
                 self.shared.set_pairing(&PairingState::Idle);
             }
@@ -1333,7 +1335,14 @@ impl Engine {
         }
         let shared = Arc::clone(&self.shared);
         self.shared.keep(std::thread::spawn(move || {
-            finish_pairing(&shared, peer_key, stream, addr, accepted);
+            finish_pairing(
+                &shared,
+                peer_key,
+                stream,
+                addr,
+                accepted,
+                expected_hello.as_ref(),
+            );
         }));
     }
 
@@ -2250,6 +2259,12 @@ fn accept_qr_offer(shared: &Arc<Shared>, negotiated: NegotiatedPending, remote: 
         // A refused hold means another scan is already `Requested`. Nothing
         // to report; see `hold_qr_pairing`.
         Ok(connection) => drop(hold_qr_pairing(shared, connection, remote)),
+        // A wrong or guessed nonce is a stranger, not a failure of this
+        // offer: the connection is simply dropped, and the offer stays
+        // live for the real phone to still scan and complete. Every other
+        // handshake failure still ends the offer, the same as any other
+        // pairing failure does.
+        Err(TcpError::Noise(NoiseError::UnknownOffer)) => {}
         Err(error) => report_pairing_failure(shared, &error),
     }
 }
@@ -2342,7 +2357,8 @@ fn hold_qr_pairing(
     addr: SocketAddr,
 ) -> Result<(), FerryError> {
     let IkPairedConnection { accepted, .. } = connection;
-    let name = accepted.name;
+    let name = accepted.name.clone();
+    let kind = accepted.kind;
     {
         let mut state = lock(&shared.state);
         if !state.pairing.is_offering() {
@@ -2356,10 +2372,13 @@ fn hold_qr_pairing(
             stream: accepted.stream,
             peer: accepted.peer,
             addr,
+            name: accepted.name,
+            kind,
         });
     }
     shared.set_pairing(&PairingState::Requested {
         name,
+        kind: kind.into(),
         transport: Transport::Wifi,
     });
     Ok(())
@@ -2377,15 +2396,24 @@ fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
 ///
 /// Shared by both pairing methods: `confirm_pairing` calls this with
 /// whichever of `HeldPairing` (code) or `RequestedPairing` (QR) it took,
-/// already unwrapped to the four fields this needs, and `dial_offer` calls
-/// it directly, with `accepted: false`, since the QR method's phone side
-/// asks no question of its own before this runs.
+/// already unwrapped to the fields this needs, and `dial_offer` calls it
+/// directly, with `accepted: false`, since the QR method's phone side asks
+/// no question of its own before this runs.
+///
+/// `expected_hello` is the QR method's own message-one hello, from
+/// `RequestedPairing`, when a scan is what `confirm_pairing` took; `None`
+/// for the code method and for `dial_offer`'s own call, neither of which
+/// has an earlier hello to check against. When it is `Some`, the hello
+/// this function exchanges here must agree with it, or the pairing fails:
+/// the name and kind shown in `Requested`, that a person already confirmed
+/// against, must be the same identity this finishes pairing with.
 fn finish_pairing(
     shared: &Arc<Shared>,
     peer_key: PublicKey,
     stream: SecureStream,
     addr: SocketAddr,
     accepted: bool,
+    expected_hello: Option<&(String, CoreDeviceKind)>,
 ) {
     let (name, kind, stream) = match hello_with_deadline(shared, stream) {
         Ok(triple) => triple,
@@ -2394,6 +2422,16 @@ fn finish_pairing(
             return;
         }
     };
+    if let Some((expected_name, expected_kind)) = expected_hello
+        && (name != *expected_name || kind != *expected_kind)
+    {
+        // The scan's message one and this later hello disagree about who
+        // this is: treated as an ordinary bad hello, the same code
+        // `exchange_hello` itself returns when the first frame is not a
+        // hello at all.
+        fail_pairing(shared, failed("RpcError::UnexpectedFrameKind"));
+        return;
+    }
 
     // The watchdog may have given up while the names crossed. A pairing that
     // already reported Failed must not store a device or report Confirmed
@@ -2543,18 +2581,32 @@ fn pairing_watchdog(shared: &Arc<Shared>) {
     }
 }
 
-/// Reset pairing to idle, arm the shared two minute deadline, and start the
-/// watchdog that gives up once it passes. Returns the deadline in Unix
-/// seconds, for the caller's own first published state.
+/// Atomically checks that no pairing is running and, if not, claims the
+/// slot: resets pairing to idle, arms the shared two minute deadline, and
+/// starts the watchdog that gives up once it passes. Returns the deadline
+/// in Unix seconds, for the caller's own first published state.
+///
+/// The check and the reset happen under one lock on `shared.state`, held
+/// the whole time. `start_pairing_with` and `offer_scanned` used to check
+/// `is_running` and then call this as two separate lock acquisitions, which
+/// let a second call land in between and start a second pairing attempt of
+/// its own; going through this one function closes that gap for both.
 ///
 /// Shared by both of `start_pairing_with`'s branches and by
 /// `offer_scanned`'s dial, so "two minutes, one watchdog" stays one fact
 /// instead of three copies of it. `docs/engine-contract.md` item 12.
-fn begin_pairing_deadline(shared: &Arc<Shared>) -> i64 {
+///
+/// # Errors
+///
+/// Returns `None`, with nothing reset, while a pairing is already running.
+fn begin_pairing_deadline(shared: &Arc<Shared>) -> Option<i64> {
     let timeout = *lock(&shared.pairing_timeout);
     let expires_unix_secs = now_unix_secs() + i64::try_from(timeout.as_secs()).unwrap_or(i64::MAX);
     {
         let mut state = lock(&shared.state);
+        if state.pairing.is_running() {
+            return None;
+        }
         state.pairing = Pairing::idle();
         state.pairing.deadline = Some(Instant::now() + timeout);
         state.pairing.deadline_unix_secs = Some(expires_unix_secs);
@@ -2563,7 +2615,7 @@ fn begin_pairing_deadline(shared: &Arc<Shared>) -> i64 {
     shared.keep(std::thread::spawn(move || {
         pairing_watchdog(&watchdog_shared);
     }));
-    expires_unix_secs
+    Some(expires_unix_secs)
 }
 
 /// This device's non-loopback interface addresses, each paired with `port`.
@@ -2596,36 +2648,30 @@ fn begin_pairing_deadline(shared: &Arc<Shared>) -> i64 {
 /// the phone that scans it fails to dial any and reports
 /// `Runtime::NotReachable`, the same as it would for a paired device that
 /// dropped off the network.
+///
+/// Capped at [`ferry_core::offer::MAX_DIAL_ADDRESSES`], private-range
+/// addresses first, by [`ferry_core::offer::dialable_addresses`]: the same
+/// policy `dial_offer` applies to a scanned offer's own list, since a
+/// machine with many interfaces should not draw a QR code that makes a
+/// phone try dialing all of them.
 fn local_wifi_addresses(port: u16) -> Vec<SocketAddr> {
-    if_addrs::get_if_addrs()
+    let addresses = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
-        .filter(|interface| !interface.is_loopback() && !is_link_local(interface.ip()))
-        .map(|interface| SocketAddr::new(interface.ip(), port))
-        .collect()
-}
-
-/// True for an address that is only meaningful together with the interface
-/// it came from: `169.254.0.0/16`, or `fe80::/10`.
-///
-/// `Ipv4Addr::is_link_local` already exists in `std`. Its `Ipv6Addr`
-/// counterpart is not yet stable, so the top ten bits are checked by hand:
-/// `0xfe80` masked with `0xffc0` is exactly `fe80::/10`.
-fn is_link_local(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => v4.is_link_local(),
-        std::net::IpAddr::V6(v6) => v6.segments()[0] & 0xffc0 == 0xfe80,
-    }
+        .map(|interface| SocketAddr::new(interface.ip(), port));
+    ferry_core::offer::dialable_addresses(addresses)
 }
 
 /// Make a QR offer and publish `Offering`, or `Failed` if the system has no
 /// randomness to make a nonce with.
 ///
-/// The nonce is made before anything about this pairing attempt is touched,
-/// so a failure here can report `Failed` directly: nothing has reset
-/// `state.pairing` yet, no deadline is armed, and no watchdog is running to
-/// race against.
-fn start_offering(shared: &Arc<Shared>) {
+/// `expires_unix_secs` is the deadline `start_pairing_with` already
+/// claimed through `begin_pairing_deadline`, atomically with its running
+/// check: by the time this runs, pairing is already reset to idle and the
+/// watchdog is already racing against that deadline. A failure here still
+/// reports `Failed` correctly: `set_pairing` clears the deadline the
+/// watchdog is waiting on once pairing is no longer running.
+fn start_offering(shared: &Arc<Shared>, expires_unix_secs: i64) {
     let mut nonce = [0u8; QR_NONCE_LEN];
     if getrandom::fill(&mut nonce).is_err() {
         shared.set_pairing(&PairingState::Failed {
@@ -2634,7 +2680,6 @@ fn start_offering(shared: &Arc<Shared>) {
         return;
     }
 
-    let expires_unix_secs = begin_pairing_deadline(shared);
     let port = lock(&shared.net)
         .as_ref()
         .map_or(shared.listen_port, |net| net.local_addr().port());
@@ -2659,9 +2704,36 @@ fn start_offering(shared: &Arc<Shared>) {
 /// `finish_pairing`, with no local confirm step. `docs/engine-contract.md`
 /// item 12: the phone asks no question of its own; scanning the code was
 /// its answer.
+///
+/// `offer.addresses` came from a scanned QR code, so it is not trusted as
+/// bounded or ordered: it is filtered the same way `local_wifi_addresses`
+/// filters this device's own, through
+/// [`ferry_core::offer::dialable_addresses`], before a single address is
+/// dialed. A real offer's addresses always survive that filter already,
+/// since `local_wifi_addresses` is what produced them; reaching an offer
+/// whose every address is loopback or link-local means something unusual,
+/// not a hostile flood, since the cap below still bounds that case the
+/// same as any other, so the un-filtered list is tried instead of dialing
+/// nothing. The loop also gives up as soon as `stop` begins, so a `stop`
+/// that lands while this is dialing an unreachable address does not wait
+/// for every remaining one first.
 fn dial_offer(shared: &Arc<Shared>, offer: &Offer) {
+    let filtered = ferry_core::offer::dialable_addresses(offer.addresses.iter().copied());
+    let addresses = if filtered.is_empty() {
+        offer
+            .addresses
+            .iter()
+            .copied()
+            .take(ferry_core::offer::MAX_DIAL_ADDRESSES)
+            .collect()
+    } else {
+        filtered
+    };
     let mut last_error = None;
-    for addr in &offer.addresses {
+    for addr in &addresses {
+        if shared.stopping() {
+            return;
+        }
         match tcp::pair_ik(
             *addr,
             &shared.key,
@@ -2673,11 +2745,14 @@ fn dial_offer(shared: &Arc<Shared>, offer: &Offer) {
             Ok(stream) => {
                 // The phone dialed, so it lets the stream go once names are
                 // exchanged; see `finish_pairing`.
-                finish_pairing(shared, offer.static_key, stream, *addr, false);
+                finish_pairing(shared, offer.static_key, stream, *addr, false, None);
                 return;
             }
             Err(error) => last_error = Some(error),
         }
+    }
+    if shared.stopping() {
+        return;
     }
     let error = last_error.map_or_else(|| failed("Runtime::NotReachable"), |e| from_tcp(&e));
     fail_pairing(shared, error);
