@@ -643,8 +643,8 @@ moves the same way a pull's does. `push_files`
 makes a batch with `Direction::Push`, `Origin::Manual`, label
 `remote_folder`. A push is stored, resumed and retried like a pull.
 
-**Tests.** The happy path in `two_engines.rs`. In `engine_paths.rs`, a cut
-at three points of a push resumes and rewrites at most one chunk. No full
+**Tests.** The happy path in `two_engines_push.rs`. In `push_paths.rs`, a
+cut at three points of a push resumes and rewrites at most one chunk. No full
 sweep for push: the resume rule is the same code path as the pull sweep
 already proves, and the sweep is the most expensive test in the suite.
 
@@ -865,9 +865,8 @@ through the transfer worker pool. That pool takes transfer records and
 runs whole-file pulls, and the bridge now has its own connection pool.
 The prefetch uses the bridge pool. PLAN section 12 says so after this.
 
-**Tests.** `tests/item_17_prefetch.rs`. The HTTP test client that
-`tests/dav.rs` holds moves to `tests/common/mod.rs` in its own commit so
-this file and `dav.rs` share it. One test lists a folder holding three
+**Tests.** `tests/item_17_prefetch.rs`. The HTTP test client lives in
+`tests/common/mod.rs`, so this file and the `dav_*.rs` files share it. One test lists a folder holding three
 images and one text file over PROPFIND, waits until the phone's access
 log shows three reads, then requests the first kilobyte of one image
 with a `Range` header and proves the phone's log gains no new read. A

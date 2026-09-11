@@ -11,8 +11,8 @@
 //! The one test that pairs two engines does it over loopback, the way every
 //! other test file in this crate does.
 //!
-//! `Inbox`, `Recorder`, `build_as` and `pair` are copied from
-//! `two_engines.rs`, as every test file in this crate copies them.
+//! `Inbox`, `Recorder`, `build_as` and `pair` come from
+//! `tests/common/engines.rs`, which every two-engine test file shares.
 
 mod common;
 

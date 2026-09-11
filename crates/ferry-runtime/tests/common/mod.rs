@@ -1,10 +1,10 @@
-//! What `tests/dav.rs` and `tests/item_17_prefetch.rs` both need to talk
-//! to a running bridge: two paired engines in one process, and a
+//! What the `dav_*.rs` files and `tests/item_17_prefetch.rs` all need to
+//! talk to a running bridge: two paired engines in one process, and a
 //! hand-written HTTP client over `TcpStream`.
 //!
 //! `docs/engine-contract.md`, item 17, asks for this file so the two test
 //! files share one client instead of copying it. Every item here moved
-//! from `tests/dav.rs` unchanged apart from its visibility.
+//! from the bridge tests unchanged apart from its visibility.
 //!
 //! `engines.rs` beside this file holds the two-engine harness that five
 //! test files used to copy: the listener, the inbox, one `Side` per
@@ -65,7 +65,7 @@ pub(crate) fn core_kind(kind: DeviceKind) -> CoreDeviceKind {
 
 /// Writes a peer store that already holds the other side, so the two
 /// engines recognise each other without running the pairing handshake:
-/// this file tests the bridge, not pairing, which `two_engines.rs` already
+/// this file tests the bridge, not pairing, which `two_engines_pairing.rs` already
 /// covers.
 pub(crate) fn seed_peer(
     data_dir: &std::path::Path,

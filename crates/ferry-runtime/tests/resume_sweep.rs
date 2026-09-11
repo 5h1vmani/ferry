@@ -2,7 +2,7 @@
 //!
 //! Job 3 in `docs/jobs.md` promises that a dropped transfer continues, and
 //! that a resume refetches at most one chunk however and whenever the link
-//! broke. `engine_paths.rs` proves that promise at one moment: the link
+//! broke. `transfer_paths.rs` proves that promise at one moment: the link
 //! breaks once, after the first chunk has landed. This file proves it at
 //! every moment across a whole transfer.
 //!
@@ -256,7 +256,7 @@ fn chunk_boundaries() -> Vec<u64> {
 // ---------------------------------------------------------------------------
 // A minimal harness: one engine, one hand-built peer, paired.
 //
-// This mirrors the shape `engine_paths.rs` uses (a peer built from
+// This mirrors the shape `tests/common/paths.rs` uses (a peer built from
 // `ferry-core`'s own `tcp`, `noise`, and `rpc` primitives), trimmed to what
 // this file needs: no slow reads, no capped reads, and a single fixed file.
 // ---------------------------------------------------------------------------
@@ -476,7 +476,7 @@ impl FileOps for OneFile {
 ///
 /// The engine dials it fresh on every retry. Its accept loop keeps running
 /// across connections, so it is already ready for a new one once an earlier
-/// one ends: this is the same shape `engine_paths.rs`'s `Peer` uses, and
+/// one ends: this is the same shape `tests/common/paths.rs`'s `Peer` uses, and
 /// `a_transfer_pauses_when_the_link_breaks_and_finishes_when_it_returns`
 /// there already confirms it works. Nothing here breaks the peer's own side
 /// of the link; the cut lives entirely on the engine's dialed stream.

@@ -11,8 +11,8 @@
 //! The offering Mac is unchanged. It still shows `Requested` with the
 //! phone's name and confirms on its own side.
 //!
-//! The harness here is copied from the QR section of `two_engines.rs`, per
-//! `docs/agent-runs.md` rule 3: one test file per item.
+//! The harness is the shared one in `tests/common/engines.rs`. The QR
+//! tests it was written beside are now `tests/two_engines_qr_pairing.rs`.
 
 mod common;
 
@@ -57,7 +57,7 @@ fn payload_of(state: &PairingState) -> Vec<u8> {
 /// Replace a real `Offering` payload's addresses with `addr` alone, and
 /// re-encode it.
 ///
-/// The same substitution the QR tests in `two_engines.rs` make, and for the
+/// The same substitution the tests in `two_engines_qr_pairing.rs` make, and for the
 /// same reason. These engines dial each other on the loopback address they
 /// actually bound, not on this machine's real interfaces.
 fn offer_with_address(payload: &[u8], addr: SocketAddr) -> Vec<u8> {

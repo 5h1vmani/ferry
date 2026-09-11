@@ -27,7 +27,7 @@ use ferry_runtime::{TransferState, generate_key};
 /// which is what the skip rules turn on. The Mac dials it for `list`, for
 /// each `set_auto_copy(true)` while reachable, and for each run that follows
 /// from that: `pair_with_peer` alone does not make the Mac consider the peer
-/// reachable, the same way it does not in `two_engines.rs`, because the Mac
+/// reachable, the same way it does not in `two_engines_auto_copy.rs`, because the Mac
 /// is the side that dialled to pair and only the accepting side's own
 /// `mark_reachable` call ever fires from that connection.
 ///

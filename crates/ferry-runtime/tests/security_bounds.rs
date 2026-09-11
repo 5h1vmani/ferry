@@ -2,8 +2,8 @@
 //! findings 1, 2, 4, 5, 6 and 7.
 //!
 //! One file, per `docs/agent-runs.md` rule 3: every test this fix pass adds
-//! lives here, not appended to `engine_paths.rs` or any other shared file.
-//! The helpers below are copied from `engine_paths.rs` and trimmed to what
+//! lives here, not appended to a shared file. The helpers below are
+//! copied from `tests/common/paths.rs` and trimmed to what
 //! these tests use.
 //!
 //! Finding 2's own test is not here. `AccessLog`, the type its per-device
@@ -19,7 +19,7 @@
 //! so no test.
 //!
 //! Finding 7's test needs a running `WebDAV` bridge, which
-//! `tests/common/mod.rs` already builds for `tests/dav.rs`; `mod common`
+//! `tests/common/mod.rs` already builds for the `dav_*.rs` files; `mod common`
 //! below reuses it rather than copying it a third time.
 
 mod common;
@@ -45,7 +45,7 @@ use common::{TestClient, build_side, loopback_addr as dav_loopback_addr, port_of
 const PATIENCE: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
-// The listener one engine is given. Copied from `engine_paths.rs`.
+// The listener one engine is given. Copied from `tests/common/paths.rs`.
 // ---------------------------------------------------------------------------
 
 /// What one engine has told the app so far.
@@ -112,7 +112,7 @@ impl EngineListener for Recorder {
 }
 
 // ---------------------------------------------------------------------------
-// Engines under test. Copied from `engine_paths.rs`.
+// Engines under test. Copied from `tests/common/paths.rs`.
 // ---------------------------------------------------------------------------
 
 /// One engine, its inbox, and the folders it owns.
@@ -246,12 +246,13 @@ fn is_confirmed(state: &PairingState) -> bool {
 }
 
 /// Rebuild the Noise key from the bytes the app would have stored. Copied
-/// from `engine_paths.rs`.
+/// from `tests/common/paths.rs`.
 fn static_key(key: &KeyPair) -> StaticKey {
     StaticKey::from_stored(&key.private, &key.public).expect("a stored key pair should load")
 }
 
-/// The public half, as `ferry-core` names it. Copied from `engine_paths.rs`.
+/// The public half, as `ferry-core` names it. Copied from
+/// `tests/common/paths.rs`.
 fn public_key(key: &KeyPair) -> PublicKey {
     let mut out = [0u8; 32];
     out.copy_from_slice(&key.public);
@@ -399,7 +400,7 @@ fn a_ninth_serving_connection_from_one_peer_is_refused() {
     let target_public = public_key(&target.key);
 
     // Each of the first `MAX_SERVING_PER_PEER` connections, reconnecting as
-    // the already-paired friend the way `engine_paths.rs`'s hand-built
+    // the already-paired friend the way `tests/common/paths.rs`'s hand-built
     // peers do, must be served: the handshake succeeds and the name
     // exchange that only a served connection answers completes.
     let mut held = Vec::new();

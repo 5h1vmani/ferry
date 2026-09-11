@@ -9,8 +9,8 @@
 //! same remote name, could still collide. This file is that guard's own
 //! test file, one file per item, per `docs/agent-runs.md` rule 3.
 //!
-//! Small helpers are copied from `engine_paths.rs` rather than imported
-//! across test files, per that file's own convention.
+//! Small helpers are copied from `tests/common/paths.rs` rather than
+//! imported, because this file needs only a few of them.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex};
@@ -207,7 +207,7 @@ fn loopback_addr(side: &Side) -> SocketAddr {
 }
 
 /// Pair two real engines with a code, and return the phone's key as the Mac
-/// knows it. Mirrors `engine_paths.rs`'s helper of the same name.
+/// knows it. Mirrors `tests/common/paths.rs`'s helper of the same name.
 fn pair_two_engines(phone: &Side, mac: &Side) -> String {
     phone.engine.set_reachable(true);
     phone.engine.start_pairing_with(PairingMethod::Code);

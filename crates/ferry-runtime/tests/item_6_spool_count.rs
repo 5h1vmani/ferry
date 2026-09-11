@@ -9,7 +9,7 @@
 //! failed one lowers it, rather than a bug leaving it to only ever grow.
 //!
 //! The engines, the folders, and the HTTP client this file drives are
-//! `tests/common/mod.rs`'s, the same ones `tests/dav.rs` uses for the
+//! `tests/common/mod.rs`'s, the same ones the `dav_*.rs` files use for the
 //! bridge's other tests.
 
 mod common;
@@ -140,7 +140,7 @@ fn two_puts_in_a_row_leave_the_running_count_exact_and_a_removed_spool_file_lowe
     );
 
     // --- Two ordinary PUTs in a row, each fully landed before the next
-    // starts, exactly as `tests/dav.rs`'s I2 test does it. Every spool
+    // starts, exactly as `tests/dav_write.rs`'s I2 test does it. Every spool
     // file created along the way is removed once its landing finishes
     // (`put.rs`'s `SpoolFile` drops at the end of `put_file`), so the
     // running count returns to what the folder really holds, not to

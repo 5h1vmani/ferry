@@ -32,7 +32,8 @@ fn public_key(key: &KeyPair) -> PublicKey {
 /// `docs/engine-contract.md`, batch C, item 15: a root change must reach an
 /// already-connected peer on its very next operation, with no reconnect.
 /// `Engine::list` always dials fresh, so this drives one connection by hand,
-/// the same way `engine_paths.rs` does, to keep it open across the change.
+/// the same way `tests/common/paths.rs` does, to keep it open across the
+/// change.
 #[test]
 fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
     let phone = build_as("Pixel 3 XL", DeviceKind::Phone);

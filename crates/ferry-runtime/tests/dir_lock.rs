@@ -8,7 +8,7 @@
 //! flip: a stale file must stop blocking a new engine, and a live engine
 //! must still block a second one on the same folder.
 //!
-//! The helpers below are the smallest slice of `engine_paths.rs` needed to
+//! The helpers below are the smallest slice of `tests/common/paths.rs` needed to
 //! build an engine: a no-op listener and a `make_engine` that mirrors the
 //! one there.
 

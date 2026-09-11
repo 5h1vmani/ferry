@@ -18,9 +18,9 @@
 //! the peer, by having it confirm a pairing whose other end already
 //! stopped, and timing how long it takes to notice.
 //!
-//! The harness here is copied from the code-pairing section of
-//! `two_engines.rs`, per `docs/agent-runs.md` rule 3: one test file per
-//! item.
+//! The harness is the shared one in `tests/common/engines.rs`. The
+//! code-pairing tests it was written beside are now
+//! `tests/two_engines_pairing.rs`.
 
 mod common;
 
@@ -38,7 +38,7 @@ fn is_failed(state: &PairingState) -> bool {
 /// must be registered with `Shared`, the same as an ordinary connection,
 /// so `stop` shuts it down directly instead of leaving it open.
 ///
-/// This drives the code-pairing dial by hand, the same way `two_engines.rs`
+/// This drives the code-pairing dial by hand, the same way `pair`
 /// does, and stops the Mac the moment both sides show the same code: the
 /// held state a person would otherwise sit in while comparing digits.
 ///

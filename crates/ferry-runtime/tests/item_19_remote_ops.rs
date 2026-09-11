@@ -1,7 +1,7 @@
 //! Item 19: the file operations the phone's `DocumentsProvider` sits on.
 //!
 //! `docs/engine-contract.md`, item 19. Two engines in one process, paired
-//! the same way `two_engines.rs` pairs them, with the Mac standing in for
+//! the same way `two_engines_pairing.rs` pairs them, with the Mac standing in for
 //! the phone's provider: it walks `stat`, `write_at`, `read_at`,
 //! `truncate`, `rename`, `mkdir` and `delete` against the peer, and reads
 //! its own access log back to see what it recorded.
@@ -14,11 +14,9 @@
 //! Every engine binds `127.0.0.1` on a port the operating system picks, and
 //! every wait is a condition variable with a generous deadline.
 //!
-//! The helpers below are copied from `two_engines.rs`, as every test file in
-//! this crate does today (`docs/agent-runs.md`, rule 3): one test file per
-//! item, never appended to a shared one. The one test here that speaks HTTP
-//! to a running bridge uses the shared client in `tests/common/mod.rs`
-//! instead of copying it again.
+//! The two-engine harness comes from `tests/common/engines.rs`. The one
+//! test here that speaks HTTP to a running bridge uses the shared client
+//! in `tests/common/mod.rs`.
 
 mod common;
 
@@ -28,10 +26,6 @@ use std::net::SocketAddr;
 
 use ferry_core::limits::MAX_WRITE_LEN;
 use ferry_runtime::{AccessEntry, AccessVerb, Actor, DeviceKind, EntryKind, generate_key};
-
-// ---------------------------------------------------------------------------
-// The two-engine harness, copied from `two_engines.rs`.
-// ---------------------------------------------------------------------------
 
 /// This side's own entry for `verb`, or a panic naming what is missing.
 ///

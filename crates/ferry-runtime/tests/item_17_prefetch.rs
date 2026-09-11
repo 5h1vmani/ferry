@@ -1,6 +1,6 @@
 //! Thumbnail prefetch, `docs/engine-contract.md`, item 17.
 //!
-//! Two paired engines in one process, the same way `tests/dav.rs` runs
+//! Two paired engines in one process, the same way `tests/dav_browse.rs` runs
 //! them: the Mac mounts the phone's shared root and browses it through the
 //! bridge, and the phone serves real files from a real folder. Both tests
 //! read the phone's own access log, so every claim about what did or did
@@ -380,7 +380,7 @@ fn a_get_that_needs_the_wire_never_mixes_two_versions_of_a_file() {
 // ---------------------------------------------------------------------------
 
 /// Rebuild the Noise key from the bytes the app would have stored. Copied
-/// from `tests/engine_paths.rs`, which needs the same conversion for the
+/// from `tests/common/paths.rs`, which needs the same conversion for the
 /// same reason: a hand rolled peer speaks `ferry-core`'s wire types
 /// directly, not `ferry_runtime::KeyPair`.
 fn static_key(key: &KeyPair) -> StaticKey {
@@ -470,7 +470,7 @@ impl FileOps for SilentPeerFs {
 }
 
 /// A hand rolled peer, built out of the same `ferry-core` parts the real
-/// engine uses (`tcp`, `rpc`), the way `tests/engine_paths.rs` builds one
+/// engine uses (`tcp`, `rpc`), the way `tests/common/paths.rs` builds one
 /// for the same reason: this behaviour cannot be shown with two real
 /// engines, because both follow the same rules and neither can be made to
 /// go silent without closing its socket.
@@ -521,7 +521,7 @@ impl SilentPeer {
 
     /// Stops the accept loop, which closes the port. The serving threads
     /// already parked inside a `read` are left running, the same known,
-    /// accepted leak `tests/engine_paths.rs`'s own `NeverAnswersFs` test
+    /// accepted leak `tests/stop_paths.rs`'s own `NeverAnswersFs` test
     /// leaves: nothing needs them to end, since the test process does.
     fn close(&self) {
         self.closing.store(true, Ordering::SeqCst);
