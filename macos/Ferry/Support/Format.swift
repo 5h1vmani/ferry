@@ -56,31 +56,50 @@ enum FerryFormat {
         return String(format: "%d:%02d", clamped / 60, clamped % 60)
     }
 
-    /// "14:31" for one access log row. The person's own clock format, so
-    /// a twelve hour locale reads "2:31 PM".
-    static func timeOfDay(unixSecs: Int64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(unixSecs))
+    /// Built once rather than per call: the adapter calls `timeOfDay` for up
+    /// to 1,000 rows on every access log tick (docs/engine-contract.md, item
+    /// 13), and a fresh `DateFormatter` for each of those was the cost this
+    /// caches away. A `DateFormatter` that is only ever read from, never
+    /// reconfigured after this, is safe to share that way.
+    private static let timeOfDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
         formatter.timeStyle = .short
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    /// "14:31" for one access log row. The person's own clock format, so
+    /// a twelve hour locale reads "2:31 PM".
+    static func timeOfDay(unixSecs: Int64) -> String {
+        timeOfDayFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(unixSecs)))
     }
+
+    /// Built once, for the same reason as `timeOfDayFormatter`.
+    private static let relativeFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter
+    }()
 
     /// "2 hours ago" for a time the engine reports in Unix seconds.
     static func relative(unixSecs: Int64) -> String {
         let date = Date(timeIntervalSince1970: TimeInterval(unixSecs))
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .full
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
-    /// "September 10, 2026" for a time the engine reports in Unix seconds.
-    static func longDate(unixSecs: Int64) -> String {
-        let date = Date(timeIntervalSince1970: TimeInterval(unixSecs))
+    /// Built once, for the same reason as `timeOfDayFormatter`: `longDate`
+    /// runs once per access log entry that falls outside today and
+    /// yesterday, while the day grouping decides each row's title.
+    private static let longDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .long
         formatter.timeStyle = .none
-        return formatter.string(from: date)
+        return formatter
+    }()
+
+    /// "September 10, 2026" for a time the engine reports in Unix seconds.
+    static func longDate(unixSecs: Int64) -> String {
+        longDateFormatter.string(from: Date(timeIntervalSince1970: TimeInterval(unixSecs)))
     }
 
     /// "481 920" from the six digits the engine reports, grouped three and
