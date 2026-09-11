@@ -1643,10 +1643,16 @@ fn two_devices_pair_by_scanning_a_qr_code() {
     let requested = mac
         .inbox
         .wait_pairing("the Mac to show the scan", is_requested);
-    let PairingState::Requested { name, transport } = requested else {
+    let PairingState::Requested {
+        name,
+        kind,
+        transport,
+    } = requested
+    else {
         panic!("expected Requested, got {requested:?}");
     };
     assert_eq!(name, "Pixel 3 XL");
+    assert_eq!(kind, DeviceKind::Phone);
     assert_eq!(transport, Transport::Wifi);
 
     // The phone asks no question of its own: scanning was its answer. Only
@@ -1678,6 +1684,149 @@ fn two_devices_pair_by_scanning_a_qr_code() {
 
     mac.engine.stop();
     phone.engine.stop();
+}
+
+#[test]
+// J-4: a second hello that disagrees with message one's fails the pairing,
+// with the same code an ordinary bad hello gets. Built by hand, driving
+// `tcp::pair_ik` and `exchange_hello` directly: no real phone would ever
+// claim two different names, so this is the misbehaving peer this crate's
+// own dialing code cannot construct.
+fn a_second_hello_that_disagrees_with_message_one_fails_pairing() {
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    mac.engine.set_reachable(true);
+
+    mac.engine.start_pairing_with(PairingMethod::Qr);
+    let offering = mac
+        .inbox
+        .wait_pairing("the Mac to offer a QR code", is_offering);
+    let (payload, _) = offer_of(&offering);
+    let addr = loopback_addr(&mac);
+    let offer = Offer::decode(&offer_with_address(&payload, addr)).expect("a valid offer");
+
+    let attacker_key = StaticKey::generate().expect("a fresh key pair");
+    let dial = std::thread::spawn(move || {
+        // Message one's hello: this is what the Mac shows as `Requested`.
+        let mut stream = tcp::pair_ik(
+            addr,
+            &attacker_key,
+            &offer.static_key,
+            &offer.nonce,
+            "Real Name",
+            CoreDeviceKind::Phone,
+        )
+        .expect("the IK handshake should complete with the real nonce");
+        // The Mac writes its own hello, then reads this one. A real phone
+        // sends the same name twice; this one does not.
+        exchange_hello(&mut stream, "Different Name", CoreDeviceKind::Phone)
+    });
+
+    let requested = mac
+        .inbox
+        .wait_pairing("the Mac to show the scan", is_requested);
+    let PairingState::Requested { name, .. } = requested else {
+        panic!("expected Requested, got {requested:?}");
+    };
+    assert_eq!(name, "Real Name", "message one's own name is shown first");
+
+    mac.engine.confirm_pairing(true);
+    let failed = mac
+        .inbox
+        .wait_pairing("the disagreeing hello to fail pairing", is_failed);
+    let PairingState::Failed { error } = failed else {
+        unreachable!("is_failed already matched this");
+    };
+    assert_eq!(
+        code_of_error(&error),
+        "RpcError::UnexpectedFrameKind",
+        "a disagreeing second hello gets an ordinary bad hello's code"
+    );
+
+    // The dial thread's own `exchange_hello` still succeeds from its side:
+    // both sides wrote and read one full hello. Only the Mac's comparison
+    // rejects the result.
+    drop(dial.join().unwrap());
+
+    mac.engine.stop();
+}
+
+#[test]
+// J-1: a stranger's wrong nonce must not end a live offer.
+fn a_strangers_wrong_nonce_does_not_end_a_live_offer() {
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let stranger = build_as("Someone Else", DeviceKind::Phone);
+    mac.engine.set_reachable(true);
+    phone.engine.set_reachable(true);
+
+    mac.engine.start_pairing_with(PairingMethod::Qr);
+    let offering = mac
+        .inbox
+        .wait_pairing("the Mac to offer a QR code", is_offering);
+    let (payload, _) = offer_of(&offering);
+    let real_payload = offer_with_address(&payload, loopback_addr(&mac));
+
+    // The stranger never saw the real QR code, so it dials with the Mac's
+    // real static key and address but a nonce it made up itself.
+    let mut rigged = Offer::decode(&real_payload).expect("the Mac's own offer should decode");
+    rigged.nonce = [0xAA; QR_NONCE_LEN];
+    assert_ne!(
+        rigged.nonce,
+        Offer::decode(&real_payload).unwrap().nonce,
+        "the rigged nonce must actually differ from the real one"
+    );
+    stranger
+        .engine
+        .offer_scanned(rigged.encode())
+        .expect("the local checks alone do not know the nonce is wrong");
+    let stranger_failed = stranger
+        .inbox
+        .wait_pairing("the stranger's wrong nonce to be refused", is_failed);
+    let PairingState::Failed { error } = stranger_failed else {
+        unreachable!("is_failed already matched this");
+    };
+    let code = code_of_error(&error);
+    assert!(
+        code == "NoiseError::UnknownOffer"
+            || code == "NoiseError::Io"
+            || code == "VersionError::Io",
+        "expected the wrong nonce refused or the connection cut off, got {code}"
+    );
+
+    // The Mac's own offer must never have reported a failure: a stranger
+    // guessing wrong is not this pairing attempt going wrong.
+    assert!(
+        !mac.inbox
+            .lock()
+            .pairings
+            .iter()
+            .any(|state| matches!(state, PairingState::Failed { .. })),
+        "a stranger's wrong nonce must not end a live offer"
+    );
+
+    // The real phone can still scan the same, still-live offer and pair
+    // normally.
+    phone
+        .engine
+        .offer_scanned(real_payload)
+        .expect("a fresh, unpaired offer should still be accepted");
+    let requested = mac
+        .inbox
+        .wait_pairing("the Mac to show the real scan", is_requested);
+    let PairingState::Requested { name, .. } = requested else {
+        panic!("expected Requested, got {requested:?}");
+    };
+    assert_eq!(name, "Pixel 3 XL");
+
+    mac.engine.confirm_pairing(true);
+    mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
+    phone
+        .inbox
+        .wait_pairing("the phone to confirm", is_confirmed);
+
+    mac.engine.stop();
+    phone.engine.stop();
+    stranger.engine.stop();
 }
 
 #[test]
@@ -1796,6 +1945,32 @@ fn a_payload_that_is_not_ferry_is_refused() {
 }
 
 #[test]
+// J-6: `offer.rs` refuses `version != 1` with `OfferNotFerry`.
+fn an_offer_claiming_version_two_is_refused() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let stranger_key = StaticKey::generate().expect("a fresh key pair");
+    let offer = Offer {
+        version: 2,
+        static_key: stranger_key.public(),
+        expires_unix_secs: now_unix_secs() + 60,
+        nonce: [3u8; QR_NONCE_LEN],
+        addresses: Vec::new(),
+    };
+
+    let error = phone
+        .engine
+        .offer_scanned(offer.encode())
+        .expect_err("a version this build does not speak must be refused");
+    assert_eq!(code_of_error(&error), "PairingError::OfferNotFerry");
+    assert!(
+        phone.inbox.lock().pairings.is_empty(),
+        "no pairing attempt, and so no dial, should ever have started"
+    );
+
+    phone.engine.stop();
+}
+
+#[test]
 fn cancel_during_offering_returns_to_idle_and_spends_the_offer() {
     let mac = build_as("Vamana", DeviceKind::Mac);
     let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
@@ -1836,4 +2011,59 @@ fn cancel_during_offering_returns_to_idle_and_spends_the_offer() {
 
     mac.engine.stop();
     phone.engine.stop();
+}
+
+#[test]
+// J-6: `confirm_pairing(false)` on a scanned `Requested` returns to Idle,
+// the same as it does on the code method's `Code`.
+fn confirm_pairing_false_on_a_requested_scan_returns_to_idle() {
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    mac.engine.set_reachable(true);
+    phone.engine.set_reachable(true);
+
+    mac.engine.start_pairing_with(PairingMethod::Qr);
+    let offering = mac
+        .inbox
+        .wait_pairing("the Mac to offer a QR code", is_offering);
+    let (payload, _) = offer_of(&offering);
+    let payload = offer_with_address(&payload, loopback_addr(&mac));
+
+    phone
+        .engine
+        .offer_scanned(payload)
+        .expect("a fresh, unpaired offer should be accepted");
+    mac.inbox
+        .wait_pairing("the Mac to show the scan", is_requested);
+
+    mac.engine.confirm_pairing(false);
+    mac.inbox
+        .wait_pairing("refusing to return to Idle", is_idle);
+    assert!(
+        mac.engine.devices().is_empty(),
+        "a refused scan must store no device"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+#[test]
+// J-6: the two minute watchdog turns `Offering` into `Failed` once nobody
+// scans in time. A short timeout stands in for the real two minutes.
+fn the_watchdog_turns_offering_into_failed() {
+    let mac = build_as("Vamana", DeviceKind::Mac);
+
+    mac.engine.set_pairing_timeout(Duration::from_millis(200));
+    mac.engine.start_pairing_with(PairingMethod::Qr);
+    mac.inbox
+        .wait_pairing("the Mac to offer a QR code", is_offering);
+
+    let failed = mac.inbox.wait_pairing("the watchdog to give up", is_failed);
+    let PairingState::Failed { error } = failed else {
+        unreachable!("is_failed already matched this");
+    };
+    assert_eq!(code_of_error(&error), "Runtime::PairingTimeout");
+
+    mac.engine.stop();
 }
