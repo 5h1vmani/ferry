@@ -4,12 +4,16 @@ The custom views that appear on more than one screen. Each is built once per
 platform, from native controls and the tokens in `design/`. Nothing here is
 built if a native control already does the job.
 
-**Eight components.** The first version had six. Two were added, each because
+**Nine components.** The first version had six. Two were added, each because
 one value is now shown in more than one place and must say the same thing
-everywhere. Four candidates were rejected; they are at the bottom with the
+everywhere. Six candidates were rejected; they are at the bottom with the
 reason.
 
-If a ninth appears, it must earn its place by being used on two screens.
+A ninth, TransferRow, came with the third run on 11 September 2026. It
+earns its place: the Mac's Transfers section and the phone's Transfers
+list under the device row both draw the same row, in the same order.
+
+If a tenth appears, it must earn its place the same way.
 
 Every string follows `docs/voice.md`. Every component carries a label a
 screen reader can speak, written here so it is not invented twice.
@@ -113,6 +117,44 @@ Built from: a row of three labels on the Mac; a two-line Material `ListItem`
 on the phone, where the sentence is the headline and the time and amount are
 the supporting line.
 
+## TransferRow
+
+One group of transfers as one row of the Transfers section. New in the
+third run, 11 September 2026.
+
+Appears on the Mac's Transfers section and the phone's Transfers list,
+under each device row.
+
+| Part | Shows |
+|---|---|
+| Label and origin | The batch or file name, then the origin and direction: "Automatic · Phone to Mac", or just the direction. |
+| Progress | The states ProgressLine states below: queued, active, paused, done, or failed. |
+| Chunk disclosure | Present only where the engine holds a chunk-level fact, today only after a verify failure. See "The chunk disclosure" below. |
+
+Screen reader says: the label, then the origin and direction, then
+ProgressLine's own words.
+
+Built from: a label and a caption in a row, then ProgressLine's states,
+then the chunk disclosure, in a column. `TransferRow.swift` on the Mac;
+`TransferRow.kt` on the phone.
+
+### The chunk disclosure
+
+Part of TransferRow, not a component of its own. It appears under the row
+only where the engine holds a chunk-level fact, which today means only
+after a verify failure.
+
+| State | Shows |
+|---|---|
+| Collapsed | "Show chunks" and a count in mono: "13 of 96 verified" |
+| Expanded | one row per failed or unverified chunk: index and state. Verified chunks are summarised, never listed. |
+| Absent | when there is no chunk fact to show |
+
+Built from: `DisclosureGroup` on the Mac. A clickable row and
+`AnimatedVisibility`, in `ChunkDisclosure.kt`, on the phone. Collapsed by
+default, always. It is the bottom of the depth axis in `docs/ia.md`, and
+it is one interaction away so that it is never in the way.
+
 ## ProgressLine
 
 One transfer or one batch's progress, in one line.
@@ -136,23 +178,6 @@ Screen reader says the text line, and for active, "Transferring, 2 percent",
 updated no more than once every 5 seconds so it does not talk over itself.
 
 Built from: the platform progress view and a label. Never a custom drawn bar.
-
-### The chunk disclosure
-
-Part of ProgressLine, not a component of its own. It appears under the line
-only where the engine holds a chunk-level fact, which today means only after
-a verify failure.
-
-| State | Shows |
-|---|---|
-| Collapsed | "Show chunks" and a count in mono: "13 of 96 verified" |
-| Expanded | one row per failed or unverified chunk: index and state. Verified chunks are summarised, never listed. |
-| Absent | when there is no chunk fact to show |
-
-Built from: `DisclosureGroup` on the Mac, an expandable `ListItem` on the
-phone. Collapsed by default, always. It is the bottom of the depth axis in
-`docs/ia.md`, and it is one interaction away so that it is never in the
-way.
 
 ## ErrorBlock
 
@@ -225,6 +250,12 @@ itself is rendered by the platform — `CIQRCodeGenerator` on the Mac — from
 bytes the engine serialises, so there is nothing custom to build and nothing
 to draw by hand.
 
+**QrScanner**, the camera preview that reads the Mac's code, on the phone.
+One screen, one platform, one state. A view in the pairing flow, not a
+component. The camera preview and the barcode reader are both the
+platform's own, CameraX and ML Kit, so there is nothing custom to build
+and nothing drawn by hand. It is the phone's half of PairingQR above.
+
 **AutomaticSection**, job 7's switch and its three lines. One screen, one
 platform. A view. If the phone ever gains an equivalent — copying the Mac's
 Desktop on its own, which nothing asks for — it earns the place then.
@@ -234,6 +265,13 @@ phone serves one root and does not choose it.
 
 **AccessLine**, the Finder mount line on the Mac. One screen, one platform,
 one state. A view in `DeviceDetail`.
+
+**NetworkRow**, the current network and the trusted list, in the Networks
+section of Settings, item 18. One screen on each platform: a view, not a
+shared component. `CurrentNetworkRow` and `TrustedNetworkRow` on the Mac,
+in `SettingsView.swift`; a row for the current network and one for each
+trusted name inside `NetworksSection`, in `SettingsScreen.kt`, on the
+phone. Each platform draws its own Settings screen once.
 
 **FileBrowser**, a list of the other device's roots. It exists, on the Mac,
 as the Files section of `DeviceDetail` — built before this version of the
