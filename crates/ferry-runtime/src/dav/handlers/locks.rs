@@ -1,4 +1,5 @@
-//! `LOCK` and `UNLOCK`. Neither ever reaches the peer.
+//! `LOCK` and `UNLOCK`. Neither ever reaches the peer:
+//! `docs/spike-0-findings.md`, question 4.
 
 use std::io::{self, Write};
 

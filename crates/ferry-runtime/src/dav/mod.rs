@@ -34,7 +34,14 @@
 //!   `COPY`, reusing item 5's push rule.
 //! - `delete.rs`: item I2's recursive `DELETE` plan, over `folder.rs`'s
 //!   bounds.
-//! - `server.rs`: the accept loop, the connection loop, and the verbs.
+//! - `server.rs`: the accept loop, the connection loop, and the reply
+//!   helpers every verb writes through.
+//! - `handlers/`: one file per verb group. `browse.rs` for `PROPFIND`
+//!   and `PROPPATCH`, `read.rs` for `GET` and `HEAD`, `write.rs` for
+//!   `PUT`, `MKCOL`, `DELETE`, `MOVE` and `COPY`, `locks.rs` for `LOCK`
+//!   and `UNLOCK`, and `options.rs` for `OPTIONS` and the auth check.
+//! - `prefetch.rs`: the thread that reads the head of each listed file.
+//! - `errors.rs`: turns an RPC failure into a status line.
 
 mod cache;
 mod delete;

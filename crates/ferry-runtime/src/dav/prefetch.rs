@@ -38,7 +38,7 @@ pub(crate) fn prefetch_loop(shared: &Arc<Shared>, bridge: &Arc<Bridge>, running:
 /// interleave with it. `running` is read between files, and again on every
 /// pass of [`read_head_bounded`], so `MountRegistry::stop` waits for one
 /// read and not for a whole folder.
-pub(crate) fn prefetch_job(
+fn prefetch_job(
     shared: &Arc<Shared>,
     bridge: &Arc<Bridge>,
     running: &Arc<AtomicBool>,
@@ -139,7 +139,7 @@ pub(crate) fn read_head(
 /// A head shorter than `want` is still returned. Its caller keeps only a
 /// head of exactly the length the listing promised, so a short one is
 /// dropped there rather than cached as if it were whole.
-pub(crate) fn read_head_bounded(
+fn read_head_bounded(
     want: u64,
     running: &AtomicBool,
     mut read: impl FnMut(u64, u32) -> Option<Vec<u8>>,

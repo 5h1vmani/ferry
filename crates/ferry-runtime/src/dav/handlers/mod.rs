@@ -5,6 +5,8 @@
 //! - `write.rs`: `PUT`, `MKCOL`, `DELETE`, `MOVE`, and `COPY`.
 //! - `locks.rs`: `LOCK` and `UNLOCK`.
 //! - `options.rs`: `OPTIONS`, and the Basic auth check.
+//!
+//! A probe is answered from the sidecar store, never from the peer.
 
 mod browse;
 

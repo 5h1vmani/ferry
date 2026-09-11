@@ -37,14 +37,14 @@ use crate::dav::handlers::{ALLOWED_METHODS, authorized, options};
 /// How many connections one bridge serves at once. A 33rd is refused at
 /// accept, before its socket is even read from. Mirrors
 /// `MAX_PENDING_HANDSHAKES` in `ferry_core::tcp`.
-pub(crate) const MAX_LIVE_CONNECTIONS: u32 = 32;
+const MAX_LIVE_CONNECTIONS: u32 = 32;
 
 /// How long a connection may sit with nothing read, or a write may block,
 /// before this bridge gives up on it. `docs/engine-contract.md`, item 6,
 /// sets no number of its own; this exists only so a connection that never
 /// sends a byte, or a peer that stops reading, cannot hold a thread
 /// forever.
-pub(crate) const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// How long a connection may go before its first request head is fully
 /// read, in seconds, before this bridge gives up on it.
@@ -56,7 +56,7 @@ pub(crate) const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 /// the same kept-alive connection goes back to [`CONNECTION_TIMEOUT`],
 /// since Finder holding a connection open between requests on purpose is
 /// not what this bounds.
-pub(crate) const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
+const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The largest number of connections that may be open without yet having
 /// sent one request this bridge accepted as authorized, at once.
@@ -70,13 +70,13 @@ pub(crate) const FIRST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 /// before its socket is even read from. A connection stops counting
 /// against this the moment `authorized` first accepts it, so an ordinary
 /// Finder session past its first request never sits here at all.
-pub(crate) const MAX_UNAUTHENTICATED_CONNECTIONS: u32 = 4;
+const MAX_UNAUTHENTICATED_CONNECTIONS: u32 = 4;
 
 /// Reserves one live-connection slot, and gives it back when dropped.
 /// Mirrors `PendingSlot` in `ferry_core::tcp`: a slot can only be created
 /// while one is free, and dropping it is the only way to free one again,
 /// so the count can never be missed or double counted.
-pub(crate) struct ConnectionSlot(Arc<AtomicU32>);
+struct ConnectionSlot(Arc<AtomicU32>);
 
 impl Drop for ConnectionSlot {
     fn drop(&mut self) {
@@ -86,7 +86,7 @@ impl Drop for ConnectionSlot {
 
 /// Reserves one of [`MAX_LIVE_CONNECTIONS`] slots, or `None` when the
 /// bridge is already at that many.
-pub(crate) fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
+fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
     connections
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             (current < MAX_LIVE_CONNECTIONS).then_some(current + 1)
@@ -100,7 +100,7 @@ pub(crate) fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<Co
 /// authenticated. Shares [`ConnectionSlot`] with
 /// [`reserve_connection_slot`]: both only ever decrement the counter they
 /// were built from, so the same guard works for either.
-pub(crate) fn reserve_unauth_slot(unauthenticated: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
+fn reserve_unauth_slot(unauthenticated: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
     unauthenticated
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
             (current < MAX_UNAUTHENTICATED_CONNECTIONS).then_some(current + 1)
@@ -132,12 +132,12 @@ pub(crate) struct Bridge {
     pub(crate) locks: LockTable,
     /// Live connections right now, checked at accept against
     /// [`MAX_LIVE_CONNECTIONS`] (B3).
-    pub(crate) connections: Arc<AtomicU32>,
+    connections: Arc<AtomicU32>,
     /// Connections right now that have not yet sent one request this
     /// bridge accepted as authorized, checked at accept against
     /// [`MAX_UNAUTHENTICATED_CONNECTIONS`]. `docs/audits/fable-security.md`,
     /// finding 7.
-    pub(crate) unauthenticated: Arc<AtomicU32>,
+    unauthenticated: Arc<AtomicU32>,
 }
 
 impl Bridge {
@@ -247,7 +247,7 @@ pub(crate) fn accept_loop(
 /// which is when it is dropped, freeing the slot for another connection to
 /// use while this one keeps serving under its ordinary `connections` slot.
 /// `docs/audits/fable-security.md`, finding 7.
-pub(crate) fn handle_connection(
+fn handle_connection(
     shared: &Arc<Shared>,
     bridge: &Arc<Bridge>,
     stream: &TcpStream,
@@ -331,7 +331,7 @@ pub(crate) fn handle_connection(
 /// loopback claims to be sending. Every other refusal keeps the connection
 /// open, once its own declared body (bounded to [`http::MAX_BODY_LEN`] the
 /// same way as I1) has actually been read.
-pub(crate) fn respond(
+fn respond(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     head: &http::RequestHead,
@@ -428,7 +428,7 @@ pub(crate) fn no_body(out: &mut impl Write, status: &str) -> io::Result<()> {
 
 /// N3: a 405 carries the methods this bridge answers, the same list
 /// `options` states for `OPTIONS`.
-pub(crate) fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
+fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
         out,
         "405 Method Not Allowed",
@@ -442,20 +442,3 @@ pub(crate) fn method_not_allowed(out: &mut impl Write) -> io::Result<()> {
 pub(crate) fn unavailable(out: &mut impl Write) -> io::Result<()> {
     no_body(out, "503 Service Unavailable")
 }
-
-// ---------------------------------------------------------------------------
-// LOCK and UNLOCK. Never reach the peer: `docs/spike-0-findings.md`,
-// question 4.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Probes: answered from the sidecar store, never from the peer.
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// I2: the write verbs. `docs/engine-contract.md`, item 6, "I2, saving".
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// Real paths: served through the pool.
-// ---------------------------------------------------------------------------

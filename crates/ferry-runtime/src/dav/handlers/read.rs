@@ -1,4 +1,7 @@
 //! `GET` and `HEAD`: reading a file, from the head cache or the wire.
+//!
+//! A real path is served through the pool. A probe is answered from the
+//! sidecar store, never from the peer.
 
 use crate::dav::errors::map_rpc_error;
 
@@ -153,7 +156,7 @@ pub(crate) fn get_file(
 ///
 /// Returns the status to answer with when the device is unreachable or the
 /// peer refused the `stat`.
-pub(crate) fn file_entry<'a>(
+fn file_entry<'a>(
     shared: &Arc<Shared>,
     bridge: &'a Bridge,
     target: &str,
@@ -190,7 +193,7 @@ pub(crate) fn file_entry<'a>(
 /// this side cannot satisfy all send no body, so none of them needs the
 /// wire. Everything else needs the wire unless the head holds the last byte
 /// the response promises.
-pub(crate) fn needs_the_wire(
+fn needs_the_wire(
     bridge: &Bridge,
     target: &str,
     entry: &Entry,
@@ -232,7 +235,7 @@ pub(crate) fn needs_the_wire(
 /// fails. The response head, with its `Content-Length`, is already
 /// written by then, so there is no status left to answer with: S2 has
 /// `handle_connection` drop the connection instead.
-pub(crate) fn send_body(
+fn send_body(
     shared: &Arc<Shared>,
     bridge: &Bridge,
     body: &BodyPlan<'_>,
@@ -262,7 +265,7 @@ pub(crate) fn send_body(
 
 /// One `GET`'s body: which file, and which bytes of it the response head
 /// already promised.
-pub(crate) struct BodyPlan<'a> {
+struct BodyPlan<'a> {
     /// The DAV target, which is also the head cache key.
     target: &'a str,
     /// What the listing or the `stat` said the file is.
@@ -281,7 +284,7 @@ pub(crate) struct BodyPlan<'a> {
 /// only otherwise. The listing cache drops a folder on any write through
 /// this bridge to it, so a file this answers for is one nothing here has
 /// changed since the listing.
-pub(crate) fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
+fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
     let (parent, name) = target.rsplit_once('/').unwrap_or(("", target));
     let children = bridge.cache.get(parent)?;
     children.into_iter().find(|child| child.name == name)
@@ -298,7 +301,7 @@ pub(crate) fn listed_entry(bridge: &Bridge, target: &str) -> Option<Entry> {
 ///
 /// Returns an error when the write to `out` fails, the same as
 /// [`stream_body`].
-pub(crate) fn write_cached_head(
+fn write_cached_head(
     bridge: &Bridge,
     body: &BodyPlan<'_>,
     out: &mut impl Write,
@@ -333,7 +336,7 @@ pub(crate) fn write_cached_head(
 /// `Content-Length` promise can no longer be met, so the connection must
 /// be dropped, not reused for a next request) or when the write to `out`
 /// fails.
-pub(crate) fn stream_body(
+fn stream_body(
     borrowed: &mut pool::Borrowed<'_>,
     path: &RemotePath,
     start: u64,

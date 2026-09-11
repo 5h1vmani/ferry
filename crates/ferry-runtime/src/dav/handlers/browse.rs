@@ -102,7 +102,7 @@ pub(crate) fn proppatch_verb(
     write_multistatus_xml(out, &body)
 }
 
-pub(crate) fn write_multistatus_xml(out: &mut impl Write, body: &str) -> io::Result<()> {
+fn write_multistatus_xml(out: &mut impl Write, body: &str) -> io::Result<()> {
     http::write_head(
         out,
         "207 Multi-Status",
@@ -120,7 +120,7 @@ pub(crate) fn write_multistatus_xml(out: &mut impl Write, body: &str) -> io::Res
 /// N3, RFC 4918 9.1: a `PROPFIND` this bridge will not walk. `depth` is
 /// `None` for a missing header and `Some("infinity")` for an explicit one;
 /// both mean "the whole tree", which I1 never serves.
-pub(crate) fn depth_not_finite(out: &mut impl Write) -> io::Result<()> {
+fn depth_not_finite(out: &mut impl Write) -> io::Result<()> {
     let body = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
 <D:error xmlns:D=\"DAV:\"><D:propfind-finite-depth/></D:error>\n";
     http::write_head(
@@ -267,7 +267,7 @@ pub(crate) fn propfind(
     written
 }
 
-pub(crate) fn write_multistatus(
+fn write_multistatus(
     out: &mut impl Write,
     items: &[xml::Item<'_>],
     props: &xml::PropSet,
@@ -292,7 +292,7 @@ pub(crate) fn write_multistatus(
 /// the whole `PROPFIND`: `docs/engine-contract.md`, item 6, sets no folder
 /// size limit for browsing, so a partial listing is the more useful answer
 /// than none.
-pub(crate) fn list_all(
+fn list_all(
     client: &mut Client<StopAware<SecureStream>>,
     path: &RemotePath,
 ) -> Result<Vec<Entry>, RpcError> {

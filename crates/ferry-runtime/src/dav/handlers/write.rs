@@ -1,4 +1,6 @@
 //! The write verbs: `PUT`, `MKCOL`, `DELETE`, `MOVE`, and `COPY`.
+//!
+//! `docs/engine-contract.md`, item 6, "I2, saving".
 
 use std::io::{self, BufRead, Write};
 use std::sync::Arc;
@@ -49,7 +51,7 @@ pub(crate) fn put_sidecar(
     http::write_head(out, "201 Created", &[("Content-Length", "0".to_owned())])
 }
 
-pub(crate) fn parent_of(path: &str) -> &str {
+fn parent_of(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 
@@ -259,7 +261,7 @@ pub(crate) fn delete_verb(
 /// when `dest_path` does not exist on the peer, so the caller proceeds;
 /// `Some` with the status to answer otherwise, 412 when it does exist and
 /// whatever `map_write_error` names for any other failure.
-pub(crate) fn overwrite_conflict(
+fn overwrite_conflict(
     borrowed: &mut pool::Borrowed<'_>,
     dest_path: &RemotePath,
 ) -> Option<&'static str> {
@@ -485,7 +487,7 @@ pub(crate) fn copy_verb(
 /// Reads `source` into `spool_path`, then lands it at `destination` as a
 /// new file. One function so `copy_verb` never holds two overlapping
 /// mutable borrows of `borrowed`'s connection at once.
-pub(crate) fn copy_landing(
+fn copy_landing(
     borrowed: &mut pool::Borrowed<'_>,
     source: &RemotePath,
     destination: &RemotePath,
@@ -646,7 +648,7 @@ pub(crate) fn put_file(
 
 /// Which of `put.rs`'s two landing rules [`put_landing`] used, so
 /// `put_file` answers 201 or 204.
-pub(crate) enum Landing {
+enum Landing {
     New,
     Delta,
 }
@@ -654,7 +656,7 @@ pub(crate) enum Landing {
 /// Stats `destination` to decide which landing rule applies, then runs
 /// it. One function so `put_file` never holds two overlapping mutable
 /// borrows of `borrowed`'s connection at once.
-pub(crate) fn put_landing(
+fn put_landing(
     borrowed: &mut pool::Borrowed<'_>,
     destination: &RemotePath,
     fs: &LocalFs,
