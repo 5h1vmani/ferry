@@ -38,6 +38,7 @@ use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
 use ferry_core::peers::DeviceKind;
 use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello, serve};
+use ferry_core::session::Transfer;
 use ferry_core::tcp::{self, Listener, Pending};
 use ferry_core::version::{MAGIC, VERSION_MAX};
 use ferry_runtime::{
@@ -1428,6 +1429,119 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
     assert_eq!(
         done.chunks_verified, done.chunks_total,
         "every chunk is verified once the transfer is Done"
+    );
+
+    engine.stop();
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
+// G10: a Record::Ready row whose landing file is missing starts over.
+// ---------------------------------------------------------------------------
+
+/// The bytes of a `Record::Ready` row, in the exact shape `record.rs`
+/// writes: format version 3, the ready stage byte, the transfer, then its
+/// meta fields. Built by hand because `record.rs`'s own types are private
+/// to `ferry-runtime`; this is the same technique other tests here use for
+/// a hand-built peer file.
+fn encode_ready_record(transfer: &Transfer) -> Vec<u8> {
+    let mut e = ferry_core::wire::Encoder::new();
+    e.u8(3); // record.rs FORMAT_VERSION
+    e.u8(1); // record.rs STAGE_READY
+    e.bytes(&transfer.encode());
+    // Meta: started_unix_secs, ended_unix_secs (None), direction (Pull),
+    // batch_id (None).
+    e.fixed(&1_700_000_000i64.to_be_bytes());
+    e.u8(0);
+    e.u8(0);
+    e.u8(0);
+    e.finish()
+}
+
+/// G10: a `Record::Ready` row's fixed temporary name lives under its
+/// destination's own folder. `verify_and_land` used to trust that folder
+/// was still the one an earlier first pass made it in. If the download
+/// folder changed since -- or that folder was simply removed by hand --
+/// the next attempt found no parent to write into and failed for good,
+/// rather than recreating it and fetching the file again from nothing:
+/// exactly what "the manifest is a hint, the disk is the truth"
+/// (docs/protocol.md section 9) already means for a file that is not
+/// merely short, but missing outright.
+///
+/// The row here is built by hand rather than produced by a real
+/// interrupted transfer, because nothing stops between the moment a real
+/// first pass finishes and the same attempt landing the file: both run on
+/// the same connection, one call apart. A stored record with a manifest
+/// but no fixed temporary name behind it is exactly what an app killed in
+/// that narrow window would leave, so this is that state, not a
+/// contrivance.
+#[test]
+fn a_ready_record_whose_landing_folder_is_gone_lands_in_the_current_one() {
+    let side = build("Vamana");
+    let bytes = sample_bytes(mib(2));
+    let peer = start_peer(&side.key, bytes.clone());
+    pair_with_peer(&side, &peer);
+    let device = key_hex(&peer.key);
+    side.engine.stop();
+
+    // A nested destination, not a flat one, so the missing "Camera" folder
+    // itself -- not just a missing file at the download root -- is what
+    // the fix must recreate.
+    let manifest = manifest_from_bytes(&bytes, ChunkSize::one_mebibyte());
+    let source = RemotePath::parse("big.bin").expect("a valid path");
+    let destination = RemotePath::parse("Camera/big.bin").expect("a valid path");
+    let transfer =
+        Transfer::new(manifest, source, destination).expect("a fresh transfer should build");
+    let id = format!("{device}-g10manual");
+    std::fs::write(
+        side.data.path().join("transfers").join(format!("{id}.bin")),
+        encode_ready_record(&transfer),
+    )
+    .expect("the hand-built record should write");
+
+    // A fresh engine on the same data and shared folders, but a brand new
+    // download folder: "the download folder changed between two
+    // attempts".
+    let new_download = tempfile::tempdir().expect("a new download folder");
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        "Vamana",
+        side.key.clone(),
+        side.data.path(),
+        side.shared.path(),
+        new_download.path(),
+        &inbox,
+    )
+    .expect("the engine should build on the folder it left");
+
+    let found = engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the hand-built record should be listed");
+    assert_eq!(
+        found.state,
+        TransferState::Paused,
+        "a loaded record comes back paused"
+    );
+
+    engine.offer_candidate(peer.addr);
+    engine.start().expect("the engine should start");
+
+    let watching = Arc::clone(&engine);
+    let wanted = id.clone();
+    poll_until("the transfer to land from nothing", move || {
+        watching
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted && t.state == TransferState::Done)
+    });
+
+    assert_eq!(
+        std::fs::read(new_download.path().join("Camera/big.bin"))
+            .expect("the file should land in the new download folder"),
+        bytes,
+        "every byte must match, fetched fresh since nothing was on disk"
     );
 
     engine.stop();

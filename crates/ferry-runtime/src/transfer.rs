@@ -834,6 +834,19 @@ fn verify_and_land<S: Read + Write>(
     client: &mut Client<S>,
     record: &Transfer,
 ) -> Outcome {
+    // G10: `first_pass` calls this for the same folder it just wrote its
+    // own temporary name into, so the parents it made earlier are still
+    // there. A `Record::Ready` row can reach here on a later attempt, with
+    // a different `fs`: the download folder may have changed since, or
+    // its landing file's parent may simply have been removed by hand.
+    // `resume_point` already re-hashes the disk and starts over from
+    // nothing when it finds nothing there; that "nothing" still needs
+    // somewhere to write into, so the parents are made again here too,
+    // before `pull_with_progress` gets the chance to fail on a missing
+    // directory instead of just starting over.
+    if let Err(error) = ensure_parents(fs, &plan.destination) {
+        return Outcome::Fatal(from_op(error));
+    }
     {
         let mut state = lock(&shared.state);
         if let Some(row) = state.transfers.get_mut(id) {
