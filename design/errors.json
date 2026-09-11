@@ -391,6 +391,11 @@
       "why": "It is not on the network and not on the cable.",
       "todo": "Bring it onto the same Wi-Fi, or plug it in."
     },
+    "Runtime::NetworkName": {
+      "stopped": "The Wi-Fi network was not trusted.",
+      "why": "The name is empty or over 32 bytes, or the list is full.",
+      "todo": "Use a shorter name. Forget a trusted Wi-Fi network first."
+    },
     "Runtime::NotStarted": {
       "stopped": "Ferry is not running.",
       "why": "The engine was not started.",

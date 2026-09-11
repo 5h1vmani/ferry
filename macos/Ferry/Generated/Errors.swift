@@ -80,6 +80,7 @@ enum FerryErrors {
         "Runtime::FolderTooLarge": (stopped: "The folder was not copied.", why: "It holds more than 10,000 files, or is nested more than 32 folders deep.", todo: "Copy a smaller folder, or open it and copy fewer files at a time."),
         "Runtime::MountFailed": (stopped: "The Finder mount did not start.", why: "{detail}", todo: "Try again. If it keeps failing, restart Ferry."),
         "Runtime::NameTooLong": (stopped: "The name was refused.", why: "It is longer than 64 bytes.", todo: "Choose a shorter name."),
+        "Runtime::NetworkName": (stopped: "The Wi-Fi network was not trusted.", why: "The name is empty or over 32 bytes, or the list is full.", todo: "Use a shorter name. Forget a trusted Wi-Fi network first."),
         "Runtime::NoCandidate": (stopped: "Nothing was picked.", why: "That candidate is no longer present.", todo: "Pick another."),
         "Runtime::NoRandomness": (stopped: "The QR code could not be made.", why: "The system supplied no randomness.", todo: "Try again, or pair by code instead."),
         "Runtime::NotPaired": (stopped: "The device is not paired.", why: "Its key is not in this device's list.", todo: "Pair it first."),
