@@ -44,6 +44,29 @@
 //! on it, or the connection ends. `set_mtime` is never logged, because it
 //! always follows a write that already is.
 //!
+//! For a [`AccessVerb::Read`] or a [`AccessVerb::Stat`] the peer performed,
+//! the path in that key is the file's parent folder, not the file. Item
+//! 17's thumbnail prefetch reads the head of every image in a folder over
+//! one connection, so one folder open used to leave one `read` line per
+//! file and a person scrolled past hundreds of them. Filed under the folder
+//! they share, those become one entry, whose `files` counts the distinct
+//! files it covers and whose `bytes` adds them up. A folder read is one
+//! fact. Every other verb keeps its own path, because a person needs to see
+//! which file was written, renamed, or deleted.
+//!
+//! Two operations are left out of that. A calling-side entry, actor
+//! [`Actor::This`], keeps its own path: `engine::record_this` gives every
+//! such operation a connection id of its own and ends it in the same
+//! breath, so no two of them could ever merge anyway, and filing one under
+//! its folder would only lose the name of the file this device read. And a
+//! path with no `/` in it is a root name, which is already a folder, so it
+//! stands as it is.
+//!
+//! None of this changes an entry's fields or the order they are written in,
+//! so the day file format version stays at 1. A day file written before
+//! this reads back exactly as it did; its `read` entries simply name files
+//! where a newer one names folders.
+//!
 //! A recursive walk pages one folder at a time, but it does not have to
 //! finish paging a folder before it descends into a subfolder it already
 //! saw a page of: on the serving side, that shows up as the same connection
@@ -75,7 +98,7 @@
 //! `AccessEntry`, `AccessVerb`, and `Actor` in `lib.rs` are built from the
 //! plain types here in one place, in `engine.rs`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -897,11 +920,42 @@ pub(crate) fn prune_dir(dir: &Path, now: i64) -> Result<Vec<String>, AccessLogEr
     Ok(removed)
 }
 
+/// Everything before the last `/`, or the whole of `path` when it holds
+/// none.
+///
+/// A path with no `/` is a root name, which is already a folder and is its
+/// own parent here.
+fn parent_folder(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(cut) => &path[..cut],
+        None => path,
+    }
+}
+
+/// The path [`RollUp`] files `fields` under and matches other operations
+/// against.
+///
+/// The file's parent folder for a read or a stat the peer performed, and
+/// the path itself for everything else. See the module documentation,
+/// "Rolling up".
+fn rollup_path(fields: &EntryFields) -> &str {
+    if fields.actor == Actor::Peer && matches!(fields.verb, AccessVerb::Read | AccessVerb::Stat) {
+        parent_folder(&fields.path)
+    } else {
+        &fields.path
+    }
+}
+
 /// One access log entry that is still open: more operations on the same
-/// connection, verb, and path may still add to it.
+/// connection, verb, and roll-up path may still add to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pending {
     fields: EntryFields,
+    /// Every distinct file this entry covers, for an entry filed under a
+    /// folder rather than under the path its own operation named. Its size
+    /// is what `fields.files` reports. Empty for every other entry, whose
+    /// `files` is whatever its caller passed.
+    distinct_files: BTreeSet<String>,
     /// When this entry's first operation happened. What it is filed under
     /// once it is written to the store.
     first_touch: i64,
@@ -988,36 +1042,57 @@ impl RollUp {
 
     /// Record one operation on `connection`.
     ///
-    /// Merges into the pending entry for this connection's verb and path
-    /// when there is one: bytes, entries, and files add up, and the entry's
+    /// Merges into the pending entry for this connection's verb and roll-up
+    /// path when there is one: bytes and entries add up, and the entry's
     /// idle clock resets to `now`. Otherwise starts a new pending entry.
     /// Before either, every pending entry on this connection whose path is
-    /// not `fields.path` becomes final, whatever its verb: a connection
-    /// only has one path open at a time.
+    /// not this operation's roll-up path becomes final, whatever its verb:
+    /// a connection only has one path open at a time.
+    ///
+    /// [`rollup_path`] is what decides that path. For a read or a stat the
+    /// peer performed it is the file's parent folder, and then the entry
+    /// counts the distinct files it has covered in `files` rather than
+    /// adding up a count its caller passed. See the module documentation,
+    /// "Rolling up".
     pub(crate) fn touch(&mut self, now: i64, connection: u64, fields: EntryFields) {
+        let key_path = rollup_path(&fields).to_owned();
+        let by_folder = key_path != fields.path;
         let list = self.pending.entry(connection).or_default();
         let mut index = 0;
         while index < list.len() {
-            if list[index].fields.path == fields.path {
+            if list[index].fields.path == key_path {
                 index += 1;
             } else {
                 let done = list.remove(index);
                 finalize_pending(&mut self.store, &mut self.changed, &done);
             }
         }
-        // Every entry left in `list` now shares `fields.path`, so only the
+        // Every entry left in `list` now shares `key_path`, so only the
         // verb still needs to be matched.
         if let Some(existing) = list.iter_mut().find(|p| p.fields.verb == fields.verb) {
             existing.fields.bytes = add_option_u64(existing.fields.bytes, fields.bytes);
             existing.fields.entries = add_option_u32(existing.fields.entries, fields.entries);
-            existing.fields.files = add_option_u32(existing.fields.files, fields.files);
+            if by_folder {
+                existing.distinct_files.insert(fields.path);
+                existing.fields.files =
+                    Some(u32::try_from(existing.distinct_files.len()).unwrap_or(u32::MAX));
+            } else {
+                existing.fields.files = add_option_u32(existing.fields.files, fields.files);
+            }
             existing.last_touch = now;
         } else {
-            list.push(Pending {
+            let mut pending = Pending {
                 fields,
+                distinct_files: BTreeSet::new(),
                 first_touch: now,
                 last_touch: now,
-            });
+            };
+            if by_folder {
+                let file = std::mem::replace(&mut pending.fields.path, key_path);
+                pending.distinct_files.insert(file);
+                pending.fields.files = Some(1);
+            }
+            list.push(pending);
         }
     }
 

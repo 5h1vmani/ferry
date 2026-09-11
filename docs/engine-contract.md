@@ -381,6 +381,24 @@ side. A file copied as part of a folder copy logs nothing of its own on the
 calling side; the folder entry covers it. `set_mtime` is not logged: it
 always follows a write that is.
 
+For a `read` or a `stat` recorded on the serving side, as actor `Peer`,
+the path in that key is the file's parent folder, not the file. Item 17's
+thumbnail prefetch reads the head of every image in a folder over one
+connection, so one folder open left one `read` line per file and a person
+scrolled for ever. Those become one entry: `path` is the folder, `files`
+counts the distinct files it covers, and `bytes` adds them up. A folder
+read is one fact. `list`, `write`, `truncate`, `rename`, `mkdir` and
+`delete` keep their own path, because a person needs to see which file was
+written or deleted. A calling-side entry, actor `This`, keeps its own path
+too: `record_this` gives every such operation its own connection id and
+ends it in the same breath, so no two could merge anyway, and filing one
+under its folder would only lose the name of the file this device read. A
+path with no `/` in it is a root name, which is already a folder and
+stands as it is.
+
+This changes no field and no write order, so the day file format version
+stays at 1. A day file written before this reads back unchanged.
+
 **Storage.** `data_dir/access_log/<YYYYMMDD>`, one file per UTC day, a
 version byte first, the same encoder as the peer store. Each device holds
 at most 10,000 entries on a day; after that, nothing more is recorded for

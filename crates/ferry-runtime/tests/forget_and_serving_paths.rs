@@ -262,7 +262,9 @@ fn an_operation_served_just_before_stop_is_in_the_log_after_a_restart() {
         .iter()
         .find(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
         .expect("the read served just before stop should still be in the log");
-    assert_eq!(entry.path, "Root/note.txt");
+    // Item 13's folder roll-up: a served read is filed under the folder the
+    // file sits in, not under the file.
+    assert_eq!(entry.path, "Root");
     assert_eq!(entry.bytes, Some(5));
 
     engine.stop();
@@ -330,7 +332,10 @@ fn a_failed_operation_is_never_logged() {
         1,
         "only the successful stat is logged, not the failed one"
     );
-    assert_eq!(found[0].path, "Root/note.txt");
+    // Item 13's folder roll-up: a served stat is filed under the folder the
+    // file sits in, and the one file it covers is counted.
+    assert_eq!(found[0].path, "Root");
+    assert_eq!(found[0].files, Some(1));
     phone.engine.stop();
 }
 

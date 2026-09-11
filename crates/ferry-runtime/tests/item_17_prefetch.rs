@@ -215,6 +215,15 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
         ("Photos/b.JPEG", b.as_slice()),
         ("Photos/c.png", c.as_slice()),
         ("Photos/Notes.txt", b"not an image".as_slice()),
+        // In another folder on purpose. Item 13 files a served read or stat
+        // under the folder it is in, so a stat of this file is what moves
+        // the phone's connection off `Root/Photos` and finalises what it
+        // has pending there. A stat of anything inside `Root/Photos` would
+        // now share that same roll-up path and finalise nothing.
+        (
+            "Elsewhere/marker.txt",
+            b"a file in another folder".as_slice(),
+        ),
     ]);
 
     let reads_before = it.peer_reads();
@@ -240,13 +249,35 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
     );
 
     // The phone finalises a served entry when its connection moves to a
-    // different path (item 13), so the last of the three reads is still
-    // pending. This stat is what moves it on, rather than waiting five
-    // seconds for the idle rule.
-    it.propfind("/Root/Photos/Notes.txt", "0");
-    wait_until("the phone has logged all three reads", || {
-        it.peer_reads() == reads_before + 3
-    });
+    // different roll-up path (item 13), so the prefetch's own entry is
+    // still pending. This stat, in another folder, is what moves it on,
+    // rather than waiting five seconds for the idle rule.
+    it.propfind("/Root/Elsewhere/marker.txt", "0");
+    // One entry, not three: item 13 files the three reads under the folder
+    // they share, with `files` counting them. That is the whole point of
+    // the roll-up, since this prefetch is what made the phone's log show
+    // one line per image.
+    wait_until(
+        "the phone has logged the prefetch as one folder read",
+        || it.peer_reads() == reads_before + 1,
+    );
+    let folder_read = it
+        .phone
+        .engine
+        .access_log(None, 1_000)
+        .into_iter()
+        .find(|entry| {
+            entry.actor == Actor::Peer
+                && entry.verb == AccessVerb::Read
+                && entry.path == "Root/Photos"
+        })
+        .expect("the phone files the three reads under Root/Photos");
+    assert_eq!(folder_read.files, Some(3), "three distinct images");
+    assert_eq!(
+        folder_read.bytes,
+        Some(4_000 + 5_000 + 6_000),
+        "the folder entry's byte total covers all three heads"
+    );
 
     // Past the listing cache's two second TTL, so the `PROPFIND` below is
     // certain to list on the wire. That makes what the phone has pending
@@ -262,22 +293,25 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
     );
 
     // Whatever the `GET` had just made the phone serve would still be
-    // pending, and a pending entry is not in the log yet. This stat moves
-    // the connection to another path, which finalises anything the `GET`
-    // left behind, so the counts below hold everything that happened.
-    it.propfind("/Root/Photos/Notes.txt", "0");
+    // pending, and a pending entry is not in the log yet. Stopping the Mac
+    // closes the bridge's pooled connections, which ends the phone's
+    // serving threads and finalises everything they left behind, so the
+    // counts below hold everything that happened.
+    it.mac.engine.stop();
+    wait_until("the phone to finalise what the bridge left", || {
+        it.peer_reads() > reads_before
+    });
     assert_eq!(
-        it.served(AccessVerb::Read, "Root/Photos/a.jpg"),
+        it.served(AccessVerb::Read, "Root/Photos"),
         1,
-        "only the prefetch read this file: the thumbnail request cost no read"
+        "only the prefetch read in this folder: the thumbnail request cost no read"
     );
     assert_eq!(
-        it.served(AccessVerb::Stat, "Root/Photos/a.jpg"),
+        it.served(AccessVerb::Stat, "Root/Photos"),
         0,
         "the GET took the file's size and time from the listing cache, not the wire"
     );
 
-    it.mac.engine.stop();
     it.phone.engine.stop();
 }
 
