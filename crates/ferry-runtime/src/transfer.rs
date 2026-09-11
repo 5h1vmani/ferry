@@ -55,6 +55,7 @@ use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello};
 use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress, resume_point};
 use ferry_core::tcp;
+use ferry_core::wire::WireError;
 
 use crate::access::{self, EntryFields};
 use crate::batch::{self, BatchRecord};
@@ -843,13 +844,16 @@ fn verify_and_land<S: Read + Write>(
     }
 }
 
-/// A connection failure is worth another go. A refusal by the peer is not.
+/// A connection failure is worth another go. A refusal by the peer is not,
+/// and neither is a manifest whose own chunks do not merge to its stated
+/// root hash: that peer will serve the same broken manifest again.
 ///
 /// Shared with `push.rs`: the same rule decides whether a failed call during
 /// a push is worth retrying.
 pub(crate) fn classify_rpc(error: &RpcError) -> Outcome {
     match error {
         RpcError::Remote(inner) => Outcome::Fatal(from_op(*inner)),
+        RpcError::Wire(WireError::BadManifest) => Outcome::Fatal(from_rpc(error)),
         other => Outcome::Retry(from_rpc(other)),
     }
 }
@@ -1064,5 +1068,43 @@ impl Drop for Reporter<'_> {
             .entry(self.device_key_hex.clone())
             .or_default()
             .speed_bytes_per_sec = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Outcome, classify_rpc};
+    use ferry_core::rpc::RpcError;
+    use ferry_core::wire::WireError;
+
+    #[test]
+    fn a_self_inconsistent_manifest_is_fatal_not_worth_retrying() {
+        // F2: a manifest whose own chunks do not merge to its stated root
+        // hash is not a connection hiccup; the same peer will serve the
+        // same broken manifest again, so retrying it can never succeed.
+        //
+        // `Manifest::from_parts` refuses to build a value like this at all,
+        // which is exactly what keeps every real `FileOps` implementation
+        // from ever handing `classify_rpc` one: the only way this error
+        // reaches it is a peer that does not speak the protocol honestly at
+        // the wire level, below the type that makes an inconsistent
+        // manifest unrepresentable. This test exercises the classification
+        // rule directly, at the boundary that error crosses.
+        let error = RpcError::Wire(WireError::BadManifest);
+        assert!(
+            matches!(classify_rpc(&error), Outcome::Fatal(_)),
+            "a self-inconsistent manifest must not be retried"
+        );
+    }
+
+    #[test]
+    fn a_frame_layer_hiccup_is_still_worth_retrying() {
+        // The fix for F2 narrows only `WireError::BadManifest`; every other
+        // wire or frame failure is still ordinary connection trouble.
+        let error = RpcError::Wire(WireError::UnexpectedEnd);
+        assert!(
+            matches!(classify_rpc(&error), Outcome::Retry(_)),
+            "a truncated read is a connection problem, not a broken peer"
+        );
     }
 }
