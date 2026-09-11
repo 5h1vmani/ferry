@@ -23,6 +23,8 @@ Findings: 15. Eleven are confirmed by reading a complete path. Four are plausibl
 | 14 | `FerryEngine.kt:412` | `temporary.renameTo(file)` returns a boolean that nothing reads. A failed rename leaves no `device.key`. The next launch generates another new key. | The phone's identity changes on every launch. Every paired Mac stops recognising it and pairing must be done again. No error is shown. Plausible. I could not confirm that `renameTo` can fail inside `filesDir`. | Check the return value and throw when the rename fails, so `create` reports the error. |
 | 15 | `QrScanner.kt:124` | `onDispose` calls `provider.unbindAll()`, then `clearAnalyzer()`, then `scanner.close()`. A frame already handed to the executor may sit inside `scanner.process(input)` when `close()` runs on the main thread. | The app can crash when the person leaves the pairing screen. Plausible. I could not confirm that ML Kit throws when `process` and `close` overlap. | Set the one-scan latch before closing, and close the scanner from the executor after `executor.shutdown()`. |
 
+Finding 1 was fixed in the engine, not the app: commit "Lock the data directory with an OS lock that dies with the process".
+
 ## Found safe
 
 - A second `offerScanned` cannot reach the engine. ML Kit posts its success listener to the main thread by default. The `_scanSent` check and its write both run there, so no second call gets through. The comment at `QrScanner.kt:51` names the executor thread as the owner, which is not where the write happens, but the guard still holds.

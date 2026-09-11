@@ -39,9 +39,12 @@
 //! no file is served to any device, and the data directory is free for
 //! another engine. One narrow case remains: a serving thread that ends in
 //! the same instant may make one last `devices_changed` call, because such
-//! a thread is not joined. See the known limitation below. One engine at a time may use a data directory;
-//! [`Engine::new`] refuses the second with `Runtime::BadConfig` and names
-//! the file to clear if a crash left one behind.
+//! a thread is not joined. See the known limitation below. One engine at a
+//! time may use a data directory: [`Engine::new`] takes an OS lock on
+//! `data_dir/lock` and refuses a second engine with `Runtime::BadConfig`
+//! while that lock is held. The kernel drops the lock the moment the
+//! holding process ends, killed or not, so a crash never blocks the next
+//! `Engine::new`.
 //!
 //! Notifications are rationed. [`EngineListener::devices_changed`] and
 //! [`EngineListener::transfers_changed`] arrive at most once every 250

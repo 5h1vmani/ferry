@@ -457,50 +457,70 @@ impl Shared {
 ///
 /// Two engines on one folder each keep the whole paired device list in
 /// memory and each write the whole file, so the second one to write puts
-/// back what the first one removed. A forgotten device would come back. One
-/// file, created with `create_new`, is what stops that: the second engine
-/// cannot create it, so it is refused before it opens anything.
+/// back what the first one removed. A forgotten device would come back.
+/// `data_dir/lock` is what stops that, but the lock is the kernel's, held on
+/// this open file, not the file's existence: a second engine, in this
+/// process or another, that tries to lock the same file while this one is
+/// held is refused before it opens anything.
 ///
-/// The file holds the process identifier, so a person can see which program
-/// to close. A crash leaves the file behind, and the app is told which file
-/// to offer to clear.
+/// The kernel drops the lock the instant this file descriptor closes, for
+/// any reason: `stop`, a normal process exit, or a kill signal that gives
+/// the process no chance to run its own cleanup. A file a killed process
+/// left behind therefore holds no lock and never blocks the next
+/// `Engine::new`. It still carries that process's identifier, for a person
+/// who wants to know who last used the folder; nothing in Ferry reads that
+/// back.
 pub(crate) struct DirLock {
-    path: PathBuf,
+    file: std::fs::File,
     held: AtomicBool,
 }
 
 impl DirLock {
-    /// Claim the folder, or report that somebody else holds it.
-    fn take(path: PathBuf) -> Result<Self, FerryError> {
-        let file = std::fs::OpenOptions::new()
+    /// Claim the folder with an OS advisory lock, or report that somebody
+    /// else holds it.
+    fn take(path: &std::path::Path) -> Result<Self, FerryError> {
+        // Not `truncate(true)`: truncating happens at open, before the lock
+        // is decided, and would blank a live holder's file out from under
+        // it. Truncation happens below, only once this call has the lock.
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
             .write(true)
-            .create_new(true)
-            .open(&path);
-        match file {
-            Ok(mut file) => {
-                // The identifier is written for a person to read. Nothing
-                // depends on it, so a failed write is not a failed claim.
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|_| bad_config("The lock file could not be opened."))?;
+        match file.try_lock() {
+            Ok(()) => {
+                // Clear whatever an earlier holder left, then write this
+                // process's identifier for a person to read. Nothing
+                // depends on either step: the lock itself is the kernel's,
+                // not this text.
+                drop(file.set_len(0));
                 drop(std::io::Write::write_all(
                     &mut file,
                     format!("{}\n", std::process::id()).as_bytes(),
                 ));
                 Ok(Self {
-                    path,
+                    file,
                     held: AtomicBool::new(true),
                 })
             }
-            Err(_) => Err(bad_config(&format!(
+            Err(std::fs::TryLockError::WouldBlock) => Err(bad_config(&format!(
                 "Another Ferry is using this folder, or a crash left {} behind.",
                 path.display()
             ))),
+            Err(std::fs::TryLockError::Error(_)) => {
+                Err(bad_config("The lock file could not be locked."))
+            }
         }
     }
 
     /// Give the folder back. Doing this twice is safe.
     pub(crate) fn release(&self) {
         if self.held.swap(false, Ordering::SeqCst) {
-            // A file that is already gone is the outcome asked for.
-            drop(std::fs::remove_file(&self.path));
+            // An unlock that fails leaves nothing worse than closing the
+            // file does on its own: the kernel drops the lock either way.
+            drop(self.file.unlock());
         }
     }
 }
@@ -727,7 +747,7 @@ impl Engine {
         let trusted = crate::networks::TrustedNetworks::load(&data_dir);
 
         // Last, because nothing below it can fail and leave the claim behind.
-        let dir_lock = DirLock::take(data_dir.join("lock"))?;
+        let dir_lock = DirLock::take(&data_dir.join("lock"))?;
 
         let shared = Arc::new(Shared {
             notify: Notify::new(listener),
