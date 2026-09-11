@@ -440,6 +440,33 @@ calls `shutdown(Both)` on each after setting the flag. The clone lives in
 `Shared`, keyed by the same connection id the access log uses. Test: a
 peer that accepts and never answers; `stop` returns within two seconds.
 
+**16d. Two more pending-handshake limits, `docs/audits/fable-security.md`
+findings 1 and 4.** A connection accepted and then left silent used to
+hold a pending slot for the whole ten second `HANDSHAKE_TIMEOUT_SECS`, and
+nothing stopped one source address from opening enough of these to hold
+every slot `MAX_PENDING_HANDSHAKES` allows.
+
+- `FIRST_BYTE_TIMEOUT_SECS = 2`. `Pending::negotiate`, in `ferry-core`'s
+  `tcp.rs`, waits for one byte, without consuming it, before it starts the
+  version exchange the ten second deadline bounds. No byte in two seconds
+  drops the connection the same way a handshake timeout does.
+- `MAX_PENDING_HANDSHAKES_PER_ADDR = 2`. `Listener` counts pending
+  handshakes by the connecting `IpAddr` as well as overall, and refuses a
+  third one from the same address while the overall cap still applies on
+  top. Both refusals drop the socket at once and report nothing, the same
+  as the existing overall refusal does.
+- `PairingBusy` is now shown. `hold_pairing`'s refusal, when a stranger's
+  connection already holds the code slot a real device's connection
+  wanted, used to be silently dropped. `accept_pairing` and
+  `dial_for_pairing` now report it through `fail_pairing`, which still
+  does nothing once pairing has moved on for its own reason, such as
+  already being `Confirmed`.
+
+Test: `crates/ferry-runtime/tests/security_bounds.rs`. A connection that
+sends nothing is dropped inside the first-byte deadline, and a real
+device still pairs afterward; a third pending connection from one source
+address is refused while the first two are still held.
+
 ### 14. Automatic copying, job 7: built
 
 ```rust

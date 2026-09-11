@@ -446,6 +446,11 @@
       "why": "Too many devices are connecting at once.",
       "todo": "Wait a moment and try again."
     },
+    "TcpError::TooManyPendingFromAddr": {
+      "stopped": "The connection was refused.",
+      "why": "Too many connections are already arriving from that device.",
+      "todo": "Wait a moment and try again."
+    },
     "TcpError::Version": {
       "stopped": "The connection was refused.",
       "why": "The two devices run versions that cannot talk.",

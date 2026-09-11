@@ -202,6 +202,7 @@ pub fn from_tcp(error: &TcpError) -> FerryError {
         TcpError::Version(inner) => from_version(inner),
         TcpError::Noise(inner) => from_noise(inner),
         TcpError::TooManyPending => failed("TcpError::TooManyPending"),
+        TcpError::TooManyPendingFromAddr => failed("TcpError::TooManyPendingFromAddr"),
         TcpError::Timeout => failed("TcpError::Timeout"),
     }
 }

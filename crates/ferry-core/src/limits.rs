@@ -96,6 +96,27 @@ pub const QR_ADDRESS_CONNECT_TIMEOUT_SECS: u64 = 3;
 /// once this many are already pending.
 pub const MAX_PENDING_HANDSHAKES: u32 = 8;
 
+/// How long a newly accepted connection may go before its first byte
+/// arrives, in seconds, before `tcp` drops it.
+///
+/// `docs/audits/fable-security.md`, findings 1 and 4: without this, a
+/// connection that is accepted and then sends nothing held its pending slot
+/// for the whole [`HANDSHAKE_TIMEOUT_SECS`]. `tcp` checks this first, in
+/// `Pending::negotiate`, before the version exchange that
+/// `HANDSHAKE_TIMEOUT_SECS` bounds even starts.
+pub const FIRST_BYTE_TIMEOUT_SECS: u64 = 2;
+
+/// The largest number of accepted connections from one source address that
+/// may be mid handshake at once.
+///
+/// `docs/audits/fable-security.md`, findings 1 and 4. [`MAX_PENDING_HANDSHAKES`]
+/// bounds every address together; without a bound per address too, one
+/// address opening connections and sending nothing on each can hold every
+/// pending slot by itself, and every other address's connection then queues
+/// behind them. `tcp` counts this by the connecting `IpAddr`, alongside
+/// [`MAX_PENDING_HANDSHAKES`], which still applies on top of this one.
+pub const MAX_PENDING_HANDSHAKES_PER_ADDR: u32 = 2;
+
 /// The largest number of reads one byte range may take.
 ///
 /// A range is fetched in pieces of at most [`MAX_READ_LEN`], one mebibyte

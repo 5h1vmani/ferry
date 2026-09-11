@@ -2854,9 +2854,16 @@ fn nobody(shared: &Arc<Shared>) -> PublicKey {
 /// Run the code pairing handshake as the side that accepted the connection.
 fn accept_pairing(shared: &Arc<Shared>, negotiated: NegotiatedPending, remote: SocketAddr) {
     match negotiated.pair(&shared.key) {
-        // A refused hold means another pairing is already showing its code.
-        // The person is looking at that one, so nothing is reported here.
-        Ok(connection) => drop(hold_pairing(shared, connection, remote, true)),
+        // `docs/audits/fable-security.md`, finding 4: a refused hold used to
+        // report nothing, so a real device arriving while a stranger's
+        // connection already held the code slot saw no failure at all, only
+        // a code that was never theirs. `fail_pairing` reports it now, and
+        // does nothing when pairing already moved on for its own reason.
+        Ok(connection) => {
+            if let Err(error) = hold_pairing(shared, connection, remote, true) {
+                fail_pairing(shared, error);
+            }
+        }
         Err(error) => report_pairing_failure(shared, &error),
     }
 }
@@ -2895,9 +2902,15 @@ fn report_pairing_failure(shared: &Arc<Shared>, error: &TcpError) {
 fn dial_for_pairing(shared: &Arc<Shared>, addr: SocketAddr) {
     match tcp::pair(addr, &shared.key) {
         Ok(connection) => {
-            // A refused hold means the pairing moved on while this dial ran.
-            // The connection then goes away with the value.
-            drop(hold_pairing(shared, connection, addr, false));
+            // A refused hold usually means the pairing moved on for its own
+            // reason while this dial ran, in which case `fail_pairing`'s own
+            // `is_running` check makes it a no-op. `docs/audits/fable-security.md`,
+            // finding 4: it can also mean a stranger's connection already
+            // holds the code slot, and that failure is now reported instead
+            // of silently dropping the connection.
+            if let Err(error) = hold_pairing(shared, connection, addr, false) {
+                fail_pairing(shared, error);
+            }
         }
         Err(error) => {
             lock(&shared.state).pairing.dialing = false;
@@ -2911,8 +2924,10 @@ fn dial_for_pairing(shared: &Arc<Shared>, addr: SocketAddr) {
 /// # Errors
 ///
 /// Returns `Runtime::PairingBusy` when something is already held, or when
-/// pairing has moved on. Nothing is shown in that case, because a second
-/// code would replace the one the person is comparing.
+/// pairing has moved on. Callers report this with `fail_pairing`, so a
+/// second code never replaces the one the person is comparing, but the
+/// person still sees that the connection which just arrived did not get
+/// one. `docs/audits/fable-security.md`, finding 4.
 fn hold_pairing(
     shared: &Arc<Shared>,
     connection: PairedConnection,

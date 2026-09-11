@@ -18,6 +18,22 @@
 //! - `MAX_PENDING_HANDSHAKES = 8`. A counter of accepted connections that have
 //!   not finished a handshake. The ninth is closed at once.
 //!
+//! Audit `docs/audits/fable-security.md`, findings 1 and 4, add two more:
+//!
+//! - `FIRST_BYTE_TIMEOUT_SECS = 2`. Checked in [`Pending::negotiate`], before
+//!   the version exchange starts: a connection that has not sent one byte
+//!   within two seconds of being accepted is dropped, instead of holding its
+//!   pending slot for the whole ten second [`HANDSHAKE_TIMEOUT_SECS`].
+//! - `MAX_PENDING_HANDSHAKES_PER_ADDR = 2`. `Listener` also counts pending
+//!   handshakes by the connecting `IpAddr`, so one address opening
+//!   connections and sending nothing cannot use up every slot
+//!   `MAX_PENDING_HANDSHAKES` allows and starve every other address queued
+//!   behind it. The overall cap is unchanged and still applies on top of
+//!   this one.
+//!
+//! Either refusal drops the socket at once and reports nothing: a peer that
+//! cannot even get a pending slot learns nothing more by being told so.
+//!
 //! `Listener::accept` does only the TCP accept and the slot reservation. It
 //! reads nothing, so a silent peer cannot make it wait, and cannot delay the
 //! connections queued behind it. The version exchange and the Noise
@@ -124,10 +140,11 @@
 //! server loop that does not exist yet in this crate. `MAX_PENDING_HANDSHAKES`
 //! only limits handshakes in progress, not connections already served.
 
+use std::collections::HashMap;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::limits;
@@ -155,11 +172,23 @@ pub enum TcpError {
         limits::MAX_PENDING_HANDSHAKES
     )]
     TooManyPending,
+    /// The listener already holds
+    /// [`limits::MAX_PENDING_HANDSHAKES_PER_ADDR`] connections from this
+    /// same source address that have not finished a handshake. Refused at
+    /// once, the same as [`TcpError::TooManyPending`], so one address
+    /// cannot hold every pending slot by itself.
+    #[error(
+        "too many handshakes are already pending from this address, the limit is {}",
+        limits::MAX_PENDING_HANDSHAKES_PER_ADDR
+    )]
+    TooManyPendingFromAddr,
     /// The handshake did not finish before the timeout.
     ///
     /// A read or a write on the socket ran past the deadline. Either side of
     /// the handshake can time out this way, so the caller sees one clear
-    /// answer instead of a raw I/O error.
+    /// answer instead of a raw I/O error. Also returned when a connection
+    /// sends no byte at all within [`limits::FIRST_BYTE_TIMEOUT_SECS`], the
+    /// shorter deadline [`Pending::negotiate`] checks first.
     #[error("the handshake did not finish before the timeout")]
     Timeout,
 }
@@ -181,6 +210,40 @@ fn is_timeout(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
     )
+}
+
+/// Wait for `stream` to have at least one byte ready, without consuming it,
+/// inside [`limits::FIRST_BYTE_TIMEOUT_SECS`].
+///
+/// Audit `docs/audits/fable-security.md`, findings 1 and 4: a connection
+/// that is accepted and then sends nothing used to hold its pending slot
+/// for the whole [`limits::HANDSHAKE_TIMEOUT_SECS`], eight seconds longer
+/// than it needed to. This runs first, before [`begin_handshake`] starts
+/// the version exchange, so a silent connection is refused in two seconds
+/// instead, and frees its slot that much sooner for whoever is queued
+/// behind it. `peek` rather than `read`, so the byte is still there for the
+/// version exchange to read for real once this returns.
+///
+/// `handshake_deadline` is [`Pending`]'s own overall deadline. The shorter
+/// of it and [`limits::FIRST_BYTE_TIMEOUT_SECS`] from now wins, so a test
+/// that binds with a short custom handshake timeout (see
+/// [`Listener::bind_with_timeout`]) still gets a short wait here too,
+/// instead of always waiting out the full two real seconds.
+fn wait_for_first_byte(stream: &TcpStream, handshake_deadline: Instant) -> Result<(), TcpError> {
+    let deadline = handshake_deadline.min(Instant::now() + Duration::from_secs(limits::FIRST_BYTE_TIMEOUT_SECS));
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(TcpError::Timeout);
+    }
+    stream.set_read_timeout(Some(left))?;
+    let mut byte = [0u8; 1];
+    match stream.peek(&mut byte) {
+        // The peer closed the connection without sending anything.
+        Ok(0) => Err(TcpError::Timeout),
+        Ok(_) => Ok(()),
+        Err(error) if is_timeout(&error) => Err(TcpError::Timeout),
+        Err(error) => Err(TcpError::Io(error)),
+    }
 }
 
 /// Turn a version-negotiation failure into a `TcpError`, folding a timed-out
@@ -370,17 +433,32 @@ fn run_handshake<T>(
     negotiating.finish(agreed, run)
 }
 
-/// Reserves one pending-handshake slot, and gives it back when dropped.
+/// Reserves one pending-handshake slot, both overall and for one source
+/// address, and gives both back when dropped.
 ///
-/// This is the only place the counter changes. A slot can only be created
-/// while one is free, and dropping it is the only way to free one again, so
-/// the count can never be missed or double counted.
+/// This is the only place either counter changes. A slot can only be
+/// created while one is free, and dropping it is the only way to free one
+/// again, so neither count can ever be missed or double counted.
 #[derive(Debug)]
-struct PendingSlot(Arc<AtomicU32>);
+struct PendingSlot {
+    pending: Arc<AtomicU32>,
+    pending_by_addr: Arc<Mutex<HashMap<IpAddr, u32>>>,
+    addr: IpAddr,
+}
 
 impl Drop for PendingSlot {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::SeqCst);
+        self.pending.fetch_sub(1, Ordering::SeqCst);
+        let mut by_addr = self
+            .pending_by_addr
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = by_addr.get_mut(&self.addr) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                by_addr.remove(&self.addr);
+            }
+        }
     }
 }
 
@@ -390,6 +468,13 @@ pub struct Listener {
     inner: TcpListener,
     local_addr: SocketAddr,
     pending: Arc<AtomicU32>,
+    /// How many pending handshakes are held by each source address right
+    /// now. Audit `docs/audits/fable-security.md`, findings 1 and 4.
+    pending_by_addr: Arc<Mutex<HashMap<IpAddr, u32>>>,
+    /// [`limits::MAX_PENDING_HANDSHAKES_PER_ADDR`] in production; a test may
+    /// override it with [`Listener::with_max_pending_per_addr`], the same
+    /// way [`Listener::with_idle_timeout`] overrides [`IDLE_TIMEOUT_SECS`].
+    max_pending_per_addr: u32,
     handshake_timeout: Duration,
     idle_timeout: Duration,
 }
@@ -420,6 +505,8 @@ impl Listener {
             inner,
             local_addr,
             pending: Arc::new(AtomicU32::new(0)),
+            pending_by_addr: Arc::new(Mutex::new(HashMap::new())),
+            max_pending_per_addr: limits::MAX_PENDING_HANDSHAKES_PER_ADDR,
             handshake_timeout,
             idle_timeout: Duration::from_secs(IDLE_TIMEOUT_SECS),
         })
@@ -437,21 +524,61 @@ impl Listener {
         self
     }
 
+    /// Use `max_pending_per_addr` instead of
+    /// [`limits::MAX_PENDING_HANDSHAKES_PER_ADDR`].
+    ///
+    /// Production code never calls this. It exists so a test of the overall
+    /// [`limits::MAX_PENDING_HANDSHAKES`] cap can raise the per-address one
+    /// out of its way, since every client `std::net::TcpStream::connect`
+    /// opens in this process shares one source address.
+    #[cfg(test)]
+    #[must_use]
+    fn with_max_pending_per_addr(mut self, max_pending_per_addr: u32) -> Self {
+        self.max_pending_per_addr = max_pending_per_addr;
+        self
+    }
+
     /// The address this listener is bound to.
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    /// Reserve a pending-handshake slot, or refuse when
-    /// [`limits::MAX_PENDING_HANDSHAKES`] are already reserved.
-    fn reserve_slot(&self) -> Result<PendingSlot, TcpError> {
+    /// Reserve a pending-handshake slot for `addr`, or refuse when
+    /// [`limits::MAX_PENDING_HANDSHAKES`] are already reserved overall, or
+    /// [`limits::MAX_PENDING_HANDSHAKES_PER_ADDR`] are already reserved for
+    /// `addr` alone.
+    ///
+    /// The overall slot is given back at once when the per-address check
+    /// fails, so a refused reservation never leaks one.
+    fn reserve_slot(&self, addr: IpAddr) -> Result<PendingSlot, TcpError> {
         self.pending
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                 (current < limits::MAX_PENDING_HANDSHAKES).then_some(current + 1)
             })
             .map_err(|_| TcpError::TooManyPending)?;
-        Ok(PendingSlot(Arc::clone(&self.pending)))
+        let reserved_for_addr = {
+            let mut by_addr = self
+                .pending_by_addr
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let count = by_addr.entry(addr).or_insert(0);
+            if *count < self.max_pending_per_addr {
+                *count += 1;
+                true
+            } else {
+                false
+            }
+        };
+        if !reserved_for_addr {
+            self.pending.fetch_sub(1, Ordering::SeqCst);
+            return Err(TcpError::TooManyPendingFromAddr);
+        }
+        Ok(PendingSlot {
+            pending: Arc::clone(&self.pending),
+            pending_by_addr: Arc::clone(&self.pending_by_addr),
+            addr,
+        })
     }
 
     /// Accept one connection and reserve a pending-handshake slot for it.
@@ -479,7 +606,7 @@ impl Listener {
         // failure to set it does not stop the connection from working, so
         // the error is ignored rather than failing the accept.
         let _ = stream.set_nodelay(true);
-        let slot = self.reserve_slot()?;
+        let slot = self.reserve_slot(remote.ip())?;
         let deadline = Instant::now() + self.handshake_timeout;
 
         Ok(Pending {
@@ -517,18 +644,25 @@ impl Pending {
         self.remote
     }
 
-    /// Agree a version and read which Noise pattern the initiator is about
-    /// to run, inside the deadline.
+    /// Wait for the first byte, agree a version, and read which Noise
+    /// pattern the initiator is about to run, inside the deadline.
     ///
     /// This side has no pattern of its own to request: it is the side that
     /// accepted the connection, not the side that is about to start a
     /// handshake. `Mode::Connect` is sent as the filler byte the exchange
     /// still needs; see [`version::negotiate`].
     ///
+    /// Audit `docs/audits/fable-security.md`, findings 1 and 4:
+    /// [`wait_for_first_byte`] runs first, so a connection that sends
+    /// nothing at all is refused in
+    /// [`limits::FIRST_BYTE_TIMEOUT_SECS`] seconds rather than holding its
+    /// slot for the whole handshake deadline below.
+    ///
     /// # Errors
     ///
     /// Returns [`TcpError::Version`] when version negotiation fails, and
-    /// [`TcpError::Timeout`] when it does not finish before the deadline.
+    /// [`TcpError::Timeout`] when the first byte or the rest of the
+    /// handshake does not arrive before its deadline.
     pub fn negotiate(self) -> Result<NegotiatedPending, TcpError> {
         let Pending {
             stream,
@@ -537,6 +671,7 @@ impl Pending {
             deadline,
             idle_timeout,
         } = self;
+        wait_for_first_byte(&stream, deadline)?;
         let negotiating = begin_handshake(stream, deadline, idle_timeout)?;
         let (agreed, negotiating) = negotiating.negotiate(Role::Responder, Mode::Connect)?;
         Ok(NegotiatedPending {
@@ -1012,7 +1147,15 @@ mod tests {
 
     #[test]
     fn the_ninth_pending_handshake_is_refused() {
-        let listener = Listener::bind(local_any()).unwrap();
+        // Every client below connects from this one process, so they all
+        // share one source address. The per-address cap this audit's fix
+        // adds would refuse the third of them long before the ninth, so it
+        // is raised out of the way here. `ferry-runtime`'s
+        // `tests/security_bounds.rs` is what tests the per-address cap
+        // itself, over a real accept loop.
+        let listener = Listener::bind(local_any())
+            .unwrap()
+            .with_max_pending_per_addr(limits::MAX_PENDING_HANDSHAKES);
         let addr = listener.local_addr();
 
         // Each of these clients connects, so `accept` returns a `Pending`
