@@ -82,6 +82,58 @@ pub enum PairingError {
     CameraRefused,
 }
 
+/// The most addresses a dial ever tries, whichever side is building or
+/// reading the list: the offering side's own interfaces
+/// (`ferry-runtime`'s `local_wifi_addresses`), and a scanned offer's own
+/// list before `dial_offer` tries any of them. A machine, or a hostile
+/// offer, naming more than this would otherwise make the dial loop that
+/// follows try that many addresses before giving up.
+pub const MAX_DIAL_ADDRESSES: usize = 8;
+
+/// True for an address that is only meaningful together with the
+/// interface it came from: `169.254.0.0/16`, or `fe80::/10`.
+///
+/// `Ipv4Addr::is_link_local` already exists in `std`. Its `Ipv6Addr`
+/// counterpart is not yet stable, so the top ten bits are checked by
+/// hand: `0xfe80` masked with `0xffc0` is exactly `fe80::/10`.
+fn is_link_local(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => v6.segments()[0] & 0xffc0 == 0xfe80,
+    }
+}
+
+/// True for a private-range address: RFC 1918 (`10.0.0.0/8`,
+/// `172.16.0.0/12`, `192.168.0.0/16`) or a unique local address
+/// (`fc00::/7`). The address a phone on the same Wi-Fi network can
+/// actually reach is almost always one of these.
+fn is_private(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_private(),
+        IpAddr::V6(v6) => v6.segments()[0] & 0xfe00 == 0xfc00,
+    }
+}
+
+/// Filters and orders a list of dial addresses to one policy, shared by
+/// the offering side (its own local interfaces) and the scanning side (a
+/// received offer's own list, which a hostile peer controls): loopback
+/// and link-local addresses are dropped outright, since neither is ever
+/// meaningful across this offer; a private-range address sorts before a
+/// public one, since it is the address a phone on the same Wi-Fi network
+/// can actually reach; and at most [`MAX_DIAL_ADDRESSES`] survive, kept in
+/// their original relative order within each group, so a peer naming
+/// dozens of addresses cannot make a dial loop try more than a handful.
+#[must_use]
+pub fn dialable_addresses(addresses: impl IntoIterator<Item = SocketAddr>) -> Vec<SocketAddr> {
+    let mut kept: Vec<SocketAddr> = addresses
+        .into_iter()
+        .filter(|addr| !addr.ip().is_loopback() && !is_link_local(addr.ip()))
+        .collect();
+    kept.sort_by_key(|addr| !is_private(addr.ip()));
+    kept.truncate(MAX_DIAL_ADDRESSES);
+    kept
+}
+
 impl Offer {
     /// Encode this offer as the bytes a QR code draws.
     #[must_use]
@@ -134,6 +186,9 @@ impl Offer {
             return Err(PairingError::OfferNotFerry);
         }
         let version = inner[0];
+        if version != 1 {
+            return Err(PairingError::OfferNotFerry);
+        }
         let mut static_key = [0u8; 32];
         static_key.copy_from_slice(&inner[1..33]);
         let mut expiry_bytes = [0u8; 8];
@@ -274,9 +329,67 @@ fn decode_base64url(text: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Offer, PairingError, decode_base64url, encode_base64url};
+    use super::{
+        MAX_DIAL_ADDRESSES, Offer, PairingError, decode_base64url, dialable_addresses,
+        encode_base64url,
+    };
     use crate::noise::{PublicKey, QR_NONCE_LEN};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    fn v4(a: u8, b: u8, c: u8, d: u8, port: u16) -> SocketAddr {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), port)
+    }
+
+    #[test]
+    fn dialable_addresses_drops_loopback_and_link_local() {
+        let addresses = vec![
+            v4(127, 0, 0, 1, 1),
+            v4(169, 254, 1, 2, 1),
+            v4(192, 168, 1, 42, 1),
+        ];
+        assert_eq!(dialable_addresses(addresses), vec![v4(192, 168, 1, 42, 1)]);
+    }
+
+    #[test]
+    fn dialable_addresses_puts_private_range_addresses_first() {
+        let public = v4(203, 0, 113, 5, 1);
+        let private = v4(10, 0, 0, 7, 1);
+        assert_eq!(
+            dialable_addresses(vec![public, private]),
+            vec![private, public],
+            "a private-range address is the one a phone on the same Wi-Fi can reach"
+        );
+    }
+
+    #[test]
+    fn dialable_addresses_caps_at_the_maximum_even_from_twenty() {
+        let addresses: Vec<SocketAddr> = (0..20).map(|i| v4(10, 0, 0, i, 1)).collect();
+        let kept = dialable_addresses(addresses);
+        assert_eq!(
+            kept.len(),
+            MAX_DIAL_ADDRESSES,
+            "an offer with 20 addresses dials at most {MAX_DIAL_ADDRESSES}"
+        );
+    }
+
+    #[test]
+    fn dialable_addresses_keeps_relative_order_within_each_group() {
+        let addresses = vec![
+            v4(10, 0, 0, 1, 1),
+            v4(203, 0, 113, 9, 1),
+            v4(10, 0, 0, 2, 1),
+            v4(203, 0, 113, 8, 1),
+        ];
+        assert_eq!(
+            dialable_addresses(addresses),
+            vec![
+                v4(10, 0, 0, 1, 1),
+                v4(10, 0, 0, 2, 1),
+                v4(203, 0, 113, 9, 1),
+                v4(203, 0, 113, 8, 1),
+            ]
+        );
+    }
 
     fn sample_offer() -> Offer {
         Offer {
@@ -327,6 +440,17 @@ mod tests {
         offer.addresses.clear();
         let payload = offer.encode();
         assert_eq!(Offer::decode(&payload).unwrap(), offer);
+    }
+
+    #[test]
+    fn a_version_other_than_one_is_refused() {
+        let mut offer = sample_offer();
+        offer.version = 2;
+        let payload = offer.encode();
+        match Offer::decode(&payload) {
+            Err(PairingError::OfferNotFerry) => {}
+            other => panic!("expected OfferNotFerry, got {other:?}"),
+        }
     }
 
     #[test]
