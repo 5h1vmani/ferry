@@ -184,11 +184,16 @@ Only the addresses the phone can reach over Wi-Fi are listed; over the cable
 the phone cannot reach the Mac by IP at all. An offer is good for two
 minutes and for one scan: the Mac accepts an `IK` handshake only while it is
 still showing the offer, and only for the one nonce in it, so a stale or
-reused code is refused before the handshake does any real work.
+reused code is refused once message one is decrypted, not before.
 
 The Mac still asks a person to confirm, the same as the code method: it
 shows the phone's name from the hello, and a person accepts or refuses. The
 phone asks nothing of its own; scanning the code was its answer.
+
+The scan method's protection is the two minute window and the single-use
+nonce, not a value a person compares: the name shown on the Mac is only a
+label the phone chose for itself. Someone who wants to compare a value both
+sides independently made should use the code method instead.
 
 Implemented in `crates/ferry-core/src/offer.rs` for the payload, and
 `crates/ferry-core/src/noise.rs` for the handshake.
@@ -209,8 +214,9 @@ carries a static-static Diffie-Hellman step that only the real initiator can
 compute. The responder's identity is proven when message two decrypts. A device
 that is not paired cannot complete the handshake.
 
-The cipher suites are `Noise_XX_25519_ChaChaPoly_BLAKE2s` for pairing and
-`Noise_KK_25519_ChaChaPoly_BLAKE2s` afterwards.
+The cipher suites are `Noise_XX_25519_ChaChaPoly_BLAKE2s` for pairing by
+code, `Noise_IK_25519_ChaChaPoly_BLAKE2s` for pairing by scanning a code,
+and `Noise_KK_25519_ChaChaPoly_BLAKE2s` afterwards.
 
 Handshake messages travel as `[u16 length][message]`, and a message over 1024
 bytes is refused. Real handshake messages are under 200 bytes. The cap stops a
