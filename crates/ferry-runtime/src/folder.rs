@@ -109,15 +109,23 @@ pub(crate) fn list_recursive(
     root: &RemotePath,
 ) -> Result<Vec<(RemotePath, u64)>, ListRecursiveError> {
     let mut out = Vec::new();
-    walk(fs, root, 1, &mut out)?;
+    let mut total = 0usize;
+    walk(fs, root, 1, &mut out, &mut total)?;
     Ok(out)
 }
 
+/// `total` counts every file and every folder found anywhere in the walk so
+/// far, against the one [`MAX_FOLDER_FILES`] budget. A folder's own listing
+/// is bounded on its own by [`after_page`], but that bound resets for each
+/// folder walked: nothing before this counter stopped a peer whose every
+/// folder answers within that per-folder bound from still fanning out to a
+/// huge total across many folders, each one within bounds on its own.
 fn walk(
     fs: &dyn FileOps,
     dir: &RemotePath,
     depth: u32,
     out: &mut Vec<(RemotePath, u64)>,
+    total: &mut usize,
 ) -> Result<(), ListRecursiveError> {
     if depth > MAX_FOLDER_DEPTH {
         return Err(ListRecursiveError::TooLarge);
@@ -138,14 +146,13 @@ fn walk(
             if child == *dir {
                 continue;
             }
+            *total += 1;
+            if *total > MAX_FOLDER_FILES {
+                return Err(ListRecursiveError::TooLarge);
+            }
             match entry.kind {
-                FileKind::File => {
-                    out.push((child, entry.size));
-                    if out.len() > MAX_FOLDER_FILES {
-                        return Err(ListRecursiveError::TooLarge);
-                    }
-                }
-                FileKind::Directory => walk(fs, &child, depth + 1, out)?,
+                FileKind::File => out.push((child, entry.size)),
+                FileKind::Directory => walk(fs, &child, depth + 1, out, total)?,
             }
         }
         match after_page(cursor, next, pages, entries_seen) {
@@ -318,6 +325,78 @@ mod tests {
             fs.insert_file(&format!("Camera/{i:05}.jpg"), Vec::new());
         }
         let error = list_recursive(&fs, &path("Camera")).expect_err("one over the cap");
+        assert!(matches!(error, ListRecursiveError::TooLarge));
+    }
+
+    /// A fake peer that answers every `list` with a folder full of empty
+    /// subfolders, exactly two levels deep: `root` (depth checked as
+    /// `path.matches('/').count() == 0`) gets `branch` children, each of
+    /// those (depth 1) gets `branch` more, and every folder past that
+    /// (depth 2 or deeper) is empty. No single folder's own listing goes
+    /// over [`MAX_FOLDER_FILES`], so only a walk that counts folders and
+    /// files in one shared budget, across the whole tree, catches this
+    /// before it queues upward of ten thousand of them.
+    struct ManyFoldersFs {
+        branch: usize,
+    }
+
+    impl FileOps for ManyFoldersFs {
+        fn list(
+            &self,
+            path: &RemotePath,
+            _cursor: u64,
+        ) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+            let depth = path.as_str().matches('/').count();
+            if depth >= 2 {
+                return Ok((Vec::new(), None));
+            }
+            let entries = (0..self.branch)
+                .map(|i| Entry {
+                    name: format!("sub{i}"),
+                    kind: FileKind::Directory,
+                    size: 0,
+                    modified_unix_secs: 0,
+                })
+                .collect();
+            Ok((entries, None))
+        }
+        fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+            Err(OpError::Unsupported)
+        }
+    }
+
+    #[test]
+    fn many_folders_across_the_tree_are_bounded_the_same_as_many_files() {
+        // 101 root children times 101 grandchildren each is 10,302 folders
+        // total, all within bounds one folder at a time, and well past
+        // `MAX_FOLDER_FILES` in total.
+        let fs = ManyFoldersFs { branch: 101 };
+        let error =
+            list_recursive(&fs, &path("Camera")).expect_err("folders share the file budget too");
         assert!(matches!(error, ListRecursiveError::TooLarge));
     }
 

@@ -57,7 +57,8 @@ impl Plan {
 pub(crate) fn plan(fs: &dyn FileOps, root: &RemotePath) -> Result<Plan, PlanError> {
     let mut files = Vec::new();
     let mut dirs = Vec::new();
-    walk(fs, root, 1, &mut files, &mut dirs)?;
+    let mut total = 0usize;
+    walk(fs, root, 1, &mut files, &mut dirs, &mut total)?;
     Ok(Plan { files, dirs })
 }
 
@@ -65,12 +66,21 @@ pub(crate) fn plan(fs: &dyn FileOps, root: &RemotePath) -> Result<Plan, PlanErro
 /// itself onto `dirs`: a directory's own entry only lands once every
 /// entry inside it, direct or nested, already has, which is what makes
 /// `dirs` come out deepest first, `root` last, with no separate sort.
+///
+/// `total` counts every file and every folder found anywhere in the walk
+/// so far, against the one [`MAX_FOLDER_FILES`] budget, the same shared
+/// counter `folder::list_recursive` uses: a folder's own listing is
+/// bounded on its own by [`after_page`], but that resets for each folder
+/// walked, so nothing before this counter stopped a peer whose every
+/// folder answers within bounds from still fanning out to a huge total
+/// across many folders.
 fn walk(
     fs: &dyn FileOps,
     dir: &RemotePath,
     depth: u32,
     files: &mut Vec<RemotePath>,
     dirs: &mut Vec<RemotePath>,
+    total: &mut usize,
 ) -> Result<(), PlanError> {
     if depth > MAX_FOLDER_DEPTH {
         return Err(PlanError::TooLarge);
@@ -87,14 +97,13 @@ fn walk(
             if child == *dir {
                 continue;
             }
+            *total += 1;
+            if *total > MAX_FOLDER_FILES {
+                return Err(PlanError::TooLarge);
+            }
             match entry.kind {
-                FileKind::File => {
-                    files.push(child);
-                    if files.len() > MAX_FOLDER_FILES {
-                        return Err(PlanError::TooLarge);
-                    }
-                }
-                FileKind::Directory => walk(fs, &child, depth + 1, files, dirs)?,
+                FileKind::File => files.push(child),
+                FileKind::Directory => walk(fs, &child, depth + 1, files, dirs, total)?,
             }
         }
         match after_page(cursor, next, pages, entries_seen) {
@@ -119,12 +128,86 @@ fn join(dir: &RemotePath, name: &str) -> Result<RemotePath, PlanError> {
 #[cfg(test)]
 mod tests {
     use ferry_core::memfs::MemoryFs;
+    use ferry_core::ops::{Entry, FileKind, OpError};
     use ferry_core::path::RemotePath;
+    use ferry_core::rpc::FileOps;
 
     use super::{PlanError, plan};
 
     fn path(text: &str) -> RemotePath {
         RemotePath::parse(text).unwrap()
+    }
+
+    /// A fake peer that answers every `list` with a folder full of empty
+    /// subfolders, exactly two levels deep, the same shape
+    /// `folder::ManyFoldersFs` uses to prove `list_recursive`'s identical
+    /// bound: no single folder's own listing goes over
+    /// [`super::MAX_FOLDER_FILES`], so only a walk that counts folders and
+    /// files in one shared budget, across the whole tree, catches this
+    /// before `DELETE` plans to remove upward of ten thousand of them.
+    struct ManyFoldersFs {
+        branch: usize,
+    }
+
+    impl FileOps for ManyFoldersFs {
+        fn list(
+            &self,
+            path: &RemotePath,
+            _cursor: u64,
+        ) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+            let depth = path.as_str().matches('/').count();
+            if depth >= 2 {
+                return Ok((Vec::new(), None));
+            }
+            let entries = (0..self.branch)
+                .map(|i| Entry {
+                    name: format!("sub{i}"),
+                    kind: FileKind::Directory,
+                    size: 0,
+                    modified_unix_secs: 0,
+                })
+                .collect();
+            Ok((entries, None))
+        }
+        fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn manifest(&self, _path: &RemotePath) -> Result<ferry_core::chunk::Manifest, OpError> {
+            Err(OpError::Unsupported)
+        }
+    }
+
+    #[test]
+    fn many_folders_across_the_tree_are_bounded_the_same_as_many_files() {
+        // 101 root children times 101 grandchildren each is 10,302 folders
+        // total, all within bounds one folder at a time, and well past
+        // `MAX_FOLDER_FILES` in total. Answering 507 here, with nothing
+        // deleted, is what `server::delete_verb` relies on: `plan` never
+        // returns a plan this large for the caller to act on.
+        let fs = ManyFoldersFs { branch: 101 };
+        let error = plan(&fs, &path("Camera")).expect_err("folders share the file budget too");
+        assert!(matches!(error, PlanError::TooLarge));
     }
 
     #[test]
