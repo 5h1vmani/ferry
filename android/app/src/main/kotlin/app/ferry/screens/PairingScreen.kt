@@ -326,12 +326,6 @@ private fun ChoosingContent(
         )
         Spacer(Modifier.height(FerrySpace.s2))
         Text(
-            text = stringResource(R.string.pairing_choose_body),
-            style = FerryFont.body(),
-            color = FerryColor.textSecondary(),
-        )
-        Spacer(Modifier.height(FerrySpace.s2))
-        Text(
             text = stringResource(R.string.pairing_location_reason),
             style = FerryFont.body(),
             color = FerryColor.textSecondary(),

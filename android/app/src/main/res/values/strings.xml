@@ -183,7 +183,10 @@
          go back a screen to get there. -->
     <string name="pairing_title">Pairing</string>
     <string name="pairing_choose_title">Pair with a Mac.</string>
-    <string name="pairing_choose_body">Scanning is quicker when the Mac is in front of you. A code works from anywhere on the network.</string>
+    <!-- No body line here: docs-v2/ia.md, Pairing, the phone, Choosing,
+         lists the title and two controls only. The line this screen once
+         carried, "Scanning is quicker...", named no count for "quicker",
+         which docs/voice.md rule 5 refuses. -->
     <!-- Read before the location permission prompt fires, so the person
          knows why Ferry is asking. Pairing is the first moment that is
          worth asking, because only the Wi-Fi network name needs it. -->
