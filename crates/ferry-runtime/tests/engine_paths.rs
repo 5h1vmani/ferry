@@ -29,7 +29,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferry_core::chunk::{ChunkSize, Manifest, manifest_from_bytes};
 use ferry_core::memfs::MemoryFs;
@@ -3076,7 +3076,37 @@ fn forget_keeps_the_devices_access_log_entries() {
 /// Turn the switch off then on again, the alternative
 /// `docs/engine-contract.md` item 14 names to a second reachability
 /// transition, and wait for the run it starts to end.
+/// The current Unix time, in whole seconds. `last_run_unix_secs` has this
+/// same resolution, which is exactly what makes it possible for two runs to
+/// share one value: see `toggle_and_wait_for_run`.
+fn current_unix_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 fn toggle_and_wait_for_run(mac: &Side, device: &str, want_files: u32) {
+    // G9: `last_run_files` alone can already equal `want_files` from the
+    // run before this toggle, most often when two runs in a row both find
+    // nothing new. Polling for it alone could then pass before this
+    // toggle's own run has even started. `last_run_unix_secs` moving past
+    // the value it held before the toggle proves a run actually finished
+    // after it.
+    let before_unix_secs = mac.engine.auto_copy(device.to_owned()).last_run_unix_secs;
+
+    // A run against the fake peer these tests use can finish inside the
+    // same second it started, since `last_run_unix_secs` only has one
+    // second of resolution. Waiting here, before the toggle, for the wall
+    // clock to move past whatever second `before_unix_secs` was itself
+    // read at is what guarantees the run this toggle starts cannot also
+    // land in that same second and tie with it forever.
+    if let Some(before) = before_unix_secs {
+        while current_unix_secs() <= before {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     mac.engine
         .set_auto_copy(device.to_owned(), false)
         .expect("turning the switch off should succeed");
@@ -3085,9 +3115,13 @@ fn toggle_and_wait_for_run(mac: &Side, device: &str, want_files: u32) {
         .expect("turning it back on should succeed");
     let engine = Arc::clone(&mac.engine);
     let wanted = device.to_owned();
-    poll_until("a run to finish with the expected file count", move || {
-        engine.auto_copy(wanted.clone()).last_run_files == Some(want_files)
-    });
+    poll_until(
+        "a new run to finish with the expected file count",
+        move || {
+            let info = engine.auto_copy(wanted.clone());
+            info.last_run_unix_secs > before_unix_secs && info.last_run_files == Some(want_files)
+        },
+    );
 }
 
 #[test]
