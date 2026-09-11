@@ -256,11 +256,13 @@ fun accessDaysOf(
 // Where the pairing flow is, from the engine's state and the method a
 // person chose.
 //
-// Three engine states belong to the Mac: Found, because the Mac browses and
-// picks; Offering, because the Mac shows the code; and Requested, because
-// the Mac asks the one question a scan leaves. The phone reaching any of
-// them would mean the engine and this app disagree about which device this
-// is, so each maps to the step that is still true — this phone is waiting.
+// Two engine states belong to the Mac only: Found, because the Mac browses
+// and picks; and Offering, because the Mac shows the code. The phone
+// reaching either would mean the engine and this app disagree about which
+// device this is, so each maps to the step that is still true — this phone
+// is waiting. Requested is different: the phone reaches it too, once its
+// own scan's handshake finds the Mac, and it carries the Mac's name for
+// the question this phone then asks before it stores the Mac.
 fun pairingStepOf(
     state: PairingState,
     method: PairingMethod?,
@@ -301,9 +303,10 @@ fun pairingStepOf(
             )
         }
 
-        // The Mac's three. See the note above.
+        // The Mac's own two. See the note above.
         is PairingState.Found -> PairingStep.Waiting(shortCode, state.expiresUnixSecs)
         is PairingState.Offering -> PairingStep.Waiting(shortCode, state.offer.expiresUnixSecs)
+        // Reached by the phone too, once a scan's handshake finds the Mac.
         is PairingState.Requested -> PairingStep.Scanned(state.name)
     }
 }

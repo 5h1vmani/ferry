@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,6 +20,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -192,14 +194,36 @@ fun PairingScreen(
                             label = stringResource(R.string.pairing_use_code_instead),
                             onClick = useCode,
                         )
-                    } else {
-                        // The Mac holds the next step: it asks the one
-                        // question a scan leaves, and this phone asks
-                        // nothing.
+                    } else if (step.deviceName != null) {
+                        // The handshake found the Mac and named it. This
+                        // phone asks its own question before it stores the
+                        // Mac, the same as the code method's Confirm does,
+                        // in the same shape of controls.
                         Text(
-                            text = step.deviceName?.let {
-                                stringResource(R.string.pairing_scanned_named, it)
-                            } ?: stringResource(R.string.pairing_scanned),
+                            text = stringResource(R.string.pairing_scanned_named, step.deviceName),
+                            style = FerryFont.title(),
+                            color = FerryColor.text(),
+                        )
+                        Spacer(Modifier.height(FerrySpace.s2))
+                        Text(
+                            text = stringResource(R.string.pairing_scanned_confirm_question),
+                            style = FerryFont.body(),
+                            color = FerryColor.textSecondary(),
+                        )
+                        Spacer(Modifier.height(FerrySpace.s3))
+                        Row(horizontalArrangement = Arrangement.spacedBy(FerrySpace.s3)) {
+                            OutlinedButton(onClick = cancel) {
+                                Text(stringResource(R.string.action_cancel))
+                            }
+                            Button(onClick = { FerryEngine.confirmPairing(true) }) {
+                                Text(stringResource(R.string.action_confirm))
+                            }
+                        }
+                    } else {
+                        // The handshake with the Mac is still under way:
+                        // no name to ask about yet.
+                        Text(
+                            text = stringResource(R.string.pairing_scanned),
                             style = FerryFont.title(),
                             color = FerryColor.text(),
                         )

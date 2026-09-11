@@ -212,9 +212,11 @@ enum class PairingMethod {
 // Where the pairing flow is, for the one screen that draws it.
 //
 // The engine's PairingState and the method a person chose are folded into
-// this one value, so PairingScreen switches once instead of twice. Three of
-// the engine's states belong to the Mac and never reach this phone:
-// Found, Offering, and Requested.
+// this one value, so PairingScreen switches once instead of twice. Found
+// and Offering belong to the Mac and never reach this phone. Requested
+// does reach this phone: it is what the engine reports once a scan's
+// handshake finds the Mac, and it is this state that carries the name
+// Scanned shows below.
 sealed class PairingStep {
     // No method chosen yet. Both ways in are offered.
     data object Choosing : PairingStep()
@@ -225,8 +227,9 @@ sealed class PairingStep {
     // The camera cannot be used. Pairing by code is the way onward.
     data object CameraRefused : PairingStep()
 
-    // The code was read and sent. The Mac holds the next step, so this
-    // phone asks nothing.
+    // The code was read and sent. Null while the handshake with the Mac is
+    // still under way; once the engine reports Requested, the name is
+    // here and this phone asks its own question before it stores the Mac.
     data class Scanned(val deviceName: String?) : PairingStep()
 
     // Code method: waiting for the Mac to find this phone.

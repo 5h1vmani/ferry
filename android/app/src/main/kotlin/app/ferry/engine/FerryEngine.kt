@@ -431,9 +431,10 @@ object FerryEngine {
     // offer's addresses and runs the handshake, so this blocks and runs off
     // the main thread.
     //
-    // A scan ends in Confirmed or Failed. The phone never shows Requested:
-    // scanning the Mac's screen is this phone's half of the trust, so it
-    // asks no question of its own.
+    // A successful handshake reports Requested with the Mac's name, not
+    // Confirmed straight away: this phone asks its own question before it
+    // stores the Mac, the same as the code method does. confirmPairing
+    // answers it.
     fun offerScanned(payload: ByteArray) {
         val current = engine ?: return
         if (_scanSent.value) {
@@ -454,8 +455,9 @@ object FerryEngine {
         }
     }
 
-    // Accepts or rejects the device whose code is showing. Code method
-    // only: a scan has nothing to compare.
+    // Accepts or rejects the device whose name or code is showing: the code
+    // method's six digits, or the scan method's Requested, once offerScanned
+    // has found the Mac's name.
     fun confirmPairing(accept: Boolean) {
         engine?.confirmPairing(accept)
     }

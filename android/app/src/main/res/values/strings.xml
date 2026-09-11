@@ -195,8 +195,11 @@
     <string name="pairing_scan_instead">Scan the Mac\'s code instead</string>
     <string name="pairing_use_code_instead">Use a pairing code instead</string>
     <string name="pairing_point_the_camera">Point the camera at the Mac\'s screen.</string>
-    <string name="pairing_scanned">Code read. Confirm on the Mac.</string>
-    <string name="pairing_scanned_named">%1$s found. Confirm on the Mac.</string>
+    <string name="pairing_scanned">Code read.</string>
+    <string name="pairing_scanned_named">%1$s found.</string>
+    <!-- Asked once the scan's handshake has found the Mac and named it,
+         above the same Confirm and Cancel controls the code method uses. -->
+    <string name="pairing_scanned_confirm_question">Is this your Mac?</string>
     <string name="pairing_waiting_title">Pairing on. Open Ferry on the Mac.</string>
     <!-- Shown in place of pairing_waiting_title while the code method has
          been chosen but the service has not yet reported reachable: the
