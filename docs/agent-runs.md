@@ -21,9 +21,11 @@ down. A run that ignores one will pay for it again.
 ## Rules
 
 1. **The gate is a script.** Every builder and the orchestrator run the same
-   gate from one script that exits non-zero on any failure. A gate written
-   in prose costs tokens and let a broken tree through twice, because a
-   grep over test output has grep's exit code, not cargo's.
+   gate from one script that exits non-zero on any failure. That script is
+   `scripts/gate.sh`, with modes `rust`, `rust-quick`, `gen`, `mac`,
+   `android`, and `all`. A gate written in prose costs tokens and let a
+   broken tree through twice, because a grep over test output has grep's
+   exit code, not cargo's.
 2. **Push only on a real exit code.** Run the gate into a log, save its
    exit code, and push only when it is zero. After any merge of two
    branches, run the affected crate's tests before pushing, even when each
