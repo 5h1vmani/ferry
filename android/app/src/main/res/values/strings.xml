@@ -23,7 +23,10 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_confirm">Confirm</string>
     <string name="action_retry">Retry</string>
-    <string name="action_forget_this_device">Forget this device</string>
+    <!-- The Mac is named, not "this device": a phone holds one Mac, and
+         the Mac's own control says "Forget this phone", so the same event
+         says the same kind of thing on both platforms. -->
+    <string name="action_forget_this_device">Forget this Mac</string>
     <string name="action_open_settings">Open settings</string>
     <string name="cd_back">Back</string>
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
