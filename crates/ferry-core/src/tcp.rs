@@ -40,10 +40,14 @@
 //! handshake both happen later, inside `Pending::pair` or `Pending::connect`,
 //! under the one deadline described above.
 //!
-//! After a handshake finishes, the read timeout is set to `IDLE_TIMEOUT_SECS`
-//! instead of being cleared, so a peer that goes silent after pairing does
-//! not hold its thread forever. The write timeout is cleared, since a write
-//! only blocks when the peer stops reading, which is not covered here.
+//! After a handshake finishes, both the read and the write timeout are set
+//! to `IDLE_TIMEOUT_SECS` instead of being cleared, so a peer that goes
+//! silent after pairing, or that stops reading and lets its own receive
+//! buffer fill, does not hold its thread forever either way.
+//! `docs/audits/fable-security.md`, finding 5: the write timeout used to be
+//! cleared here, on the theory that a write only blocks when the peer stops
+//! reading, which is exactly what a paired peer that opens a connection and
+//! never reads does.
 //!
 //! `run_handshake` also hands back a clone of the raw socket, taken before
 //! the handshake boxes the stream inside a `SecureStream`. `Connection`
@@ -404,11 +408,13 @@ impl Negotiating {
         let value = map_noise(run(deadline_stream, agreed))?;
 
         // The handshake is done. Turn the deadline off, and start the idle
-        // timeout instead of clearing it, so a peer that later goes silent
-        // does not hold this thread forever.
+        // timeout on both directions instead of clearing it, so a peer that
+        // later goes silent, or stops reading and never drains what this
+        // side writes, does not hold this thread forever either way.
+        // `docs/audits/fable-security.md`, finding 5.
         armed.store(false, Ordering::SeqCst);
         idle_handle.set_read_timeout(Some(idle_timeout))?;
-        idle_handle.set_write_timeout(None)?;
+        idle_handle.set_write_timeout(Some(idle_timeout))?;
 
         Ok((value, registered_socket))
     }

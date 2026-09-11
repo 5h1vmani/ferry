@@ -471,6 +471,32 @@ sends nothing is dropped inside the first-byte deadline, and a real
 device still pairs afterward; a third pending connection from one source
 address is refused while the first two are still held.
 
+**16e. A cap on serving connections per peer, `docs/audits/fable-security.md`
+finding 5.** A paired key has already proven itself, so nothing capped
+how many connections it could hold open at once, or how long a write to
+one could block once the write timeout was cleared after the handshake.
+A device that opened many connections and read nothing on any of them
+held one thread per connection forever.
+
+- `MAX_SERVING_PER_PEER = 8`, in `ferry-core`'s `limits.rs`, enforced by
+  `ferry_runtime::engine`'s `try_register_serving`. A ninth serving
+  connection from one paired peer is refused at once, before its socket
+  is registered or its name exchanged, and reports nothing. The one
+  serving connection `finish_pairing` starts right after a fresh pairing
+  still calls the original, uncapped `register_serving`: it is the first
+  serving connection that peer could ever have, so the cap can never
+  apply to it, and leaving that call alone keeps this fix pass off
+  finding 3's own lines in the same function.
+- `tcp.rs`'s `Negotiating::finish` now sets the write timeout to
+  `IDLE_TIMEOUT_SECS` once a handshake ends, the same as the read
+  timeout, instead of clearing it. A write only blocks when the peer
+  stops reading, which is exactly what a paired peer that opens a
+  connection and never reads does.
+
+Test: `crates/ferry-runtime/tests/security_bounds.rs`. A ninth serving
+connection from one paired peer is refused while the first eight are
+still served.
+
 ### 14. Automatic copying, job 7: built
 
 ```rust

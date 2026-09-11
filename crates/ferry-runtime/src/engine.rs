@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use ferry_core::adb::{Adb, find_adb};
 use ferry_core::chunk::ChunkSize;
 use ferry_core::discovery::{Advertiser, Browser, Event};
-use ferry_core::limits::{MAX_READ_LEN, MAX_WRITE_LEN};
+use ferry_core::limits::{MAX_READ_LEN, MAX_SERVING_PER_PEER, MAX_WRITE_LEN};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{NoiseError, PublicKey, QR_NONCE_LEN, SecureStream, StaticKey};
 use ferry_core::offer::{Offer, PairingError as OfferError};
@@ -3563,7 +3563,8 @@ fn transport_for_inbound(shared: &Arc<Shared>, remote: SocketAddr) -> Transport 
     }
 }
 
-/// Put this connection's off switch where `forget` and `stop` can reach it.
+/// Put this connection's off switch where `forget` and `stop` can reach it,
+/// unconditionally.
 ///
 /// This happens as soon as the handshake proves who is calling, and before
 /// the names are exchanged. A peer that finishes the handshake and then
@@ -3573,20 +3574,66 @@ fn transport_for_inbound(shared: &Arc<Shared>, remote: SocketAddr) -> Transport 
 ///
 /// The switch starts off if the engine is already stopping, so a connection
 /// that arrives during `stop` serves nothing.
+///
+/// `finish_pairing` calls this directly, uncapped: its own serving
+/// connection is the first one this peer could ever have, immediately after
+/// pairing confirms, so [`MAX_SERVING_PER_PEER`] can never apply to it.
+/// [`serve_connection`], reached from an ordinary `Mode::Connect` dial,
+/// calls [`try_register_serving`] instead, which is where finding 5's cap
+/// is actually enforced.
 fn register_serving(shared: &Arc<Shared>, key_hex: &str, addr: SocketAddr) -> Arc<AtomicBool> {
-    let allowed = Arc::new(AtomicBool::new(!shared.stopping()));
+    register_serving_inner(shared, key_hex, addr, false)
+        .expect("the cap is not enforced here, so this always reserves a switch")
+}
+
+/// As [`register_serving`], but refuses once this peer already holds
+/// [`MAX_SERVING_PER_PEER`] serving connections.
+///
+/// `docs/audits/fable-security.md`, finding 5: a paired device that opened
+/// more serving connections than it ever read from held one thread each,
+/// forever, since nothing capped how many it could hold at once at all.
+/// Refusing here, before a socket is registered or a name exchanged, means
+/// a refused connection costs this device nothing beyond the accept itself.
+fn try_register_serving(
+    shared: &Arc<Shared>,
+    key_hex: &str,
+    addr: SocketAddr,
+) -> Option<Arc<AtomicBool>> {
+    register_serving_inner(shared, key_hex, addr, true)
+}
+
+/// What [`register_serving`] and [`try_register_serving`] share: reserving
+/// one serving switch under one lock, so the check and the push can never
+/// race against another thread doing the same for this peer. `enforce_cap`
+/// is `false` only for `register_serving`'s own caller.
+fn register_serving_inner(
+    shared: &Arc<Shared>,
+    key_hex: &str,
+    addr: SocketAddr,
+    enforce_cap: bool,
+) -> Option<Arc<AtomicBool>> {
     let mut state = lock(&shared.state);
     let live = state.live_mut(key_hex);
+    if enforce_cap && live.serving.len() >= MAX_SERVING_PER_PEER as usize {
+        return None;
+    }
+    let allowed = Arc::new(AtomicBool::new(!shared.stopping()));
     live.last_addr = Some(addr);
     live.serving.push(Arc::clone(&allowed));
-    allowed
+    Some(allowed)
 }
 
 /// Exchange names, then serve the shared root until the connection ends.
 fn serve_connection(shared: &Arc<Shared>, connection: Connection, peer: PublicKey) {
     let transport = transport_for_inbound(shared, connection.remote);
     let key_hex = hex_of(&peer);
-    let allowed = register_serving(shared, &key_hex, connection.remote);
+    let Some(allowed) = try_register_serving(shared, &key_hex, connection.remote) else {
+        // `docs/audits/fable-security.md`, finding 5: this peer already
+        // holds `MAX_SERVING_PER_PEER` connections. `connection` drops here,
+        // closing its socket at once; nothing is reported, the same as any
+        // other refusal before a name is exchanged.
+        return;
+    };
     let socket_id = shared.next_connection_id();
     let _socket = SocketRegistration::new(shared, socket_id, connection.socket);
     serve_stream(

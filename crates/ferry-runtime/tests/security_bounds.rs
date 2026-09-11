@@ -348,5 +348,56 @@ fn a_third_pending_connection_from_one_address_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
+// Finding 5: a cap on serving connections per paired peer.
+// ---------------------------------------------------------------------------
+
+/// A ninth serving connection from one paired peer is refused, per
+/// `ferry_core::limits::MAX_SERVING_PER_PEER`, while the first eight are
+/// still served normally.
+///
+/// Before the fix, `register_serving` pushed to `live.serving` with no
+/// cap at all, so a ninth connection from the same paired key would have
+/// been accepted exactly like the first.
+#[test]
+fn a_ninth_serving_connection_from_one_peer_is_refused() {
+    let target = build("Target");
+    let friend = build("Friend");
+    pair_by_code(&target, &friend);
+
+    let addr = loopback_addr(&target);
+    let friend_key = static_key(&friend.key);
+    let target_public = public_key(&target.key);
+
+    // Each of the first `MAX_SERVING_PER_PEER` connections, reconnecting as
+    // the already-paired friend the way `engine_paths.rs`'s hand-built
+    // peers do, must be served: the handshake succeeds and the name
+    // exchange that only a served connection answers completes.
+    let mut held = Vec::new();
+    for n in 0..ferry_core::limits::MAX_SERVING_PER_PEER {
+        let connection = tcp::connect(addr, &friend_key, &target_public)
+            .unwrap_or_else(|error| panic!("connection {n} should be accepted: {error}"));
+        let mut stream = connection.stream;
+        exchange_hello(&mut stream, "Friend", CoreDeviceKind::Phone)
+            .unwrap_or_else(|error| panic!("connection {n} should be served: {error}"));
+        held.push(stream);
+    }
+
+    // The Noise handshake itself is not capped, only serving is, so this
+    // connects fine and then gets nothing back: the name exchange waits on
+    // an answer `serve_connection` never sends, because it dropped the
+    // connection before registering it, and so the read fails once the
+    // socket closes.
+    let ninth = tcp::connect(addr, &friend_key, &target_public)
+        .expect("the Noise handshake itself is not capped");
+    let mut ninth_stream = ninth.stream;
+    match exchange_hello(&mut ninth_stream, "Friend", CoreDeviceKind::Phone) {
+        Err(_) => {}
+        Ok(_) => panic!("the ninth serving connection should have been refused"),
+    }
+
+    drop(held);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers used only from here down are added as later findings are fixed.
 // ---------------------------------------------------------------------------

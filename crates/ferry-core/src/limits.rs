@@ -14,8 +14,11 @@
 //! to read, and [`MAX_NOISE_PLAINTEXT`], because the Noise specification fixes
 //! it.
 //!
-//! Every constant here is enforced somewhere in this crate. A limit that
-//! nothing checks belongs in the plan, not in a module named `limits`.
+//! Every constant here is enforced somewhere in this crate, save for
+//! [`MAX_SERVING_PER_PEER`], which `ferry-runtime` enforces because it is
+//! the crate that runs the server loop a paired connection is served from.
+//! A limit that nothing checks belongs in the plan, not in a module named
+//! `limits`.
 
 /// The largest frame payload, in bytes.
 ///
@@ -116,6 +119,19 @@ pub const FIRST_BYTE_TIMEOUT_SECS: u64 = 2;
 /// behind them. `tcp` counts this by the connecting `IpAddr`, alongside
 /// [`MAX_PENDING_HANDSHAKES`], which still applies on top of this one.
 pub const MAX_PENDING_HANDSHAKES_PER_ADDR: u32 = 2;
+
+/// The largest number of serving connections one paired peer may hold open
+/// at once.
+///
+/// `docs/audits/fable-security.md`, finding 5: a paired key has already
+/// proven itself, unlike a pending handshake, so nothing capped how many
+/// connections one paired device could open and never read on. Each held
+/// one thread, plus a serving slot, forever, since `tcp` also used to clear
+/// the write timeout once a handshake finished. `ferry_runtime::engine`'s
+/// `register_serving` enforces this, refusing a peer's ninth serving
+/// connection the same way `tcp::Listener` refuses a ninth pending one:
+/// dropped at once, nothing reported.
+pub const MAX_SERVING_PER_PEER: u32 = 8;
 
 /// The largest number of reads one byte range may take.
 ///
