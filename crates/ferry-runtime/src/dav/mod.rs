@@ -118,7 +118,9 @@ impl MountRegistry {
     /// # Errors
     ///
     /// Returns `Runtime::MountFailed` when the loopback port cannot be
-    /// bound or the password cannot be generated.
+    /// bound or the password cannot be generated, and `Runtime::NotPaired`
+    /// when the device was forgotten between the caller's own check and
+    /// this call.
     pub(crate) fn start(
         &self,
         shared: &Arc<crate::engine::Shared>,
@@ -159,8 +161,10 @@ impl MountRegistry {
             port,
             shared.data_dir.join("dav_sidecars").join(device_key_hex),
             // Item 19: the engine's pool for this device, not one of the
-            // bridge's own, so `Engine::list` and this bridge share it.
-            shared.pool_for(device_key_hex),
+            // bridge's own, so `Engine::list` and this bridge share it. A
+            // device that is not paired has no pool, so no bridge is built
+            // for one.
+            shared.pool_for(device_key_hex)?,
         ));
 
         let shared_for_thread = Arc::clone(shared);

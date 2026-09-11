@@ -892,7 +892,11 @@ every idle connection down and marks the pool closed, so `take` and
 `take_dialing` both answer `Runtime::NotReachable` from then on. A bridge
 connection Finder already holds keeps its own handle on the pool, so
 without the close its next request would read a forgotten device's files.
-`Bridge` borrows from it instead of owning one. The
+No pool is ever made for a device that is not paired: the pools lock is
+held across that check, and `forget` holds the same lock across its own
+removal and the peer list write, so a call that passed the check before
+`forget` began cannot make the pool again after it. `Bridge` borrows from
+it instead of owning one. The
 `take`, `Borrowed`, `client`, and `mark_unhealthy` API does not change.
 `Engine::list` borrows from it too, instead of dialling fresh. The
 constants keep their values: four connections, and a thirty second wait

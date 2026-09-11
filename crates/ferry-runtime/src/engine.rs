@@ -426,12 +426,28 @@ impl Shared {
     /// `docs/engine-contract.md`, item 19. Every caller gets the same pool
     /// for the same key, so four connections is the count across the whole
     /// engine, not per bridge.
-    pub(crate) fn pool_for(&self, device_key_hex: &str) -> Arc<Pool> {
-        Arc::clone(
-            lock(&self.pools)
+    ///
+    /// No pool is made for a device that is not paired. The pools lock is
+    /// held across that check, and `Engine::forget` holds the same lock
+    /// across its own removal and the peer list write, so a call that
+    /// passed the check before `forget` began cannot make the pool again
+    /// after `forget` dropped it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::NotPaired` when the key hex does not decode or
+    /// names no stored device.
+    pub(crate) fn pool_for(&self, device_key_hex: &str) -> Result<Arc<Pool>, FerryError> {
+        let key = key_from_hex(device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+        let mut pools = lock(&self.pools);
+        if lock(&self.state).peers.get(&key).is_none() {
+            return Err(failed("Runtime::NotPaired"));
+        }
+        Ok(Arc::clone(
+            pools
                 .entry(device_key_hex.to_owned())
                 .or_insert_with(|| Arc::new(Pool::new(device_key_hex.to_owned()))),
-        )
+        ))
     }
 
     /// The download folder, if `start` has opened it.
@@ -689,24 +705,26 @@ pub(crate) fn record_this(
 /// Returns a `PathError` code when the path is refused,
 /// `Runtime::NotStarted` before `Engine::start` has run, and
 /// `Runtime::NotPaired` when the key hex does not decode or names no
-/// stored device.
+/// stored device. The paired check and the pool are taken together under
+/// the pools lock, so a device forgotten in between is never dialed.
 fn remote_call(
     shared: &Arc<Shared>,
     device_key_hex: &str,
     remote_path: &str,
 ) -> Result<(RemotePath, Arc<Pool>), FerryError> {
     let path = RemotePath::parse(remote_path).map_err(from_path)?;
-    let key = key_from_hex(device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
-    {
-        let state = lock(&shared.state);
-        if !state.started {
-            return Err(failed("Runtime::NotStarted"));
-        }
-        if state.peers.get(&key).is_none() {
-            return Err(failed("Runtime::NotPaired"));
-        }
+    if key_from_hex(device_key_hex).is_none() {
+        return Err(failed("Runtime::NotPaired"));
     }
-    Ok((path, shared.pool_for(device_key_hex)))
+    if !lock(&shared.state).started {
+        return Err(failed("Runtime::NotStarted"));
+    }
+    // The paired check and the pool both live in `pool_for`, under one hold
+    // of the pools lock. Checking here and making the pool afterwards let a
+    // call that passed the check before `forget` wrote the peer list make a
+    // fresh pool for the device it had just forgotten, and dial it.
+    let pool = shared.pool_for(device_key_hex)?;
+    Ok((path, pool))
 }
 
 /// Change the paired device list and write it out.
@@ -1334,13 +1352,21 @@ impl Engine {
         // nobody had closed. `Pool::close` shuts every idle connection down
         // and refuses every later borrow.
         self.shared.mounts.stop(&key_hex);
-        if let Some(pool) = lock(&self.shared.pools).remove(&key_hex) {
-            pool.close();
+        {
+            // One hold of the pools lock covers the removal, the close, and
+            // the peer list write. `Shared::pool_for` takes the same lock
+            // across its own paired check, so no call can pass that check
+            // while this is running and then make the pool again.
+            let mut pools = lock(&self.shared.pools);
+            if let Some(pool) = pools.remove(&key_hex) {
+                pool.close();
+            }
+            save_peers(&self.shared, |store| {
+                drop(store.remove(&key));
+                Ok(())
+            })?;
+            drop(pools);
         }
-        save_peers(&self.shared, |store| {
-            drop(store.remove(&key));
-            Ok(())
-        })?;
 
         let gone: Vec<String>;
         let gone_batches: Vec<String>;
