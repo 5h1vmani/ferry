@@ -211,12 +211,26 @@ fun PairingScreen(
                 }
 
                 is PairingStep.Waiting -> Padded {
-                    WaitingContent(
-                        shortCode = step.shortCode,
-                        expiresUnixSecs = step.expiresUnixSecs,
-                        onCancel = cancel,
-                        onScan = useScan,
-                    )
+                    // Pair turns advertising on and navigates here in the
+                    // same tap, before the service has necessarily started
+                    // it. While reachable is still false the engine has not
+                    // begun pairing, whatever this step's own words say, so
+                    // this shows "Starting." instead of "Pairing on." It
+                    // shows the engine's own error instead, if starting the
+                    // service failed and reachable never turns true.
+                    val starting = method == PairingMethod.Code && !reachable
+                    val startFailure = error
+                    if (starting && startFailure != null) {
+                        ErrorBlock(error = threePartError(startFailure))
+                    } else {
+                        WaitingContent(
+                            starting = starting,
+                            shortCode = step.shortCode,
+                            expiresUnixSecs = step.expiresUnixSecs,
+                            onCancel = cancel,
+                            onScan = useScan,
+                        )
+                    }
                 }
 
                 is PairingStep.Code -> Padded {
@@ -385,6 +399,7 @@ private fun ScanningContent(onScanned: (ByteArray) -> Unit, onUseCode: () -> Uni
 
 @Composable
 private fun WaitingContent(
+    starting: Boolean,
     shortCode: String?,
     expiresUnixSecs: Long,
     onCancel: () -> Unit,
@@ -392,7 +407,9 @@ private fun WaitingContent(
 ) {
     Column {
         Text(
-            text = stringResource(R.string.pairing_waiting_title),
+            text = stringResource(
+                if (starting) R.string.pairing_starting else R.string.pairing_waiting_title,
+            ),
             style = FerryFont.title(),
             color = FerryColor.text(),
         )
