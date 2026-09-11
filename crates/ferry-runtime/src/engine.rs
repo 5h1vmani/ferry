@@ -534,7 +534,10 @@ fn notify_timer(shared: &Arc<Shared>) {
 /// fresh connection id and ends it in the same breath, the way
 /// `pull_folder` finalises its own listing (docs/engine-contract.md, item
 /// 13, "Rolling up").
-fn record_this(
+///
+/// `pub(crate)` rather than private: `dav::server` calls this too, for a
+/// bridge request's own `PROPFIND` and `GET` (item 6, S3).
+pub(crate) fn record_this(
     shared: &Arc<Shared>,
     device_key_hex: &str,
     verb: access::AccessVerb,

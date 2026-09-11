@@ -18,7 +18,8 @@ use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, RpcError};
 
-use crate::engine::Shared;
+use crate::access::AccessVerb;
+use crate::engine::{Shared, record_this};
 use crate::guard::StopAware;
 
 use super::cache::Cache;
@@ -65,6 +66,7 @@ fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlo
 /// One device's bridge state, shared by every connection thread serving
 /// it.
 pub(crate) struct Bridge {
+    device_key_hex: String,
     user: String,
     password: String,
     port: u16,
@@ -86,11 +88,12 @@ impl Bridge {
         sidecar_dir: PathBuf,
     ) -> Self {
         Self {
-            pool: Pool::new(device_key_hex),
+            pool: Pool::new(device_key_hex.clone()),
             sidecars: SidecarStore::new(sidecar_dir),
             cache: Cache::new(),
             locks: LockTable::new(),
             connections: Arc::new(AtomicU32::new(0)),
+            device_key_hex,
             user,
             password,
             port,
@@ -430,8 +433,10 @@ fn propfind(
     };
 
     let mut named: Vec<(String, Entry)> = vec![(target.to_owned(), self_entry.clone())];
+    let mut listed = false;
 
     if depth != "0" && self_entry.kind == FileKind::Directory {
+        listed = true;
         let cached = bridge.cache.get(target);
         let children = match cached {
             Some(children) => children,
@@ -465,6 +470,34 @@ fn propfind(
         }
     }
     drop(borrowed);
+
+    // S3: a bridge `PROPFIND` leaves a `This` entry in the Mac's own
+    // access log, once the peer round trip it needed is done. A folder
+    // listing is `List` with the entries actually shown (children only,
+    // matching `Engine::list`'s own count); a single stat, at depth 0 or
+    // on a file, is `Stat`.
+    if listed {
+        let entry_count = u32::try_from(named.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        record_this(
+            shared,
+            &bridge.device_key_hex,
+            AccessVerb::List,
+            path.as_str(),
+            None,
+            Some(entry_count),
+            None,
+        );
+    } else {
+        record_this(
+            shared,
+            &bridge.device_key_hex,
+            AccessVerb::Stat,
+            path.as_str(),
+            None,
+            None,
+            None,
+        );
+    }
 
     let props = xml::requested_props(&request.body);
     let items: Vec<xml::Item<'_>> = named
@@ -606,15 +639,26 @@ fn get_file(
     }
     http::write_head(out, status, &headers)?;
 
-    if method == "HEAD" || len == 0 {
-        return Ok(());
-    }
-
-    // S2: a peer read failing mid body propagates as an `Err`, so
-    // `handle_connection` drops the connection instead of trying to
-    // parse a next request off a socket whose promised
-    // `Content-Length` was never met.
-    stream_body(&mut borrowed, &path, start, end.saturating_add(1), out)?;
+    let sent = if method == "HEAD" || len == 0 {
+        0
+    } else {
+        // S2: a peer read failing mid body propagates as an `Err`, so
+        // `handle_connection` drops the connection instead of trying to
+        // parse a next request off a socket whose promised
+        // `Content-Length` was never met.
+        stream_body(&mut borrowed, &path, start, end.saturating_add(1), out)?
+    };
+    // S3: a bridge `GET` leaves a `This` entry in the Mac's own access
+    // log, once the peer round trip is done.
+    record_this(
+        shared,
+        &bridge.device_key_hex,
+        AccessVerb::Read,
+        path.as_str(),
+        Some(sent),
+        None,
+        None,
+    );
     Ok(())
 }
 

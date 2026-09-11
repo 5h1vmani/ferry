@@ -515,6 +515,28 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     assert_eq!(response.status, 200);
     assert_eq!(response.body, notes);
 
+    // S3: a bridge GET and PROPFIND each leave a `This` entry in the
+    // Mac's own access log, with the right verb, once the peer round
+    // trip they needed is done.
+    let this_entries = |log: &[ferry_runtime::AccessEntry], verb: ferry_runtime::AccessVerb| {
+        log.iter()
+            .filter(|entry| entry.actor == ferry_runtime::Actor::This && entry.verb == verb)
+            .count()
+    };
+    let log = mac.engine.access_log(None, 1000);
+    assert!(
+        this_entries(&log, ferry_runtime::AccessVerb::Read) >= 1,
+        "a bridge GET should leave a This/Read entry"
+    );
+    assert!(
+        this_entries(&log, ferry_runtime::AccessVerb::List) >= 1,
+        "a bridge PROPFIND of a folder should leave a This/List entry"
+    );
+    assert!(
+        this_entries(&log, ferry_runtime::AccessVerb::Stat) >= 1,
+        "a bridge PROPFIND at depth 0 should leave a This/Stat entry"
+    );
+
     // S1: a range past the end, and an empty suffix, both answer 416 with
     // the right Content-Range, never a 200 with the wrong length.
     let response = client.request(
