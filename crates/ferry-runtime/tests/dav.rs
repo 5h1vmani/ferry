@@ -625,6 +625,51 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
         "a sidecar PUT must not touch the peer's access log"
     );
 
+    // S4: a sidecar body over the 64 KiB size bound is 413, and never
+    // lands on disk.
+    let oversized_sidecar = vec![0u8; 64 * 1024 + 1];
+    let response = client.request(
+        "PUT",
+        "/Root/._oversized",
+        &host,
+        Some(auth),
+        &[],
+        Some(&oversized_sidecar),
+    );
+    assert_eq!(response.status, 413);
+    let response = client.request("GET", "/Root/._oversized", &host, Some(auth), &[], None);
+    assert_eq!(
+        response.status, 404,
+        "a refused sidecar body must not land on disk"
+    );
+
+    // Two sidecars sharing a name under different folders stay separate:
+    // each is keyed by its own DAV path, not the bare name alone.
+    let sidecar_root = b"folder Root's own bookkeeping";
+    let sidecar_dcim = b"folder DCIM's own bookkeeping, different bytes";
+    let response = client.request(
+        "PUT",
+        "/Root/._twin",
+        &host,
+        Some(auth),
+        &[],
+        Some(sidecar_root),
+    );
+    assert_eq!(response.status, 201);
+    let response = client.request(
+        "PUT",
+        "/Root/DCIM/._twin",
+        &host,
+        Some(auth),
+        &[],
+        Some(sidecar_dcim),
+    );
+    assert_eq!(response.status, 201);
+    let response = client.request("GET", "/Root/._twin", &host, Some(auth), &[], None);
+    assert_eq!(response.body, sidecar_root);
+    let response = client.request("GET", "/Root/DCIM/._twin", &host, Some(auth), &[], None);
+    assert_eq!(response.body, sidecar_dcim);
+
     // The cache: two depth 1 listings of an untouched folder within two
     // seconds cost the peer exactly one `list`. A folder never listed
     // before in this test, so no earlier cache entry can make this
@@ -669,6 +714,39 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
         after - before,
         1,
         "the second listing within two seconds must hit the cache"
+    );
+
+    // The cache expires after two seconds: a listing made just past that
+    // window costs the peer another `list`, one sleep rather than a test
+    // clock.
+    std::thread::sleep(Duration::from_millis(2100));
+    let before_expiry = list_count(&phone.engine.access_log(None, 1000));
+    let response = client.request(
+        "PROPFIND",
+        "/Root/DCIM",
+        &host,
+        Some(auth),
+        &[("Depth", "1".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 207);
+    // As above: this new "DCIM" list entry stays pending on the peer's
+    // connection until it touches a different path, so one more request
+    // elsewhere finalises it before the count below is read.
+    let response = client.request(
+        "PROPFIND",
+        "/Root/Notes.txt",
+        &host,
+        Some(auth),
+        &[("Depth", "0".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 207);
+    let after_expiry = list_count(&phone.engine.access_log(None, 1000));
+    assert_eq!(
+        after_expiry - before_expiry,
+        1,
+        "a listing past the two second window must ask the peer again"
     );
 
     // LOCK returns a token; UNLOCK with it succeeds.

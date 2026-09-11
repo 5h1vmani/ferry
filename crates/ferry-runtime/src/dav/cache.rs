@@ -16,6 +16,14 @@ use ferry_core::ops::Entry;
 /// How long a cached listing stays fresh.
 const TTL: Duration = Duration::from_secs(2);
 
+/// How many folders this cache holds at once. A depth 1 listing entry is
+/// small, but nothing here bounds how many distinct folders Finder can ask
+/// for, so this stops the map growing without limit while it is still
+/// only a two second cache: past this, the whole cache is cleared rather
+/// than tracked entry by entry, which costs at most one extra listing per
+/// folder from the peer.
+const MAX_ENTRIES: usize = 1_024;
+
 pub(crate) struct Cache {
     entries: Mutex<HashMap<String, (Vec<Entry>, Instant)>>,
 }
@@ -44,6 +52,10 @@ impl Cache {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|_, (_, at)| at.elapsed() < TTL);
+        if entries.len() >= MAX_ENTRIES && !entries.contains_key(path) {
+            entries.clear();
+        }
         entries.insert(path.to_owned(), (children, Instant::now()));
     }
 

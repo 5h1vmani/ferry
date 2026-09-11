@@ -8,11 +8,34 @@
 //! `list()` result, and a sidecar is never added to it, so there is
 //! nothing to filter out.
 
-use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::state::now_unix_secs;
+
+/// The largest sidecar body this store accepts. Finder's own bookkeeping
+/// files (`.DS_Store` and the rest) are always tiny; `docs/engine-contract.md`,
+/// item 6, sets no bound of its own, so this exists only to stop a stranger
+/// on loopback from writing an unbounded file to this Mac's disk once past
+/// auth.
+pub(crate) const MAX_SIDECAR_LEN: usize = 64 * 1024;
+
+/// How many distinct sidecar files one device's store may hold at once.
+/// Overwriting an already-stored name is always allowed; only a genuinely
+/// new name is refused once the store is at this size.
+const MAX_SIDECARS: usize = 4_096;
+
+/// Why [`SidecarStore::write`] refused a sidecar.
+#[derive(Debug)]
+pub(crate) enum SidecarWriteError {
+    /// The body was over [`MAX_SIDECAR_LEN`].
+    TooLarge,
+    /// The store already holds [`MAX_SIDECARS`] files, and `path` is not
+    /// one of them.
+    Full,
+    /// The write itself failed: an unsafe path, or a real I/O error.
+    Io,
+}
 
 /// True when `name`, a path's last segment, is one of Apple's metadata
 /// probes.
@@ -89,14 +112,48 @@ impl SidecarStore {
 
     /// Stores `bytes` as the sidecar for `path`, making its parent folder
     /// if needed.
-    pub(crate) fn write(&self, path: &str, bytes: &[u8]) -> io::Result<()> {
-        let disk_path = self
-            .disk_path(path)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "unsafe sidecar path"))?;
-        if let Some(parent) = disk_path.parent() {
-            std::fs::create_dir_all(parent)?;
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidecarWriteError::TooLarge`] over [`MAX_SIDECAR_LEN`],
+    /// [`SidecarWriteError::Full`] when the store is at [`MAX_SIDECARS`]
+    /// and `path` would be a new file, and [`SidecarWriteError::Io`] for
+    /// an unsafe path or a real I/O failure.
+    pub(crate) fn write(&self, path: &str, bytes: &[u8]) -> Result<(), SidecarWriteError> {
+        if bytes.len() > MAX_SIDECAR_LEN {
+            return Err(SidecarWriteError::TooLarge);
         }
-        std::fs::write(disk_path, bytes)
+        let disk_path = self.disk_path(path).ok_or(SidecarWriteError::Io)?;
+        if !disk_path.exists() && self.file_count() >= MAX_SIDECARS {
+            return Err(SidecarWriteError::Full);
+        }
+        if let Some(parent) = disk_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| SidecarWriteError::Io)?;
+        }
+        std::fs::write(disk_path, bytes).map_err(|_| SidecarWriteError::Io)
+    }
+
+    /// Counts every file under this store's base folder, recursively.
+    /// Nothing here tracks the count between calls; a store this small
+    /// (bounded at [`MAX_SIDECARS`]) is cheap enough to walk fresh each
+    /// time a new name is about to be added.
+    fn file_count(&self) -> usize {
+        fn walk(dir: &Path, count: &mut usize) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, count);
+                } else {
+                    *count += 1;
+                }
+            }
+        }
+        let mut count = 0;
+        walk(&self.base, &mut count);
+        count
     }
 }
 
@@ -112,7 +169,7 @@ fn modified_time(path: &Path) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SidecarStore, is_probe_name, last_segment};
+    use super::{MAX_SIDECAR_LEN, SidecarStore, SidecarWriteError, is_probe_name, last_segment};
 
     #[test]
     fn matches_every_name_item_6_lists() {
@@ -164,5 +221,23 @@ mod tests {
         let store = SidecarStore::new(dir);
         assert!(store.write("../escape", b"x").is_err());
         assert!(store.read("../escape").is_none());
+    }
+
+    #[test]
+    fn a_body_over_the_size_bound_is_refused() {
+        let dir =
+            std::env::temp_dir().join(format!("ferry-dav-sidecar-big-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = SidecarStore::new(dir.clone());
+        let big = vec![0u8; MAX_SIDECAR_LEN + 1];
+        assert!(matches!(
+            store.write("DCIM/.DS_Store", &big),
+            Err(SidecarWriteError::TooLarge)
+        ));
+        assert!(
+            store.read("DCIM/.DS_Store").is_none(),
+            "a refused body must not land on disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

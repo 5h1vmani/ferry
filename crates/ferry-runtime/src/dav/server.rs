@@ -23,9 +23,9 @@ use crate::engine::{Shared, record_this};
 use crate::guard::StopAware;
 
 use super::cache::Cache;
-use super::lock::LockTable;
+use super::lock::{LockError, LockTable};
 use super::pool::{self, Pool};
-use super::probes::{self, SidecarStore};
+use super::probes::{self, SidecarStore, SidecarWriteError};
 use super::{http, xml};
 
 /// How many connections one bridge serves at once. A 33rd is refused at
@@ -293,8 +293,12 @@ fn options(out: &mut impl Write) -> io::Result<()> {
 // ---------------------------------------------------------------------------
 
 fn lock_verb(bridge: &Bridge, target: &str, out: &mut impl Write) -> io::Result<()> {
-    let Ok(token) = bridge.locks.lock_path(target) else {
-        return no_body(out, "500 Internal Server Error");
+    let token = match bridge.locks.lock_path(target) {
+        Ok(token) => token,
+        // S5: the table is full, its own storage rather than another
+        // resource's lock in the way, so 507 rather than RFC 4918's 423.
+        Err(LockError::Full) => return no_body(out, "507 Insufficient Storage"),
+        Err(LockError::NoRandomness) => return no_body(out, "500 Internal Server Error"),
     };
     let body = format!(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
@@ -386,8 +390,15 @@ fn put_sidecar(
     request: &http::Request,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    if bridge.sidecars.write(target, &request.body).is_err() {
-        return no_body(out, "500 Internal Server Error");
+    match bridge.sidecars.write(target, &request.body) {
+        Ok(()) => {}
+        // S4: a body over the sidecar bound is 413; a store already at
+        // its file cap is 507, the same code the lock table's own cap
+        // answers with (S5), for the same reason: this side's storage,
+        // not another resource's lock.
+        Err(SidecarWriteError::TooLarge) => return no_body(out, "413 Payload Too Large"),
+        Err(SidecarWriteError::Full) => return no_body(out, "507 Insufficient Storage"),
+        Err(SidecarWriteError::Io) => return no_body(out, "500 Internal Server Error"),
     }
     // A write through the bridge drops that folder's cached listing, per
     // `docs/engine-contract.md`, item 6, even though a sidecar is never
