@@ -26,7 +26,7 @@
 //! not something the engine cannot run without: the worst a lost row costs
 //! is one file copied again.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -80,6 +80,20 @@ pub(crate) struct HeldRow {
     pub(crate) root: [u8; 32],
 }
 
+/// The `(device, path, size, mtime)` a [`HeldRow`] is looked up and
+/// deduplicated by. A tuple, not a fourth kind of struct, since nothing
+/// outside this module ever names one.
+type PathKey = (String, String, u64, i64);
+
+fn path_key_of(row: &HeldRow) -> PathKey {
+    (
+        row.device_key_hex.clone(),
+        row.source_path.clone(),
+        row.size,
+        row.mtime,
+    )
+}
+
 /// Every file this device has pulled to completion, persisted to one file.
 #[derive(Debug, Clone)]
 pub(crate) struct HeldStore {
@@ -87,6 +101,19 @@ pub(crate) struct HeldStore {
     /// Oldest first, so [`HeldStore::record`] knows which row to drop once
     /// [`MAX_ROWS`] is passed.
     rows: VecDeque<HeldRow>,
+    /// G3: every row's [`PathKey`], kept in lockstep with `rows`, so
+    /// [`HeldStore::contains_path`] is a lookup instead of a scan. A
+    /// `record` skips a row whose key is already here, so a key never
+    /// names more than one row at a time, and dropping the oldest row
+    /// always removes exactly the key that row added.
+    path_keys: HashSet<PathKey>,
+    /// G3: how many rows currently hold each root hash, kept in lockstep
+    /// with `rows`, so [`HeldStore::contains_root`] is a lookup instead of
+    /// a scan. A count, not a plain set, because the same content pulled
+    /// under a different device or path is a second row with the same
+    /// root hash, and dropping one of those rows must not make the other's
+    /// root hash disappear from the set.
+    roots: HashMap<[u8; 32], usize>,
     /// How many times [`HeldStore::record`] has rebuilt the whole file.
     /// Test only: proves a batch of completed pulls appends instead of
     /// rewriting.
@@ -114,11 +141,39 @@ impl HeldStore {
             }
             _ => VecDeque::new(),
         };
-        Self {
+        let mut store = Self {
             path: path.to_path_buf(),
-            rows,
+            rows: VecDeque::new(),
+            path_keys: HashSet::new(),
+            roots: HashMap::new(),
             #[cfg(test)]
             rewrites: 0,
+        };
+        for row in rows {
+            store.index_row(&row);
+            store.rows.push_back(row);
+        }
+        store
+    }
+
+    /// Add `row`'s key and root hash to the indexes, without touching
+    /// `rows` itself. Every caller that adds a row to `rows` calls this
+    /// first, so the two never drift apart.
+    fn index_row(&mut self, row: &HeldRow) {
+        self.path_keys.insert(path_key_of(row));
+        *self.roots.entry(row.root).or_insert(0) += 1;
+    }
+
+    /// Remove `row`'s key and root hash from the indexes, the inverse of
+    /// [`HeldStore::index_row`]. Called only for the row [`HeldStore::
+    /// record`] drops once [`MAX_ROWS`] is passed.
+    fn unindex_row(&mut self, row: &HeldRow) {
+        self.path_keys.remove(&path_key_of(row));
+        if let Some(count) = self.roots.get_mut(&row.root) {
+            *count -= 1;
+            if *count == 0 {
+                self.roots.remove(&row.root);
+            }
         }
     }
 
@@ -144,6 +199,11 @@ impl HeldStore {
     /// the file is rebuilt compact instead, with the oldest rows dropped;
     /// that is the only time this rewrites rather than appends.
     ///
+    /// G3: a row whose device, path, size and modified time already name a
+    /// row here is an exact duplicate (the same file, recorded held twice)
+    /// and is skipped: it would only waste a slot `MAX_ROWS` could give a
+    /// genuinely different file.
+    ///
     /// Best effort: a failed write here, like a failed [`HeldStore::save`],
     /// costs one file copied again, never a wrong answer. See the module
     /// documentation.
@@ -153,12 +213,21 @@ impl HeldStore {
     /// Returns `TransferError::Local` when local storage refuses the
     /// append or the rebuild.
     pub(crate) fn record(&mut self, row: HeldRow) -> Result<(), FerryError> {
+        if self.path_keys.contains(&path_key_of(&row)) {
+            return Ok(());
+        }
+        self.index_row(&row);
         self.rows.push_back(row);
         if self.rows.len() > MAX_ROWS {
-            self.rows.pop_front();
+            // `pop_front` never returns `None` here: the length just
+            // checked above is at least one past `MAX_ROWS`, which is
+            // itself well above zero.
+            if let Some(dropped) = self.rows.pop_front() {
+                self.unindex_row(&dropped);
+            }
             return self.save();
         }
-        // `push_back` just above always leaves the new row last.
+        // `push_back` above always leaves the new row last.
         let row = self.rows.back().expect("a row was just pushed");
         append_row(&self.path, row)
     }
@@ -173,18 +242,14 @@ impl HeldStore {
         size: u64,
         mtime: i64,
     ) -> bool {
-        self.rows.iter().any(|row| {
-            row.device_key_hex == device_key_hex
-                && row.source_path == path
-                && row.size == size
-                && row.mtime == mtime
-        })
+        self.path_keys
+            .contains(&(device_key_hex.to_owned(), path.to_owned(), size, mtime))
     }
 
     /// True when a row, from any device or path, carries this root hash.
     /// What the run checks once it has fetched a candidate's manifest.
     pub(crate) fn contains_root(&self, root: &[u8; 32]) -> bool {
-        self.rows.iter().any(|row| &row.root == root)
+        self.roots.contains_key(root)
     }
 
     /// How many rows the index holds. Test only.
@@ -405,6 +470,73 @@ mod tests {
         assert!(!store.contains_path("device", "DCIM/b.jpg", 1024, 500));
         assert!(!store.contains_path("device", "DCIM/a.jpg", 2048, 500));
         assert!(!store.contains_path("device", "DCIM/a.jpg", 1024, 501));
+    }
+
+    #[test]
+    fn record_skips_an_exact_duplicate_row() {
+        // G3: the same device, path, size and modified time recorded a
+        // second time is the same file recorded held twice. It must not
+        // grow the index, and it must not disturb the root count the first
+        // recording added.
+        let dir = temp_dir("exact-duplicate");
+        let path = dir.join("held");
+        let mut store = HeldStore::load(&path);
+        store
+            .record(row("device", "DCIM/a.jpg", 1024, 500, 7))
+            .expect("the first record should append");
+        store
+            .record(row("device", "DCIM/a.jpg", 1024, 500, 7))
+            .expect("the duplicate record must be a no-op, not an error");
+
+        assert_eq!(store.len(), 1, "the duplicate must not add a second row");
+        assert!(store.contains_path("device", "DCIM/a.jpg", 1024, 500));
+        assert!(store.contains_root(&[7; 32]));
+
+        let loaded = HeldStore::load(&path);
+        assert_eq!(
+            loaded.len(),
+            1,
+            "the file on disk holds one row, not a duplicate"
+        );
+    }
+
+    #[test]
+    fn dropping_the_oldest_row_does_not_lose_a_root_hash_a_surviving_row_shares() {
+        // G3: `roots` counts rows per hash rather than a plain set, exactly
+        // so that dropping one row sharing a root hash with another still
+        // leaves that root hash found through the row that survives.
+        let mut store = HeldStore::load(&temp_dir("shared-root").join("held"));
+        store
+            .record(row("device-1", "DCIM/a.jpg", 1024, 0, 9))
+            .expect("the first record should append");
+        store
+            .record(row("device-2", "DCIM/b.jpg", 1024, 0, 9))
+            .expect("the second record, sharing the same root hash, should append");
+
+        // Fill up to exactly `MAX_ROWS`, so the next record is the one that
+        // pushes past the bound and drops exactly the oldest row: the
+        // first one recorded, above.
+        for i in 0..(MAX_ROWS - 2) {
+            let byte = u8::try_from(i % 256).unwrap_or(0);
+            store
+                .record(row("device-3", &format!("DCIM/{i}.jpg"), 1, 0, byte))
+                .expect("filling to the bound should append");
+        }
+        assert_eq!(store.len(), MAX_ROWS);
+
+        store
+            .record(row("device-4", "DCIM/new.jpg", 1, 0, 255))
+            .expect("the row that crosses the bound should rebuild");
+        assert_eq!(store.len(), MAX_ROWS, "the bound is never crossed");
+
+        assert!(
+            !store.contains_path("device-1", "DCIM/a.jpg", 1024, 0),
+            "the very first row is the oldest, and is the one dropped"
+        );
+        assert!(
+            store.contains_root(&[9; 32]),
+            "the second row's copy of the same root hash must still be found"
+        );
     }
 
     #[test]
