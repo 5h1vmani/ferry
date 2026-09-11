@@ -1370,6 +1370,265 @@ fn the_bridge_answers_every_i2_write_verb() {
     let response = client.request("GET", "/Root/Existing.txt", &host, Some(auth), &[], None);
     assert_eq!(response.body, b"the new bytes, written with the token");
 
+    // --- I2-4: a second LOCK of the still-unexpired lock is 423, not a
+    // fresh token; UNLOCK with the wrong token is 403; the real token
+    // still works.
+    let response = client.request(
+        "LOCK",
+        "/Root/Existing.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(b""),
+    );
+    assert_eq!(
+        response.status, 423,
+        "a second LOCK of an unexpired lock must not hand out a new token"
+    );
+    let response = client.request(
+        "UNLOCK",
+        "/Root/Existing.txt",
+        &host,
+        Some(auth),
+        &[(
+            "Lock-Token",
+            "<opaquelocktoken:0000000000000000000000000000000>".to_owned(),
+        )],
+        None,
+    );
+    assert_eq!(
+        response.status, 403,
+        "UNLOCK with a token that does not match the lock is 403"
+    );
+    let response = client.request(
+        "UNLOCK",
+        "/Root/Existing.txt",
+        &host,
+        Some(auth),
+        &[("Lock-Token", format!("<{token}>"))],
+        None,
+    );
+    assert_eq!(response.status, 204);
+
+    // --- I2-5: a locked child refuses the whole folder DELETE, with
+    // nothing removed; MOVE onto a locked destination is 423.
+    let response = client.request("MKCOL", "/Root/Guarded", &host, Some(auth), &[], None);
+    assert_eq!(response.status, 201);
+    let response = client.request(
+        "PUT",
+        "/Root/Guarded/Child.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(b"guarded"),
+    );
+    assert_eq!(response.status, 201);
+    let response = client.request(
+        "LOCK",
+        "/Root/Guarded/Child.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(b""),
+    );
+    assert_eq!(response.status, 200);
+    let child_token = response
+        .header("lock-token")
+        .expect("LOCK should answer with a Lock-Token header")
+        .to_owned();
+    let response = client.request("DELETE", "/Root/Guarded", &host, Some(auth), &[], None);
+    assert_eq!(
+        response.status, 423,
+        "a locked child must refuse the whole DELETE"
+    );
+    let response = client.request(
+        "PROPFIND",
+        "/Root/Guarded/Child.txt",
+        &host,
+        Some(auth),
+        &[("Depth", "0".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 207, "nothing should have been deleted");
+    let response = client.request(
+        "UNLOCK",
+        "/Root/Guarded/Child.txt",
+        &host,
+        Some(auth),
+        &[("Lock-Token", format!("<{child_token}>"))],
+        None,
+    );
+    assert_eq!(response.status, 204);
+    let response = client.request("DELETE", "/Root/Guarded", &host, Some(auth), &[], None);
+    assert_eq!(
+        response.status, 204,
+        "the folder deletes cleanly once nothing inside it is locked"
+    );
+
+    let response = client.request(
+        "PUT",
+        "/Root/MoveSource.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(b"move me"),
+    );
+    assert_eq!(response.status, 201);
+    let response = client.request(
+        "LOCK",
+        "/Root/LockedDestination.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(b""),
+    );
+    assert_eq!(response.status, 200);
+    let dest_token = response
+        .header("lock-token")
+        .expect("LOCK should answer with a Lock-Token header")
+        .to_owned();
+    let response = client.request(
+        "MOVE",
+        "/Root/MoveSource.txt",
+        &host,
+        Some(auth),
+        &[(
+            "Destination",
+            format!("http://{host}/Root/LockedDestination.txt"),
+        )],
+        None,
+    );
+    assert_eq!(
+        response.status, 423,
+        "a locked destination must refuse the MOVE"
+    );
+    let response = client.request(
+        "UNLOCK",
+        "/Root/LockedDestination.txt",
+        &host,
+        Some(auth),
+        &[("Lock-Token", format!("<{dest_token}>"))],
+        None,
+    );
+    assert_eq!(response.status, 204);
+
+    // --- I2-6: a modified time PROPPATCH names goes to `refused` (403 in
+    // the multistatus body) when the date fails to parse, not `accepted`.
+    let bad_date_body =
+        b"<?xml version=\"1.0\"?><D:propertyupdate xmlns:D=\"DAV:\"><D:set><D:prop>\
+<D:getlastmodified>not a date</D:getlastmodified>\
+</D:prop></D:set></D:propertyupdate>";
+    let response = client.request(
+        "PROPPATCH",
+        "/Root/Existing.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(bad_date_body),
+    );
+    assert_eq!(response.status, 207);
+    assert!(
+        String::from_utf8_lossy(&response.body).contains("403"),
+        "an unparsable date must refuse the property instead of accepting it"
+    );
+
+    // --- I2-7: MOVE refuses a `.ferry-part` name at either end, and a
+    // destination that is a probe name while the source is not.
+    let response = client.request(
+        "MOVE",
+        "/Root/Existing.txt.ferry-part",
+        &host,
+        Some(auth),
+        &[("Destination", format!("http://{host}/Root/WontLand.bin"))],
+        None,
+    );
+    assert_eq!(response.status, 403, "a `.ferry-part` source is refused");
+    let response = client.request(
+        "MOVE",
+        "/Root/Existing.txt",
+        &host,
+        Some(auth),
+        &[(
+            "Destination",
+            format!("http://{host}/Root/Existing.txt.ferry-part"),
+        )],
+        None,
+    );
+    assert_eq!(
+        response.status, 403,
+        "a `.ferry-part` destination is refused"
+    );
+    let response = client.request(
+        "PUT",
+        "/Root/WillBecomeAProbe.txt",
+        &host,
+        Some(auth),
+        &[],
+        Some(b"a real file"),
+    );
+    assert_eq!(response.status, 201);
+    let response = client.request(
+        "MOVE",
+        "/Root/WillBecomeAProbe.txt",
+        &host,
+        Some(auth),
+        &[("Destination", format!("http://{host}/Root/.DS_Store"))],
+        None,
+    );
+    assert_eq!(
+        response.status, 403,
+        "a real file must not become a probe name"
+    );
+
+    // --- I2-8: COPY honours `Overwrite: F` the same way MOVE does, and a
+    // probe-name source is served from the sidecar store, never the peer.
+    let response = client.request(
+        "COPY",
+        "/Root/Existing.txt",
+        &host,
+        Some(auth),
+        &[
+            (
+                "Destination",
+                format!("http://{host}/Root/Existing-Copy.txt"),
+            ),
+            ("Overwrite", "F".to_owned()),
+        ],
+        None,
+    );
+    assert_eq!(
+        response.status, 412,
+        "Existing-Copy.txt already exists from the earlier COPY"
+    );
+    let response = client.request(
+        "PUT",
+        "/Root/._probe_src",
+        &host,
+        Some(auth),
+        &[],
+        Some(b"sidecar bytes"),
+    );
+    assert_eq!(response.status, 201);
+    flush(&mut client);
+    let peer_log_before = phone.engine.access_log(None, 1000).len();
+    let response = client.request(
+        "COPY",
+        "/Root/._probe_src",
+        &host,
+        Some(auth),
+        &[("Destination", format!("http://{host}/Root/._probe_dst"))],
+        None,
+    );
+    assert_eq!(response.status, 201);
+    flush(&mut client);
+    let peer_log_after = phone.engine.access_log(None, 1000).len();
+    assert_eq!(
+        peer_log_before, peer_log_after,
+        "a probe-name COPY must never reach the peer"
+    );
+    let response = client.request("GET", "/Root/._probe_dst", &host, Some(auth), &[], None);
+    assert_eq!(response.body, b"sidecar bytes");
+
     // --- A `.ferry-part` never shows in a listing, and a `GET` or `HEAD`
     // of one is 404, even when a real one sits on the peer's disk: this
     // writes straight to the phone's underlying folder, bypassing the
@@ -1484,8 +1743,8 @@ fn the_bridge_answers_every_i2_write_verb() {
         "a PUT the peer's read only root refuses should answer with a write refusal, got {}",
         response.status
     );
-    // `docs/engine-contract.md`, item 6: "on any peer failure ... remove
-    // the spool file". This device has never had a `PUT` land, so its
+    // `docs/engine-contract.md`, item 6: "a failed landing removes the
+    // spool file." This device has never had a `PUT` land, so its
     // spool folder holds nothing but what the refused attempt above left
     // behind, which should be nothing at all.
     let spool_dir = second_mac
@@ -1505,6 +1764,118 @@ fn the_bridge_answers_every_i2_write_verb() {
 
     mac.engine.stop();
     phone.engine.stop();
+}
+
+#[test]
+// I2-3: the spool file is never left behind, and its folder has a bound.
+fn put_bounds_the_spool_folder_and_cleans_up_a_dropped_body() {
+    let mac_key = generate_key().expect("a fresh key pair");
+    let phone_key = generate_key().expect("a fresh key pair");
+    let mac = build_side(
+        "Bounds Mac",
+        DeviceKind::Mac,
+        mac_key.clone(),
+        &[],
+        &phone_key,
+        "Bounds Phone",
+        DeviceKind::Phone,
+    );
+    let phone = build_side(
+        "Bounds Phone",
+        DeviceKind::Phone,
+        phone_key,
+        &[],
+        &mac_key,
+        "Bounds Mac",
+        DeviceKind::Mac,
+    );
+    phone.engine.set_reachable(true);
+    let key_hex = mac
+        .engine
+        .devices()
+        .first()
+        .expect("the phone should already be paired")
+        .key_hex
+        .clone();
+    mac.engine.offer_candidate(loopback_addr(&phone));
+    mac.engine
+        .list(key_hex.clone(), String::new())
+        .expect("listing should succeed once dialable");
+    let endpoint = mac
+        .engine
+        .mount_start(key_hex.clone())
+        .expect("mount_start should succeed");
+    let addr: SocketAddr = format!("127.0.0.1:{}", port_of(&endpoint.url))
+        .parse()
+        .expect("a loopback address");
+    let host = format!("127.0.0.1:{}", port_of(&endpoint.url));
+    let credentials = base64_encode(format!("{}:{}", endpoint.user, endpoint.password).as_bytes());
+
+    // --- A body over `MAX_PUT_BODY_LEN` (32 GiB) is 413, before a single
+    // byte reaches the spool file. `MAX_PUT_BODY_LEN` is private to
+    // `ferry_runtime`, so its value, one past the 32 GiB cap, is spelled
+    // out here instead.
+    let mut client = TestClient::connect(addr);
+    client.write_raw_head(&format!(
+        "PUT /Root/Huge.bin HTTP/1.1\r\nHost: {host}\r\n\
+         Authorization: Basic {credentials}\r\n\
+         Content-Length: 34359738369\r\n\r\n"
+    ));
+    let response = client.read_response(false);
+    assert_eq!(response.status, 413);
+
+    // --- A dropped connection mid body leaves no spool file behind.
+    let mut client = TestClient::connect(addr);
+    client.write_raw_head(&format!(
+        "PUT /Root/Partial.bin HTTP/1.1\r\nHost: {host}\r\n\
+         Authorization: Basic {credentials}\r\n\
+         Content-Length: 1000\r\n\r\n"
+    ));
+    client
+        .write_half
+        .write_all(&pattern(10))
+        .expect("a short partial body should write");
+    drop(client);
+
+    let spool_dir = mac.data.path().join("dav_spool").join(&key_hex);
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let remaining = std::fs::read_dir(&spool_dir)
+            .map(Iterator::count)
+            .unwrap_or(0);
+        if remaining == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "a dropped connection must not leave a spool file behind"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // --- The spool folder's total size cap answers 507. A sparse file
+    // reports the size `new_spool_path` checks against without this test
+    // writing anywhere near 64 GiB of real bytes.
+    std::fs::create_dir_all(&spool_dir).expect("the spool folder should exist");
+    let sparse = spool_dir.join("already-huge");
+    let file = std::fs::File::create(&sparse).expect("a sparse file should create");
+    file.set_len(64 * 1024 * 1024 * 1024)
+        .expect("a sparse file should grow without writing real bytes");
+    drop(file);
+    let mut client = TestClient::connect(addr);
+    let response = client.request(
+        "PUT",
+        "/Root/OneMore.bin",
+        &host,
+        Some((endpoint.user.as_str(), endpoint.password.as_str())),
+        &[],
+        Some(&pattern(10)),
+    );
+    assert_eq!(response.status, 507);
+    std::fs::remove_file(&sparse).expect("the sparse fixture should clean up");
+
+    phone.engine.stop();
+    mac.engine.stop();
 }
 
 #[test]
