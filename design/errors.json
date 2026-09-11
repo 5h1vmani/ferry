@@ -481,6 +481,11 @@
       "why": "The other end is not Ferry.",
       "todo": "Check the address."
     },
+    "VersionError::UnknownMode": {
+      "stopped": "The connection was refused.",
+      "why": "The two devices run versions that cannot talk.",
+      "todo": "Update Ferry on both devices."
+    },
     "WireError::BadManifest": {
       "stopped": "A message could not be decoded.",
       "why": "It held a manifest Ferry refuses.",

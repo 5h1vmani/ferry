@@ -24,7 +24,7 @@ use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, serve};
 use ferry_core::session::{Transfer, pull};
 use ferry_core::transport::loopback;
-use ferry_core::version::{Role, VERSION_MAX, negotiate};
+use ferry_core::version::{Mode, Role, VERSION_MAX, negotiate};
 
 const SOURCE: &str = "DCIM/Camera/VID_0001.mp4";
 const DESTINATION: &str = "Movies/VID_0001.mp4";
@@ -59,7 +59,8 @@ fn two_devices_pair_then_move_a_file_over_the_encrypted_channel() {
     let (send_code, receive_code) = mpsc::channel::<PairingCode>();
 
     let phone = std::thread::spawn(move || {
-        let agreed = negotiate(&mut phone_link, Role::Responder).expect("version agreed");
+        let agreed =
+            negotiate(&mut phone_link, Role::Responder, Mode::PairByCode).expect("version agreed");
         let key = StaticKey::generate().expect("key made");
         let mut paired =
             pair_as_responder(phone_link, &key, &agreed.prologue).expect("pairing finished");
@@ -67,7 +68,8 @@ fn two_devices_pair_then_move_a_file_over_the_encrypted_channel() {
         serve(&mut paired.stream, phone_files.as_ref()).expect("served until the peer left");
     });
 
-    let agreed = negotiate(&mut mac_link, Role::Initiator).expect("version agreed");
+    let agreed =
+        negotiate(&mut mac_link, Role::Initiator, Mode::PairByCode).expect("version agreed");
     assert_eq!(agreed.version, VERSION_MAX);
 
     let key = StaticKey::generate().expect("key made");
@@ -183,7 +185,8 @@ fn two_devices_move_a_file_between_two_real_directories() {
     let (send_code, receive_code) = mpsc::channel::<PairingCode>();
 
     let phone = std::thread::spawn(move || {
-        let agreed = negotiate(&mut phone_link, Role::Responder).expect("version agreed");
+        let agreed =
+            negotiate(&mut phone_link, Role::Responder, Mode::PairByCode).expect("version agreed");
         let key = StaticKey::generate().expect("key made");
         let mut paired =
             pair_as_responder(phone_link, &key, &agreed.prologue).expect("pairing finished");
@@ -191,7 +194,8 @@ fn two_devices_move_a_file_between_two_real_directories() {
         serve(&mut paired.stream, &phone_files).expect("served until the peer left");
     });
 
-    let agreed = negotiate(&mut mac_link, Role::Initiator).expect("version agreed");
+    let agreed =
+        negotiate(&mut mac_link, Role::Initiator, Mode::PairByCode).expect("version agreed");
     assert_eq!(agreed.version, VERSION_MAX);
 
     let key = StaticKey::generate().expect("key made");

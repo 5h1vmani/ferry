@@ -53,13 +53,30 @@
 //! pub struct Pending { .. }
 //! impl Pending {
 //!     pub fn remote(&self) -> SocketAddr;
-//!     /// Agree a version, then run Noise XX as responder, both inside one
-//!     /// deadline. Starts the idle timeout on success.
+//!     /// Agree a version and a mode, inside the deadline. The mode names
+//!     /// which Noise pattern the initiator is about to run; the caller
+//!     /// reads it before choosing which of `NegotiatedPending`'s three
+//!     /// finishers to call, since a handshake state has to be built for
+//!     /// one exact pattern before a single byte of it can be read.
+//!     pub fn negotiate(self) -> Result<NegotiatedPending, TcpError>;
+//! }
+//!
+//! /// A `Pending` whose version and mode are known. Exactly one of the three
+//! /// methods below is the right one to call, chosen by `mode()`.
+//! pub struct NegotiatedPending { .. }
+//! impl NegotiatedPending {
+//!     pub fn remote(&self) -> SocketAddr;
+//!     pub fn mode(&self) -> Mode;
+//!     /// Run Noise XX as responder, inside the same deadline. Starts the
+//!     /// idle timeout on success.
 //!     pub fn pair(self, key: &StaticKey) -> Result<PairedConnection, TcpError>;
-//!     /// Agree a version, then run Noise KK as responder, trying each
-//!     /// candidate key in turn against the one message the peer sends, and
-//!     /// binding the first that authenticates. Both inside one deadline.
-//!     /// Starts the idle timeout on success.
+//!     /// Run Noise IK as responder, inside the same deadline. Starts the
+//!     /// idle timeout on success.
+//!     pub fn pair_ik(self, key: &StaticKey, expected_nonce: Option<&[u8; 16]>) -> Result<IkPairedConnection, TcpError>;
+//!     /// Run Noise KK as responder, trying each candidate key in turn
+//!     /// against the one message the peer sends, and binding the first
+//!     /// that authenticates. Inside the same deadline. Starts the idle
+//!     /// timeout on success.
 //!     pub fn connect(self, key: &StaticKey, candidates: &[PublicKey]) -> Result<Connection, TcpError>;
 //! }
 //!
@@ -76,15 +93,25 @@
 //!     pub socket: TcpStream,
 //! }
 //!
-//! /// What a successful `pair` or `Pending::pair` produces. `Paired` has no
-//! /// room for a version field and this crate does not own that type, so
-//! /// this wraps it instead of changing it.
+//! /// What a successful `pair` or `NegotiatedPending::pair` produces.
+//! /// `Paired` has no room for a version field and this crate does not own
+//! /// that type, so this wraps it instead of changing it.
 //! pub struct PairedConnection { pub paired: Paired, pub version: u16 }
+//!
+//! /// What a successful `pair_ik` or `NegotiatedPending::pair_ik` produces.
+//! /// `IkAccepted` already carries everything a QR pairing needs and no
+//! /// code, so this only adds the version, for symmetry with the other two
+//! /// connection types.
+//! pub struct IkPairedConnection { pub accepted: IkAccepted, pub version: u16 }
 //!
 //! /// Dial a peer, agree a version, and run KK as initiator.
 //! pub fn connect(addr: SocketAddr, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError>;
 //! /// Dial a peer, agree a version, and run XX as initiator.
 //! pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpError>;
+//! /// Dial the address from a scanned QR offer, agree a version, and run IK
+//! /// as initiator, with the offer's nonce and this device's hello in
+//! /// message one.
+//! pub fn pair_ik(addr: SocketAddr, key: &StaticKey, responder: &PublicKey, nonce: &[u8; 16], my_name: &str, my_kind: DeviceKind) -> Result<SecureStream, TcpError>;
 //! ```
 //!
 //! `Paired` is `crate::noise::Paired`. The pending counter decrements when a
@@ -104,8 +131,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::limits;
-use crate::noise::{self, NoiseError, Paired, PublicKey, SecureStream, StaticKey};
-use crate::version::{self, Agreed, Role, VersionError};
+use crate::noise::{self, IkAccepted, NoiseError, Paired, PublicKey, SecureStream, StaticKey};
+use crate::peers::DeviceKind;
+use crate::version::{self, Agreed, Mode, Role, VersionError};
 
 /// The reason a TCP connection did not become a usable channel.
 #[derive(Debug, thiserror::Error)]
@@ -236,13 +264,25 @@ impl Write for DeadlineStream {
     }
 }
 
-/// Run the version exchange, then one Noise step, over `stream`. Both are
-/// bounded by `deadline`, no matter how many reads or writes either one
-/// takes.
+/// The version exchange, half done: the deadline-bounded stream and the two
+/// socket clones `run_handshake` used to keep aside are held here instead,
+/// so a caller that needs to read [`Agreed::mode`] before it can pick a
+/// Noise pattern is able to, without negotiating twice.
 ///
-/// `run` gets the agreed version alongside the stream, because it needs the
-/// prologue from [`Agreed`] to start the Noise handshake. It moves the
-/// stream into that handshake, and, on success, into the value it returns.
+/// See [`begin_handshake`] to build one and [`Negotiating::negotiate`] and
+/// [`Negotiating::finish`] to drive it. [`run_handshake`] is the same three
+/// steps glued together, for every caller that already knows its pattern
+/// before it starts.
+#[derive(Debug)]
+struct Negotiating {
+    deadline_stream: DeadlineStream,
+    idle_handle: TcpStream,
+    registered_socket: TcpStream,
+    armed: Arc<AtomicBool>,
+    idle_timeout: Duration,
+}
+
+/// Start a handshake over `stream`, bounded by `deadline`. Does no I/O.
 ///
 /// Two clones of the same socket are kept aside first, before `stream` is
 /// wrapped in anything. One sets the idle timeout once the handshake ends: a
@@ -253,33 +293,81 @@ impl Write for DeadlineStream {
 /// `shutdown` on it directly, since by the time the handshake finishes the
 /// stream is boxed inside a `SecureStream` and nothing above this point can
 /// reach the socket any other way. `docs/engine-contract.md` item 16c.
-fn run_handshake<T>(
+fn begin_handshake(
     stream: TcpStream,
-    role: Role,
     deadline: Instant,
     idle_timeout: Duration,
-    run: impl FnOnce(DeadlineStream, Agreed) -> Result<T, NoiseError>,
-) -> Result<(T, TcpStream), TcpError> {
+) -> io::Result<Negotiating> {
     let idle_handle = stream.try_clone()?;
     let registered_socket = stream.try_clone()?;
     let armed = Arc::new(AtomicBool::new(true));
-    let mut deadline_stream = DeadlineStream {
+    let deadline_stream = DeadlineStream {
         stream,
         deadline,
         armed: Arc::clone(&armed),
     };
+    Ok(Negotiating {
+        deadline_stream,
+        idle_handle,
+        registered_socket,
+        armed,
+        idle_timeout,
+    })
+}
 
-    let agreed = map_version(version::negotiate(&mut deadline_stream, role))?;
-    let value = map_noise(run(deadline_stream, agreed))?;
+impl Negotiating {
+    /// Agree a version and a mode, inside the deadline that was set when
+    /// this value was built.
+    fn negotiate(mut self, role: Role, mode: Mode) -> Result<(Agreed, Self), TcpError> {
+        let agreed = map_version(version::negotiate(&mut self.deadline_stream, role, mode))?;
+        Ok((agreed, self))
+    }
 
-    // The handshake is done. Turn the deadline off, and start the idle
-    // timeout instead of clearing it, so a peer that later goes silent does
-    // not hold this thread forever.
-    armed.store(false, Ordering::SeqCst);
-    idle_handle.set_read_timeout(Some(idle_timeout))?;
-    idle_handle.set_write_timeout(None)?;
+    /// Run one Noise step, then start the idle timeout in place of the
+    /// deadline. See [`run_handshake`] for why the timeout is set on a
+    /// clone rather than on the stream `run` was given.
+    fn finish<T>(
+        self,
+        agreed: Agreed,
+        run: impl FnOnce(DeadlineStream, Agreed) -> Result<T, NoiseError>,
+    ) -> Result<(T, TcpStream), TcpError> {
+        let Self {
+            deadline_stream,
+            idle_handle,
+            registered_socket,
+            armed,
+            idle_timeout,
+        } = self;
+        let value = map_noise(run(deadline_stream, agreed))?;
 
-    Ok((value, registered_socket))
+        // The handshake is done. Turn the deadline off, and start the idle
+        // timeout instead of clearing it, so a peer that later goes silent
+        // does not hold this thread forever.
+        armed.store(false, Ordering::SeqCst);
+        idle_handle.set_read_timeout(Some(idle_timeout))?;
+        idle_handle.set_write_timeout(None)?;
+
+        Ok((value, registered_socket))
+    }
+}
+
+/// Run the version exchange, then one Noise step, over `stream`, both
+/// bounded by `deadline`. For a caller that already knows which pattern it
+/// is about to run: every initiator does, since it is the side that picks
+/// the pattern. A responder that has to read [`Agreed::mode`] first uses
+/// [`begin_handshake`] and the two [`Negotiating`] steps directly instead;
+/// see [`Pending::negotiate`].
+fn run_handshake<T>(
+    stream: TcpStream,
+    role: Role,
+    mode: Mode,
+    deadline: Instant,
+    idle_timeout: Duration,
+    run: impl FnOnce(DeadlineStream, Agreed) -> Result<T, NoiseError>,
+) -> Result<(T, TcpStream), TcpError> {
+    let negotiating = begin_handshake(stream, deadline, idle_timeout)?;
+    let (agreed, negotiating) = negotiating.negotiate(role, mode)?;
+    negotiating.finish(agreed, run)
 }
 
 /// Reserves one pending-handshake slot, and gives it back when dropped.
@@ -404,14 +492,15 @@ impl Listener {
     }
 }
 
-/// A connection that has been accepted, but has not yet agreed a version or
-/// run a Noise handshake.
+/// A connection that has been accepted, but has not yet agreed a version, a
+/// mode, or run a Noise handshake.
 ///
 /// It holds one pending-handshake slot and the deadline its handshake must
-/// finish by. [`Pending::pair`] and [`Pending::connect`] each run the version
-/// exchange and the Noise handshake together, bounded by that one deadline.
-/// The slot is freed when either finishes, or when this value is dropped
-/// without calling either.
+/// finish by. [`Pending::negotiate`] runs the version exchange, inside that
+/// deadline, and hands back a [`NegotiatedPending`] whose `mode()` says which
+/// of its three finishers to call. The slot is freed when one of them
+/// finishes, or when this value or the one it becomes is dropped without
+/// calling one.
 #[derive(Debug)]
 pub struct Pending {
     stream: TcpStream,
@@ -428,48 +517,147 @@ impl Pending {
         self.remote
     }
 
-    /// Agree a version, then run Noise XX as responder, both inside one
-    /// deadline. Starts the idle timeout on success.
+    /// Agree a version and read which Noise pattern the initiator is about
+    /// to run, inside the deadline.
+    ///
+    /// This side has no pattern of its own to request: it is the side that
+    /// accepted the connection, not the side that is about to start a
+    /// handshake. `Mode::Connect` is sent as the filler byte the exchange
+    /// still needs; see [`version::negotiate`].
     ///
     /// # Errors
     ///
-    /// Returns [`TcpError::Version`] when version negotiation fails,
-    /// [`TcpError::Noise`] when the handshake fails, and
-    /// [`TcpError::Timeout`] when the two together do not finish before the
-    /// deadline.
-    pub fn pair(self, key: &StaticKey) -> Result<PairedConnection, TcpError> {
-        // Destructuring keeps `slot` alive, under its own name, until this
-        // function returns. Its `Drop` then frees the slot exactly once,
-        // whether the handshake below succeeds or fails.
+    /// Returns [`TcpError::Version`] when version negotiation fails, and
+    /// [`TcpError::Timeout`] when it does not finish before the deadline.
+    pub fn negotiate(self) -> Result<NegotiatedPending, TcpError> {
         let Pending {
             stream,
+            remote,
+            slot,
             deadline,
             idle_timeout,
+        } = self;
+        let negotiating = begin_handshake(stream, deadline, idle_timeout)?;
+        let (agreed, negotiating) = negotiating.negotiate(Role::Responder, Mode::Connect)?;
+        Ok(NegotiatedPending {
+            negotiating,
+            agreed,
+            remote,
+            slot,
+        })
+    }
+}
+
+/// A [`Pending`] whose version and mode are known.
+///
+/// Exactly one of [`NegotiatedPending::pair`], [`NegotiatedPending::pair_ik`],
+/// and [`NegotiatedPending::connect`] is the right one to call, chosen by
+/// [`NegotiatedPending::mode`]. Each of the three still runs inside the same
+/// deadline [`Pending::negotiate`] started with, and starts the idle timeout
+/// on success.
+#[derive(Debug)]
+pub struct NegotiatedPending {
+    negotiating: Negotiating,
+    agreed: Agreed,
+    remote: SocketAddr,
+    slot: PendingSlot,
+}
+
+impl NegotiatedPending {
+    /// The address of the peer that connected.
+    #[must_use]
+    pub fn remote(&self) -> SocketAddr {
+        self.remote
+    }
+
+    /// The Noise pattern the initiator is about to run.
+    #[must_use]
+    pub fn mode(&self) -> Mode {
+        self.agreed.mode
+    }
+
+    /// The version both sides agreed on.
+    #[must_use]
+    pub fn version(&self) -> u16 {
+        self.agreed.version
+    }
+
+    /// Run Noise XX as responder, inside the deadline [`Pending::negotiate`]
+    /// started with. Starts the idle timeout on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TcpError::Noise`] when the handshake fails, and
+    /// [`TcpError::Timeout`] when it does not finish before the deadline.
+    pub fn pair(self, key: &StaticKey) -> Result<PairedConnection, TcpError> {
+        debug_assert_eq!(
+            self.agreed.mode,
+            Mode::PairByCode,
+            "the caller should have matched on mode() before calling pair()"
+        );
+        let Self {
+            negotiating,
+            agreed,
             slot: _slot,
             ..
         } = self;
         // Pairing runs once, while a person is watching both screens, and
         // already has its own timeout; it does not register for `stop` to
         // close directly the way an ordinary connection does.
-        let (connection, _socket) = run_handshake(
-            stream,
-            Role::Responder,
-            deadline,
-            idle_timeout,
-            |s, agreed| {
-                noise::pair_as_responder(s, key, &agreed.prologue).map(|paired| PairedConnection {
-                    paired,
-                    version: agreed.version,
-                })
-            },
-        )?;
+        let (connection, _socket) = negotiating.finish(agreed, |s, agreed| {
+            noise::pair_as_responder(s, key, &agreed.prologue).map(|paired| PairedConnection {
+                paired,
+                version: agreed.version,
+            })
+        })?;
         Ok(connection)
     }
 
-    /// Agree a version, then run Noise KK as responder, trying each of
-    /// `candidates` in turn against the one message the peer sends, and
-    /// binding the first that authenticates, both inside one deadline.
-    /// Starts the idle timeout on success.
+    /// Run Noise IK as responder, inside the deadline [`Pending::negotiate`]
+    /// started with. Starts the idle timeout on success.
+    ///
+    /// `expected_nonce` is the nonce of the offer this side is currently
+    /// showing, or `None` when it is not offering to pair by QR at all. See
+    /// [`noise::pair_ik_as_responder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TcpError::Noise`] when the handshake fails, including when
+    /// the initiator's nonce does not match `expected_nonce`, and
+    /// [`TcpError::Timeout`] when it does not finish before the deadline.
+    pub fn pair_ik(
+        self,
+        key: &StaticKey,
+        expected_nonce: Option<&[u8; noise::QR_NONCE_LEN]>,
+    ) -> Result<IkPairedConnection, TcpError> {
+        debug_assert_eq!(
+            self.agreed.mode,
+            Mode::PairByQr,
+            "the caller should have matched on mode() before calling pair_ik()"
+        );
+        let Self {
+            negotiating,
+            agreed,
+            slot: _slot,
+            ..
+        } = self;
+        // As `pair`: a QR pairing handshake runs once, while the Mac is
+        // showing `Requested`, and has its own deadline.
+        let (connection, _socket) = negotiating.finish(agreed, |s, agreed| {
+            noise::pair_ik_as_responder(s, key, expected_nonce, &agreed.prologue).map(|accepted| {
+                IkPairedConnection {
+                    accepted,
+                    version: agreed.version,
+                }
+            })
+        })?;
+        Ok(connection)
+    }
+
+    /// Run Noise KK as responder, trying each of `candidates` in turn
+    /// against the one message the peer sends, and binding the first that
+    /// authenticates, inside the deadline [`Pending::negotiate`] started
+    /// with. Starts the idle timeout on success.
     ///
     /// The wire says nothing about who is calling before the handshake, and
     /// message one can only be read once, so every candidate the caller
@@ -478,32 +666,28 @@ impl Pending {
     ///
     /// # Errors
     ///
-    /// Returns [`TcpError::Version`] when version negotiation fails,
-    /// [`TcpError::Noise`] when no candidate authenticates, and
-    /// [`TcpError::Timeout`] when the two together do not finish before the
-    /// deadline.
+    /// Returns [`TcpError::Noise`] when no candidate authenticates, and
+    /// [`TcpError::Timeout`] when it does not finish before the deadline.
     pub fn connect(
         self,
         key: &StaticKey,
         candidates: &[PublicKey],
     ) -> Result<Connection, TcpError> {
-        let Pending {
-            stream,
+        debug_assert_eq!(
+            self.agreed.mode,
+            Mode::Connect,
+            "the caller should have matched on mode() before calling connect()"
+        );
+        let Self {
+            negotiating,
+            agreed,
             remote,
-            deadline,
-            idle_timeout,
             slot: _slot,
         } = self;
-        let ((stream, peer, version), socket) = run_handshake(
-            stream,
-            Role::Responder,
-            deadline,
-            idle_timeout,
-            |s, agreed| {
-                noise::connect_as_responder_any(s, key, candidates, &agreed.prologue)
-                    .map(|(stream, peer)| (stream, peer, agreed.version))
-            },
-        )?;
+        let ((stream, peer, version), socket) = negotiating.finish(agreed, |s, agreed| {
+            noise::connect_as_responder_any(s, key, candidates, &agreed.prologue)
+                .map(|(stream, peer)| (stream, peer, agreed.version))
+        })?;
         Ok(Connection {
             stream,
             remote,
@@ -536,7 +720,7 @@ pub struct Connection {
     pub socket: TcpStream,
 }
 
-/// What a successful [`pair`] or [`Pending::pair`] produces.
+/// What a successful [`pair`] or [`NegotiatedPending::pair`] produces.
 ///
 /// [`Paired`], from `crate::noise`, has no room for a version field, and this
 /// crate does not own that type, so this wraps it instead of changing it.
@@ -545,6 +729,20 @@ pub struct PairedConnection {
     /// The encrypted channel and the pairing code, exactly as Noise XX
     /// produced them.
     pub paired: Paired,
+    /// The protocol version both sides agreed on, before pairing began.
+    pub version: u16,
+}
+
+/// What a successful [`pair_ik`] or [`NegotiatedPending::pair_ik`] produces.
+///
+/// [`IkAccepted`] already carries the stream, the peer, the nonce, and the
+/// hello; this only adds the version, for symmetry with [`PairedConnection`]
+/// and [`Connection`].
+#[derive(Debug)]
+pub struct IkPairedConnection {
+    /// The encrypted channel, the peer, the nonce, and the hello, exactly as
+    /// Noise IK produced them.
+    pub accepted: IkAccepted,
     /// The protocol version both sides agreed on, before pairing began.
     pub version: u16,
 }
@@ -571,6 +769,7 @@ pub fn connect(
     let ((stream, version), socket) = run_handshake(
         stream,
         Role::Initiator,
+        Mode::Connect,
         deadline,
         Duration::from_secs(IDLE_TIMEOUT_SECS),
         |s, agreed| {
@@ -601,10 +800,11 @@ pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpEr
     let _ = stream.set_nodelay(true);
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
     // Pairing does not register a socket for `stop` to close; see
-    // `Pending::pair`.
+    // `NegotiatedPending::pair`.
     let (connection, _socket) = run_handshake(
         stream,
         Role::Initiator,
+        Mode::PairByCode,
         deadline,
         Duration::from_secs(IDLE_TIMEOUT_SECS),
         |s, agreed| {
@@ -617,12 +817,77 @@ pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpEr
     Ok(connection)
 }
 
+/// Dial the address from a scanned QR offer, agree a version, and run IK as
+/// initiator, with the offer's nonce and this device's hello in message one.
+///
+/// Unlike [`pair`] and [`connect`], the connect step itself is bounded, by
+/// [`limits::QR_ADDRESS_CONNECT_TIMEOUT_SECS`]: an offer can list more than
+/// one address, tried in order by the caller, and a plain, unbounded
+/// connect to an address nothing answers can otherwise cost tens of
+/// seconds of the OS's own connect timeout before it gives up, which adds
+/// up fast across a handful of wrong addresses ahead of the right one.
+///
+/// # Errors
+///
+/// As [`pair`], plus [`TcpError::Timeout`] when the connect step itself
+/// does not finish within [`limits::QR_ADDRESS_CONNECT_TIMEOUT_SECS`].
+/// [`TcpError::Noise`] means the responder did not hold the private key
+/// matching the static key from the offer, which is what stops an attacker
+/// without it from completing this handshake at all.
+#[allow(clippy::too_many_arguments)]
+pub fn pair_ik(
+    addr: SocketAddr,
+    key: &StaticKey,
+    responder: &PublicKey,
+    nonce: &[u8; noise::QR_NONCE_LEN],
+    my_name: &str,
+    my_kind: DeviceKind,
+) -> Result<SecureStream, TcpError> {
+    let stream = TcpStream::connect_timeout(
+        &addr,
+        Duration::from_secs(limits::QR_ADDRESS_CONNECT_TIMEOUT_SECS),
+    )
+    .map_err(|error| {
+        if is_timeout(&error) {
+            TcpError::Timeout
+        } else {
+            TcpError::Io(error)
+        }
+    })?;
+    // As in `Listener::accept`: without this, a small write waits on a
+    // delayed acknowledgement instead of reaching the wire at once.
+    let _ = stream.set_nodelay(true);
+    let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
+    // As `pair`: a QR pairing handshake does not register a socket for
+    // `stop` to close.
+    let (stream, _socket) = run_handshake(
+        stream,
+        Role::Initiator,
+        Mode::PairByQr,
+        deadline,
+        Duration::from_secs(IDLE_TIMEOUT_SECS),
+        |s, agreed| {
+            noise::pair_ik_as_initiator(
+                s,
+                key,
+                responder,
+                nonce,
+                my_name,
+                my_kind,
+                &agreed.prologue,
+            )
+        },
+    )?;
+    Ok(stream)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Listener, Pending, TcpError, connect, pair};
+    use super::{Listener, Pending, TcpError, connect, pair, pair_ik};
     use crate::limits;
-    use crate::noise::StaticKey;
-    use crate::version::{MAGIC, VERSION_MAX};
+    use crate::noise::{QR_NONCE_LEN, StaticKey};
+    use crate::peers::DeviceKind;
+    use crate::version::{MAGIC, Mode, VERSION_MAX};
     use std::io::{Read, Write};
     use std::net::{SocketAddr, TcpStream};
     use std::thread;
@@ -641,7 +906,7 @@ mod tests {
         let key_responder = StaticKey::generate().unwrap();
         let server = thread::spawn(move || {
             let pending = listener.accept().unwrap();
-            pending.pair(&key_responder).unwrap()
+            pending.negotiate().unwrap().pair(&key_responder).unwrap()
         });
 
         let key_initiator = StaticKey::generate().unwrap();
@@ -662,7 +927,11 @@ mod tests {
 
         let server = thread::spawn(move || {
             let pending = listener.accept().unwrap();
-            let mut connection = pending.connect(&key_b, &[public_a]).unwrap();
+            let mut connection = pending
+                .negotiate()
+                .unwrap()
+                .connect(&key_b, &[public_a])
+                .unwrap();
             let mut buf = [0u8; 5];
             connection.stream.read_exact(&mut buf).unwrap();
             connection.stream.write_all(b"world").unwrap();
@@ -729,10 +998,11 @@ mod tests {
         let _client = TcpStream::connect(addr).unwrap();
 
         // `accept` itself no longer waits on the handshake, so the timeout
-        // now shows up once the handshake actually runs, inside `pair`.
+        // now shows up once the version exchange actually runs, inside
+        // `negotiate`. A client that sends nothing never gets far enough for
+        // `pair` or `connect` to matter.
         let pending = listener.accept().unwrap();
-        let key = StaticKey::generate().unwrap();
-        match pending.pair(&key) {
+        match pending.negotiate() {
             Err(TcpError::Timeout) => {}
             other => panic!("expected a timeout, got {other:?}"),
         }
@@ -751,7 +1021,10 @@ mod tests {
 
         let server = thread::spawn(move || {
             let pending = listener.accept().unwrap();
-            pending.connect(&key_server, &[public_client]).map(|_| ())
+            pending
+                .negotiate()?
+                .connect(&key_server, &[public_client])
+                .map(|_| ())
         });
 
         // The stranger dials in, but does not hold the private key the
@@ -774,21 +1047,21 @@ mod tests {
         let client = thread::spawn(move || {
             let mut stream = TcpStream::connect(addr).unwrap();
 
-            // The 7 byte version exchange, dripped one byte every 200ms. A
-            // socket timeout that resets on every read would let this alone
-            // take well over a second.
-            let mut version_bytes = Vec::with_capacity(7);
+            // The 8 byte version and mode exchange arrives all at once, so
+            // `negotiate` finishes quickly and the deadline still has time
+            // left over for the Noise handshake that follows.
+            let mut version_bytes = Vec::with_capacity(8);
             version_bytes.extend_from_slice(&MAGIC);
             version_bytes.extend_from_slice(&VERSION_MAX.to_be_bytes());
-            for byte in version_bytes {
-                if stream.write_all(&[byte]).is_err() {
-                    return;
-                }
-                thread::sleep(Duration::from_millis(200));
+            version_bytes.push(0); // Mode::Connect.
+            if stream.write_all(&version_bytes).is_err() {
+                return;
             }
 
             // A valid-looking handshake length prefix, then a body dripped
-            // the same way. The body never fully arrives.
+            // one byte every 200ms. A socket timeout that resets on every
+            // read would let this alone take well over a second; the body
+            // never fully arrives either way.
             if stream.write_all(&900u16.to_be_bytes()).is_err() {
                 return;
             }
@@ -804,7 +1077,9 @@ mod tests {
         let pending = listener.accept().unwrap();
 
         let start = Instant::now();
-        let result = pending.connect(&key, &[key.public()]);
+        let result = pending
+            .negotiate()
+            .and_then(|negotiated| negotiated.connect(&key, &[key.public()]));
         let elapsed = start.elapsed();
 
         assert!(
@@ -840,12 +1115,15 @@ mod tests {
 
         // Each `Pending` runs its handshake on its own thread, as a real
         // server would. The silent one is left to time out on its own.
-        let silent = thread::spawn(move || {
-            let key = StaticKey::generate().unwrap();
-            silent_pending.pair(&key)
-        });
+        let silent = thread::spawn(move || silent_pending.negotiate().map(|_| ()));
         let key_responder = StaticKey::generate().unwrap();
-        let responder = thread::spawn(move || second_pending.pair(&key_responder).unwrap());
+        let responder = thread::spawn(move || {
+            second_pending
+                .negotiate()
+                .unwrap()
+                .pair(&key_responder)
+                .unwrap()
+        });
 
         let responder_result = responder.join().unwrap();
         let elapsed = start.elapsed();
@@ -870,7 +1148,7 @@ mod tests {
         let key_responder = StaticKey::generate().unwrap();
         let server = thread::spawn(move || {
             let pending = listener.accept().unwrap();
-            let mut connection = pending.pair(&key_responder).unwrap();
+            let mut connection = pending.negotiate().unwrap().pair(&key_responder).unwrap();
             let start = Instant::now();
             let mut buf = [0u8; 1];
             let result = connection.paired.stream.read(&mut buf);
@@ -891,5 +1169,88 @@ mod tests {
         );
 
         drop(client);
+    }
+
+    #[test]
+    fn negotiate_reports_the_mode_the_dialer_used() {
+        // Three dialers, three modes, over the same listener. The wire says
+        // which pattern is coming before a single Noise byte is read.
+        let listener = Listener::bind(local_any()).unwrap();
+        let addr = listener.local_addr();
+
+        let connect_client = thread::spawn(move || {
+            let stranger = StaticKey::generate().unwrap();
+            let _ = connect(addr, &stranger, &stranger.public());
+        });
+        let negotiated = listener.accept().unwrap().negotiate().unwrap();
+        assert_eq!(negotiated.mode(), Mode::Connect);
+        assert_eq!(negotiated.version(), VERSION_MAX);
+        drop(negotiated);
+        connect_client.join().unwrap();
+
+        let pair_client = thread::spawn(move || {
+            let key = StaticKey::generate().unwrap();
+            let _ = pair(addr, &key);
+        });
+        let negotiated = listener.accept().unwrap().negotiate().unwrap();
+        assert_eq!(negotiated.mode(), Mode::PairByCode);
+        drop(negotiated);
+        pair_client.join().unwrap();
+
+        let responder_key = StaticKey::generate().unwrap();
+        let responder_public = responder_key.public();
+        let pair_ik_client = thread::spawn(move || {
+            let key = StaticKey::generate().unwrap();
+            let nonce = [7u8; QR_NONCE_LEN];
+            let _ = pair_ik(
+                addr,
+                &key,
+                &responder_public,
+                &nonce,
+                "Pixel 3 XL",
+                DeviceKind::Phone,
+            );
+        });
+        let negotiated = listener.accept().unwrap().negotiate().unwrap();
+        assert_eq!(negotiated.mode(), Mode::PairByQr);
+        drop(negotiated);
+        pair_ik_client.join().unwrap();
+    }
+
+    #[test]
+    fn a_qr_pairing_over_tcp_completes_and_reports_the_hello() {
+        let listener = Listener::bind(local_any()).unwrap();
+        let addr = listener.local_addr();
+
+        let key_responder = StaticKey::generate().unwrap();
+        let public_responder = key_responder.public();
+        let nonce = [3u8; QR_NONCE_LEN];
+        let server = thread::spawn(move || {
+            let pending = listener.accept().unwrap();
+            let negotiated = pending.negotiate().unwrap();
+            assert_eq!(negotiated.mode(), Mode::PairByQr);
+            negotiated.pair_ik(&key_responder, Some(&nonce)).unwrap()
+        });
+
+        let key_initiator = StaticKey::generate().unwrap();
+        let mut initiator_stream = pair_ik(
+            addr,
+            &key_initiator,
+            &public_responder,
+            &nonce,
+            "Pixel 3 XL",
+            DeviceKind::Phone,
+        )
+        .unwrap();
+
+        let mut connection = server.join().unwrap();
+        assert_eq!(connection.accepted.peer, key_initiator.public());
+        assert_eq!(connection.accepted.name, "Pixel 3 XL");
+        assert_eq!(connection.accepted.kind, DeviceKind::Phone);
+
+        initiator_stream.write_all(b"scanned").unwrap();
+        let mut buf = [0u8; 7];
+        connection.accepted.stream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"scanned");
     }
 }

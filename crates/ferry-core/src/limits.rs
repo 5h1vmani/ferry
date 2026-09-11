@@ -72,6 +72,20 @@ pub const MAX_MANIFEST_BYTES: usize = 8 + 4 + 4 + (MAX_MANIFEST_CHUNKS as usize 
 /// sends nothing from holding a slot forever.
 pub const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
+/// How long dialling one address from a QR pairing offer may take before
+/// `pair_ik` gives up on it and tries the next, in seconds.
+///
+/// A QR offer can carry more than one address (`docs/engine-contract.md`
+/// item 12), tried in order. A plain `TcpStream::connect` has no timeout of
+/// its own: dialling an address nothing answers, rather than one that
+/// actively refuses the connection, can otherwise hold the OS's own connect
+/// timeout, which is tens of seconds and platform dependent, before it gives
+/// up. A handful of unreachable addresses ahead of the right one would then
+/// cost minutes instead of seconds. Three seconds is well past what a
+/// reachable device on the same network takes to answer, and short enough
+/// that trying every address in a realistic offer still finishes quickly.
+pub const QR_ADDRESS_CONNECT_TIMEOUT_SECS: u64 = 3;
+
 /// The largest number of accepted connections that may be mid handshake at
 /// once.
 ///

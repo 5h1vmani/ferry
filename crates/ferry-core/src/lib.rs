@@ -56,5 +56,5 @@ pub use roots::{RootSpec, Roots, RootsError};
 pub use rpc::{Client, FileOps, RpcError, serve};
 pub use session::{Progress, SessionId, Transfer, TransferError, pull, resume_point};
 pub use transport::{Endpoint, loopback};
-pub use version::{Agreed, Role, VersionError, negotiate};
+pub use version::{Agreed, Mode, Role, VersionError, negotiate};
 pub use wire::{Decoder, Encoder, WireError};
