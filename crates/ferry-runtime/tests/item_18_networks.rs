@@ -686,3 +686,35 @@ fn a_name_holding_a_control_character_is_refused_and_never_loads() {
     );
     engine.stop();
 }
+
+// ---------------------------------------------------------------------------
+// Audit `docs/audits/third-run-engine.md`, finding 8: presence after `stop`.
+// ---------------------------------------------------------------------------
+
+/// Nothing an app calls after `stop` may start the advertiser again.
+///
+/// `stop` never cleared `listen_addr`, so a `set_reachable(true)` that
+/// arrived after it found `reachable` true, an empty trusted list, and a
+/// port to announce. mDNS then kept announcing a closed port until the
+/// process exited.
+#[test]
+fn a_stopped_engine_never_advertises_again() {
+    let side = build("Shantanu");
+    side.engine.set_reachable(true);
+    assert!(
+        side.engine.short_code().is_some(),
+        "a reachable engine advertises, so there is something to turn off"
+    );
+
+    side.engine.stop();
+    side.engine.set_reachable(true);
+
+    assert!(
+        side.engine.short_code().is_none(),
+        "a stopped engine must not announce a port it has already closed"
+    );
+    assert!(
+        !side.engine.status().wifi_presence,
+        "a stopped engine is present on no network"
+    );
+}

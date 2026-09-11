@@ -817,6 +817,10 @@ changes an input calls it: `set_reachable`, `set_network`,
 `trust_network`, `forget_network`, every pairing start, every pairing
 end, `start`, and `stop`. `start` calls `apply_presence` once its
 listener has a port, so a wish set before `start` still takes effect.
+`apply_presence` returns at once and does nothing when the engine is
+stopped. `stop` turns the advertiser and the browse flag off itself, so
+nothing an app calls after `stop`, such as `set_reachable(true)`, can
+announce a port that is already closed.
 `set_reachable` no longer starts the advertiser itself; there is one
 start site and it is `apply_presence`. The browse loop keeps its thread
 and drops its `Browser` while browsing is not allowed, because a browse

@@ -1055,10 +1055,15 @@ impl Engine {
             drop(socket.shutdown(Shutdown::Both));
         }
 
-        // `stopped` and `reachable` were both set above, so the rule is
-        // already false here: this drops the advertiser and turns the browse
-        // loop's `Browser` off. docs/engine-contract.md item 18.
-        apply_presence(&self.shared);
+        // `apply_presence` does nothing once `stopped` is set, so `stop`
+        // turns both off itself. This is the last write to either: nothing
+        // an app calls after this can start the advertiser again.
+        // docs/engine-contract.md item 18.
+        {
+            let _presence = lock(&self.shared.presence);
+            *lock(&self.shared.advertiser) = None;
+            self.shared.browsing.store(false, Ordering::SeqCst);
+        }
         self.shared.wake.notify_all();
 
         // A serving thread cannot be woken, so it is taken from instead:
@@ -2659,6 +2664,14 @@ fn load_saved_batches(shared: &Arc<Shared>) {
 /// four characters of that name next to this device in the other side's
 /// pairing list, so a restart during pairing would change the code a person
 /// is reading off two screens.
+///
+/// A stopped engine is left alone too. `stop` turns the advertiser and the
+/// browse flag off itself and this does nothing from then on, so a
+/// `set_reachable(true)` that arrives after `stop` cannot announce a port
+/// that is already closed. `stop` sets `stopped` before it takes the
+/// presence lock, so a thread already inside this one either read `stopped`
+/// as false and finished before `stop`'s own writes, or reads it as true and
+/// returns.
 pub(crate) fn apply_presence(shared: &Shared) {
     // One rule, applied by one thread at a time. Held across the state read
     // and both writes below, so two threads cannot read the inputs in one
@@ -2666,6 +2679,9 @@ pub(crate) fn apply_presence(shared: &Shared) {
     let _presence = lock(&shared.presence);
     let (browsing, present, port) = {
         let state = lock(&shared.state);
+        if state.stopped {
+            return;
+        }
         (
             networks::browse_allowed(&state),
             networks::wifi_presence(&state),
