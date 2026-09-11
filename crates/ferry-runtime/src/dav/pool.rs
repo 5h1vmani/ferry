@@ -40,8 +40,10 @@ use crate::state::{key_from_hex, lock as lock_mutex};
 const MAX_CONNECTIONS: usize = 4;
 
 /// How long a fifth request waits for one of the four to free up before it
-/// gives up and answers 503 itself.
-const WAIT_FOR_SLOT: Duration = Duration::from_secs(2);
+/// gives up and answers 503 itself. Long enough that a normal folder open
+/// over Wi-Fi, queued behind four others already busy with the peer, does
+/// not 503 the person just because Finder asked at a bad moment.
+const WAIT_FOR_SLOT: Duration = Duration::from_secs(30);
 
 type PeerClient = Client<StopAware<SecureStream>>;
 
