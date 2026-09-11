@@ -21,6 +21,14 @@ class FerryApplication : Application() {
         super.onCreate()
         Permissions.refresh(this)
         FerryEngine.create(this)
+        // The Files app can start this process for FerryDocumentsProvider
+        // with no activity and no service in front of it. Only start()
+        // opens the shared root, so without this call every query from the
+        // provider finds no root, or finds the device not reachable, until
+        // the person happens to open the Ferry activity itself.
+        if (Permissions.allFilesAccess.value) {
+            FerryEngine.start()
+        }
         // Registered once here rather than after create(): a callback that
         // fires before the engine exists is not lost, because NetworkName
         // holds the last name it read and FerryEngine.start() reads it
