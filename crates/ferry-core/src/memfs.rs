@@ -25,6 +25,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use crate::chunk::{ChunkSize, Manifest, manifest_from_bytes};
 use crate::limits;
 use crate::ops::{Entry, FileKind, OpError};
 use crate::path::RemotePath;
@@ -442,6 +443,22 @@ impl FileOps for MemoryFs {
             Some(Node::File { .. }) => {
                 nodes.remove(path.as_str());
                 Ok(())
+            }
+        }
+    }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        // The root is a directory, and a manifest only ever describes a
+        // file, matching `LocalFs`.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
+        }
+        let nodes = self.lock();
+        match nodes.get(path.as_str()) {
+            None => Err(OpError::NotFound),
+            Some(Node::Directory { .. }) => Err(OpError::IsADirectory),
+            Some(Node::File { bytes, .. }) => {
+                Ok(manifest_from_bytes(bytes, ChunkSize::one_mebibyte()))
             }
         }
     }

@@ -67,6 +67,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, File, Metadata, OpenOptions, OpenOptionsExt};
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 
+use crate::chunk::{ChunkSize, Manifest, ManifestBuilder};
 use crate::limits;
 use crate::ops::{Entry, FileKind, OpError};
 use crate::path::RemotePath;
@@ -425,6 +426,49 @@ impl FileOps for LocalFs {
                 .map_err(|e| map_io(&e)),
         }
     }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        // The root is a directory, and a manifest only ever describes a
+        // file. Same reasoning as `read` and `write`, above.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
+        }
+        let (mut file, kind) = open_checked(
+            &self.root,
+            cap_std_path(path),
+            OpenOptions::new().read(true),
+        )?;
+        if kind == FileKind::Directory {
+            return Err(OpError::IsADirectory);
+        }
+
+        // One pass over the file, in chunk sized pieces, through the same
+        // `ManifestBuilder` a transfer's first pass uses. Every piece but
+        // the last is a whole chunk; `read_to_end` on a bounded `take`
+        // hands back a short final piece on its own, with no extra check
+        // needed here.
+        let chunk_size = ChunkSize::one_mebibyte();
+        let mut builder = ManifestBuilder::new(chunk_size);
+        loop {
+            let mut piece = Vec::new();
+            // `File` implements both `Read` and `Write`, so a plain
+            // `file.by_ref()` is ambiguous between the two; the explicit
+            // trait name picks the one meant here.
+            Read::by_ref(&mut file)
+                .take(chunk_size.as_u64())
+                .read_to_end(&mut piece)
+                .map_err(|e| map_io(&e))?;
+            if piece.is_empty() {
+                break;
+            }
+            let whole_chunk = piece.len() as u64 == chunk_size.as_u64();
+            builder.push(&piece);
+            if !whole_chunk {
+                break;
+            }
+        }
+        Ok(builder.finish())
+    }
 }
 
 // `cap_std::fs::Dir` has no concept of "the root itself" as a path string;
@@ -565,6 +609,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::LocalFs;
+    use crate::chunk::{ChunkSize, manifest_from_bytes};
     use crate::limits;
     use crate::ops::{FileKind, OpError};
     use crate::path::RemotePath;
@@ -795,6 +840,53 @@ mod tests {
             fs.write(&path("a.txt"), 0, &big),
             Err(OpError::RangeTooLarge)
         );
+    }
+
+    #[test]
+    fn manifest_equals_the_one_manifest_builder_gives_over_the_same_bytes() {
+        // docs/engine-contract.md item 16a: the serving side reads the whole
+        // file once and hashes it with the existing `ManifestBuilder`. This
+        // checks `LocalFs::manifest` against that same builder run over the
+        // identical bytes, at a length that crosses several chunk
+        // boundaries and ends with a short one.
+        let root = TempRoot::new("manifest");
+        let bytes: Vec<u8> = (0..(3 * limits::MAX_READ_LEN as usize + 12345))
+            .map(|i| u8::try_from(i % 251).unwrap_or(0))
+            .collect();
+        // `LocalFs::write` caps one call at `MAX_WRITE_LEN`, so a file this
+        // size is written directly rather than through the trait.
+        std::fs::write(root.dir.join("a.bin"), &bytes).unwrap();
+        let fs = root.fs();
+
+        let served = fs.manifest(&path("a.bin")).unwrap();
+        let expected = manifest_from_bytes(&bytes, ChunkSize::one_mebibyte());
+        assert_eq!(served, expected);
+    }
+
+    #[test]
+    fn manifest_of_an_empty_file_matches_an_empty_builder() {
+        let root = TempRoot::new("manifest-empty");
+        let fs = root.fs();
+        fs.write(&path("empty.bin"), 0, &[]).unwrap();
+
+        let served = fs.manifest(&path("empty.bin")).unwrap();
+        let expected = manifest_from_bytes(&[], ChunkSize::one_mebibyte());
+        assert_eq!(served, expected);
+    }
+
+    #[test]
+    fn manifest_of_a_directory_is_a_directory() {
+        let root = TempRoot::new("manifest-dir");
+        let fs = root.fs();
+        fs.mkdir(&path("DCIM")).unwrap();
+        assert_eq!(fs.manifest(&path("DCIM")), Err(OpError::IsADirectory));
+    }
+
+    #[test]
+    fn manifest_of_a_missing_path_is_not_found() {
+        let root = TempRoot::new("manifest-missing");
+        let fs = root.fs();
+        assert_eq!(fs.manifest(&path("nope.bin")), Err(OpError::NotFound));
     }
 
     #[test]

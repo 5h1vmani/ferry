@@ -1,35 +1,37 @@
 //! Transfers, on a small pool of threads, until each is done or fails.
 //!
-//! # Why the first pass builds the manifest
+//! # Why the first pass fetches the manifest first
 //!
-//! `session::pull` needs a manifest before it starts, and only the device
-//! that holds the file can compute one. Version 1 of the file operations
-//! layer has no operation that asks for a manifest, and this crate may not
-//! add one.
+//! `session::pull` needs a manifest before it starts. Before
+//! `docs/engine-contract.md` item 16a, no operation asked a peer for one, so
+//! the first pass built its own from whatever bytes arrived, trusting them
+//! until a later resume proved otherwise.
 //!
-//! So the first pass does both jobs at once. It reads the whole file in
-//! chunk sized pieces, feeds each piece to a `ManifestBuilder`, and writes
-//! the same piece to the partial file. That is one pass over the network,
-//! not two. The manifest is then written to disk beside the partial file,
-//! and every later attempt is an ordinary `session::pull` that resumes from
-//! the persisted manifest.
+//! `Request::Manifest` closes that gap. The first pass now fetches the
+//! peer's manifest before asking for the first chunk, and verifies every
+//! chunk against it as that chunk lands: the same `Manifest::verify_chunk`
+//! check an ordinary resume already runs. A chunk that fails stops the
+//! attempt at once, with `TransferError::ChunkFailedVerification` and the
+//! failing index, instead of only being caught on a later connection.
 //!
-//! # What that costs
+//! The pass still moves the file in one pass over the network: for each
+//! chunk it reads, verifies, and writes before asking for the next one.
+//! There is no second pass that re-reads what the first pass already wrote.
 //!
-//! On the first pass the manifest describes what arrived, so it cannot catch
-//! a device that sends the wrong bytes. From the moment the manifest is on
-//! disk it can, and it does: a file that changes on the phone between the
-//! first pass and a resume makes chunk verification fail, and the transfer
-//! stops. That is the designed behaviour, per `docs/protocol.md` section 9.
+//! Finding where to resume an interrupted first pass reuses
+//! `session::resume_point`: the partial file is read back and hashed
+//! against the manifest just fetched, never trusted from a stored record,
+//! per `docs/protocol.md` section 9 ("the manifest is a hint, the disk is
+//! the truth"). Once the whole file verifies, the fetched manifest becomes
+//! the record's own manifest, and every later attempt is an ordinary
+//! `session::pull` that resumes from it.
 //!
 //! A first pass writes a record of its own at every chunk boundary, holding
-//! the size of the source and how many whole chunks have arrived. So a first
-//! pass that is cut short is picked up where it stopped, even after the app
-//! has closed and opened again. Without that record the partial file was
-//! left in the person's folder and the whole file was fetched again.
-//!
-//! The size and the modified time of the source are compared on every
-//! attempt. A source that changed makes the pass start from zero.
+//! the size of the source and how many whole chunks have verified. So a
+//! first pass that is cut short is picked up where it stopped, even after
+//! the app has closed and opened again. Without that record the partial
+//! file was left in the person's folder and the whole file was fetched
+//! again.
 //!
 //! # Why there is a pool
 //!
@@ -45,13 +47,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ferry_core::chunk::{ChunkSize, ManifestBuilder};
+use ferry_core::chunk::Manifest;
 use ferry_core::limits;
 use ferry_core::noise::PublicKey;
 use ferry_core::ops::{FileKind, OpError};
 use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, FileOps, RpcError, exchange_hello};
-use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress};
+use ferry_core::session::{Progress, Transfer, TransferError, pull_with_progress, resume_point};
 use ferry_core::tcp;
 
 use crate::access::{self, EntryFields};
@@ -328,8 +330,6 @@ struct Plan {
     peer: PublicKey,
     source: RemotePath,
     destination: RemotePath,
-    source_size: Option<u64>,
-    source_mtime: Option<i64>,
     /// The 32 hex characters that name this transfer's own partial file
     /// during the first pass.
     suffix: String,
@@ -354,8 +354,6 @@ fn plan_for(shared: &Arc<Shared>, id: &str) -> Option<Plan> {
         peer,
         source: row.source.clone(),
         destination: row.destination.clone(),
-        source_size: row.source_size,
-        source_mtime: row.source_mtime,
         suffix: id.rsplit('-').next().unwrap_or(id).to_owned(),
         started_unix_secs: row.started_unix_secs,
         direction: row.direction,
@@ -510,24 +508,23 @@ fn load_or_build<S: Read + Write>(
 ) -> Result<Transfer, Outcome> {
     match read_record(&shared.record_path(id)) {
         // The meta an earlier attempt of this same row wrote is not needed
-        // again: the row it came from is this attempt's own plan.
+        // again: the row it came from is this attempt's own plan. Nor is the
+        // rest of a saved `FirstPass`: the manifest fetched below is what
+        // decides where to resume, not the stored record.
         Ok(Some(Record::Ready(_meta, record))) => Ok(record),
-        Ok(Some(Record::FirstPass(_meta, pass))) => {
-            first_pass(shared, id, plan, fs, client, Some(&pass))
-        }
-        Ok(None) => first_pass(shared, id, plan, fs, client, None),
+        Ok(Some(Record::FirstPass(..)) | None) => first_pass(shared, id, plan, fs, client),
         Err(error) => Err(Outcome::Fatal(error)),
     }
 }
 
-/// Read the whole file once, building the manifest as the bytes arrive.
+/// Fetch the peer's manifest, then fetch and verify every chunk it has not
+/// already verified, writing the partial file in the same pass.
 fn first_pass<S: Read + Write>(
     shared: &Arc<Shared>,
     id: &str,
     plan: &Plan,
     fs: &dyn FileOps,
     client: &mut Client<S>,
-    saved: Option<&FirstPass>,
 ) -> Result<Transfer, Outcome> {
     let entry = match client.stat(&plan.source) {
         Ok(entry) => entry,
@@ -536,11 +533,14 @@ fn first_pass<S: Read + Write>(
     if entry.kind != FileKind::File {
         return Err(Outcome::Fatal(from_op(OpError::IsADirectory)));
     }
-    let size = entry.size;
-    let changed = plan.source_size.is_some_and(|old| old != size)
-        || plan
-            .source_mtime
-            .is_some_and(|old| old != entry.modified_unix_secs);
+    // Fetched before the first chunk, so every chunk below is checked
+    // against it as it lands, rather than trusted on arrival.
+    // docs/engine-contract.md item 16a.
+    let manifest = match client.manifest(&plan.source) {
+        Ok(manifest) => manifest,
+        Err(error) => return Err(classify_rpc(&error)),
+    };
+    let size = manifest.length();
     {
         let mut state = lock(&shared.state);
         if let Some(row) = state.transfers.get_mut(id) {
@@ -552,16 +552,14 @@ fn first_pass<S: Read + Write>(
 
     let temporary = temp_path(&plan.destination, &plan.suffix).map_err(Outcome::Fatal)?;
     ensure_parents(fs, &plan.destination).map_err(|e| Outcome::Fatal(from_op(e)))?;
-    let chunk = *lock(&shared.chunk_size);
-    // A record from an earlier run says how much was hashed, and no more of
-    // the partial file than that is believed.
-    let verified = if changed {
-        None
-    } else {
-        saved.map(FirstPass::bytes_done)
-    };
-    let start = start_offset(fs, &temporary, chunk, changed, verified)
-        .map_err(|e| Outcome::Fatal(from_op(e)))?;
+
+    // The manifest is a hint, the disk is the truth (docs/protocol.md
+    // section 9): whatever the partial file already holds is re-verified
+    // against the manifest just fetched, never trusted from a stored
+    // record. This is the same resume `session::pull` uses once a manifest
+    // exists, reused here now that the first pass has one too.
+    let start_index =
+        resume_point(fs, &temporary, &manifest).map_err(|e| Outcome::Fatal(from_transfer(&e)))?;
 
     let mut pass = Pass {
         record: shared.record_path(id),
@@ -570,8 +568,8 @@ fn first_pass<S: Read + Write>(
             destination: plan.destination.clone(),
             source_size: size,
             source_mtime: entry.modified_unix_secs,
-            chunk_size: chunk.get(),
-            chunks_done: chunks_in(start, chunk),
+            chunk_size: manifest.chunk_size().get(),
+            chunks_done: u32::try_from(start_index).unwrap_or(u32::MAX),
         },
         // The record is only ever written while this attempt is in
         // progress, so its end time is never anything but `None`.
@@ -581,7 +579,6 @@ fn first_pass<S: Read + Write>(
             direction: plan.direction,
             batch_id: plan.batch_id.clone(),
         },
-        builder: ManifestBuilder::new(chunk),
     };
     // The record goes down before the first byte is asked for. A pass with
     // no record leaves a partial file that nothing knows about.
@@ -591,22 +588,15 @@ fn first_pass<S: Read + Write>(
     )
     .map_err(Outcome::Fatal)?;
 
-    rehash_local(fs, &temporary, chunk, start, &mut pass.builder)
-        .map_err(|e| Outcome::Fatal(from_op(e)))?;
     let span = Span {
-        chunk,
-        start,
-        size,
+        start_index,
+        manifest,
         temporary: temporary.clone(),
     };
     fetch_rest(shared, id, plan, fs, client, &span, &mut pass)?;
 
-    let record = Transfer::new(
-        pass.builder.finish(),
-        plan.source.clone(),
-        plan.destination.clone(),
-    )
-    .map_err(|e| Outcome::Fatal(from_transfer(&e)))?;
+    let record = Transfer::new(span.manifest, plan.source.clone(), plan.destination.clone())
+        .map_err(|e| Outcome::Fatal(from_transfer(&e)))?;
     let landing = record
         .temporary_path()
         .map_err(|e| Outcome::Fatal(from_transfer(&e)))?;
@@ -620,11 +610,6 @@ fn first_pass<S: Read + Write>(
     Ok(record)
 }
 
-/// How many whole chunks a byte count holds.
-fn chunks_in(bytes: u64, chunk: ChunkSize) -> u32 {
-    u32::try_from(bytes / chunk.as_u64()).unwrap_or(u32::MAX)
-}
-
 /// Everything the first pass writes to as it runs.
 struct Pass {
     /// Where this transfer's record lives.
@@ -635,23 +620,21 @@ struct Pass {
     /// writes. The end time is always `None`: the record is written only
     /// while the transfer is in progress.
     meta: Meta,
-    /// The manifest being built out of the bytes as they arrive.
-    builder: ManifestBuilder,
 }
 
 /// Where the first pass writes, and how far it has to go.
 struct Span {
-    /// The chunk size the manifest is built with.
-    chunk: ChunkSize,
-    /// The first byte still to fetch.
-    start: u64,
-    /// How long the source file is.
-    size: u64,
+    /// The chunk index to resume from, found by re-verifying the partial
+    /// file against `manifest`.
+    start_index: usize,
+    /// The peer's manifest for this file, fetched before the first chunk.
+    manifest: Manifest,
     /// The partial file this pass writes to.
     temporary: RemotePath,
 }
 
-/// Fetch every chunk the partial file does not already hold.
+/// Fetch every chunk the partial file does not already hold, verifying each
+/// one against the peer's manifest as it lands.
 fn fetch_rest<S: Read + Write>(
     shared: &Arc<Shared>,
     id: &str,
@@ -662,17 +645,18 @@ fn fetch_rest<S: Read + Write>(
     pass: &mut Pass,
 ) -> Result<(), Outcome> {
     let mut reporter = Reporter::new(shared, id, &plan.device_key_hex);
-    let mut offset = span.start;
-    if span.size == 0 {
+    let manifest = &span.manifest;
+    if manifest.length() == 0 {
         // An empty file still needs its partial file to exist, because the
         // pull that follows truncates and renames it.
         fs.write(&span.temporary, 0, &[])
             .map_err(|e| Outcome::Fatal(from_op(e)))?;
     }
-    while offset < span.size {
-        let want = u32::try_from((span.size - offset).min(span.chunk.as_u64()))
-            .unwrap_or(span.chunk.get());
-        let bytes = match fetch_remote(client, &plan.source, offset, want) {
+    for index in span.start_index..manifest.chunk_count() {
+        let Some((offset, length)) = manifest.chunk_range(index) else {
+            break;
+        };
+        let bytes = match fetch_remote(client, &plan.source, offset, length) {
             Ok(bytes) => bytes,
             Err(Fetch::Rpc(error)) => return Err(classify_rpc(&error)),
             // A peer that answers a chunk in crumbs is not answering. The
@@ -681,27 +665,35 @@ fn fetch_rest<S: Read + Write>(
                 return Err(Outcome::Retry(failed("TransferError::ShortRead")));
             }
         };
-        if bytes.len() != usize::try_from(want).unwrap_or(usize::MAX) {
-            // The device holds less of the file than it said it holds.
+        if bytes.len() != usize::try_from(length).unwrap_or(usize::MAX) {
+            // The device holds less of the file than its manifest said it
+            // holds.
             return Err(Outcome::Fatal(failed("TransferError::ShortRead")));
+        }
+        if !manifest.verify_chunk(index, &bytes) {
+            return Err(Outcome::Fatal(from_transfer(
+                &TransferError::ChunkFailedVerification { index },
+            )));
         }
         write_all_local(fs, &span.temporary, offset, &bytes)
             .map_err(|e| Outcome::Fatal(from_op(e)))?;
-        pass.builder.push(&bytes);
-        offset += u64::from(want);
         // The record is rewritten at every chunk boundary, so a first pass
         // that stops here starts again from this point and not from zero.
-        pass.state.chunks_done = chunks_in(offset, span.chunk);
+        pass.state.chunks_done = u32::try_from(index + 1).unwrap_or(u32::MAX);
         write_record(
             &pass.record,
             &Record::FirstPass(pass.meta.clone(), pass.state.clone()),
         )
         .map_err(Outcome::Fatal)?;
-        reporter.moved(offset, span.size);
+        reporter.moved(offset + u64::from(length), manifest.length());
         if shared.stopping() {
             return Err(Outcome::Retry(failed("Runtime::NotReachable")));
         }
     }
+    // A resumed file may hold more than the manifest if an earlier attempt,
+    // or an earlier version of the source file, left bytes past the end.
+    fs.truncate(&span.temporary, manifest.length())
+        .map_err(|e| Outcome::Fatal(from_op(e)))?;
     Ok(())
 }
 
@@ -754,65 +746,10 @@ fn classify_transfer(error: &TransferError) -> Outcome {
     }
 }
 
-/// Where the first pass writes, before the manifest exists.
+/// Where the first pass writes, before the whole file has verified.
 fn temp_path(destination: &RemotePath, suffix: &str) -> Result<RemotePath, FerryError> {
     RemotePath::parse(&format!("{}.{suffix}.part", destination.as_str()))
         .map_err(crate::errors::from_path)
-}
-
-/// How many bytes of the partial file are whole chunks worth keeping.
-///
-/// A link that died mid chunk leaves a part of one behind. Only whole chunks
-/// are kept, because `ManifestBuilder` needs every chunk but the last to be
-/// exactly one chunk long. `verified` is what the stored record says was
-/// hashed, and nothing past it is believed, whatever the file holds.
-fn start_offset(
-    fs: &dyn FileOps,
-    temporary: &RemotePath,
-    chunk: ChunkSize,
-    changed: bool,
-    verified: Option<u64>,
-) -> Result<u64, OpError> {
-    let held = match fs.stat(temporary) {
-        Ok(entry) => entry.size,
-        Err(OpError::NotFound) => return Ok(0),
-        Err(other) => return Err(other),
-    };
-    let mut keep = if changed {
-        0
-    } else {
-        (held / chunk.as_u64()) * chunk.as_u64()
-    };
-    if let Some(verified) = verified {
-        keep = keep.min(verified);
-    }
-    if keep != held {
-        fs.truncate(temporary, keep)?;
-    }
-    Ok(keep)
-}
-
-/// Hash the chunks the partial file already holds, so the builder can carry
-/// on from there.
-fn rehash_local(
-    fs: &dyn FileOps,
-    temporary: &RemotePath,
-    chunk: ChunkSize,
-    upto: u64,
-    builder: &mut ManifestBuilder,
-) -> Result<(), OpError> {
-    let mut offset = 0u64;
-    while offset < upto {
-        let want = u32::try_from((upto - offset).min(chunk.as_u64())).unwrap_or(chunk.get());
-        let bytes = read_all_local(fs, temporary, offset, want)?;
-        if bytes.len() != usize::try_from(want).unwrap_or(usize::MAX) {
-            // The file shrank under us. Everything after this point is gone.
-            return Ok(());
-        }
-        builder.push(&bytes);
-        offset += u64::from(want);
-    }
-    Ok(())
 }
 
 /// Why one chunk did not arrive.
@@ -846,25 +783,6 @@ fn fetch_remote<S: Read + Write>(
         }
         let at = offset + u64::try_from(out.len()).unwrap_or(0);
         let got = client.read(path, at, piece).map_err(Fetch::Rpc)?;
-        if got.is_empty() {
-            break;
-        }
-        out.extend_from_slice(&got);
-    }
-    Ok(out)
-}
-
-/// Read one range from local storage, in pieces one call can carry.
-fn read_all_local(
-    fs: &dyn FileOps,
-    path: &RemotePath,
-    offset: u64,
-    want: u32,
-) -> Result<Vec<u8>, OpError> {
-    let mut out: Vec<u8> = Vec::new();
-    while let Some(piece) = next_piece(out.len(), want) {
-        let at = offset + u64::try_from(out.len()).unwrap_or(0);
-        let got = fs.read(path, at, piece)?;
         if got.is_empty() {
             break;
         }

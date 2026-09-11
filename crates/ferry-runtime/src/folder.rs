@@ -12,6 +12,7 @@
 use std::io::{Read, Write};
 use std::sync::Mutex;
 
+use ferry_core::chunk::Manifest;
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, FileOps, RpcError};
@@ -243,6 +244,10 @@ impl<S: Read + Write + Send> FileOps for RemoteLister<'_, S> {
     fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
         Err(OpError::Unsupported)
     }
+
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+        Err(OpError::Unsupported)
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +256,7 @@ mod tests {
         ListRecursiveError, MAX_FOLDER_DEPTH, MAX_FOLDER_FILES, MAX_LIST_PAGES, after_page,
         list_recursive,
     };
+    use ferry_core::chunk::Manifest;
     use ferry_core::memfs::MemoryFs;
     use ferry_core::ops::{Entry, FileKind, OpError};
     use ferry_core::path::RemotePath;
@@ -426,6 +432,9 @@ mod tests {
         fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
             Err(OpError::Unsupported)
         }
+        fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+            Err(OpError::Unsupported)
+        }
     }
 
     #[test]
@@ -480,6 +489,9 @@ mod tests {
             Err(OpError::Unsupported)
         }
         fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+            Err(OpError::Unsupported)
+        }
+        fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
             Err(OpError::Unsupported)
         }
     }

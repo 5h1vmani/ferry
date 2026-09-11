@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use ferry_core::chunk::{ChunkSize, Manifest, manifest_from_bytes};
 use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
@@ -427,6 +428,17 @@ impl FileOps for ScriptedFs {
     fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
         Err(OpError::Unsupported)
     }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        if path.as_str() != "big.bin" {
+            return Err(OpError::NotFound);
+        }
+        // The same chunk size the engine defaults to, so a first pass's own
+        // fetch loop, driven by this manifest, asks for exactly the ranges
+        // every other test here already expects.
+        let bytes = self.lock().bytes.clone();
+        Ok(manifest_from_bytes(&bytes, ChunkSize::one_mebibyte()))
+    }
 }
 
 /// A stream the test can break, so a link can fail in the middle.
@@ -706,6 +718,9 @@ impl FileOps for StuckListFs {
     fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
         Err(OpError::Unsupported)
     }
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+        Err(OpError::Unsupported)
+    }
 }
 
 #[test]
@@ -778,6 +793,9 @@ impl FileOps for EmptyNameFs {
         Err(OpError::Unsupported)
     }
     fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
         Err(OpError::Unsupported)
     }
 }
@@ -1760,6 +1778,9 @@ impl FileOps for AlwaysMissingFs {
     fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
         Err(OpError::Unsupported)
     }
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+        Err(OpError::Unsupported)
+    }
 }
 
 #[test]
@@ -1819,6 +1840,119 @@ fn retry_keeps_a_transfers_batch_id_and_clears_the_batchs_end_time() {
     assert_eq!(
         retried_batch.ended_unix_secs, None,
         "a batch with something moving again has no end time"
+    );
+
+    side.engine.stop();
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
+// docs/engine-contract.md item 16a: a first pass verifies every chunk
+// against the peer's manifest as it lands, not only on a later resume.
+// ---------------------------------------------------------------------------
+
+/// A filesystem whose manifest is honest but whose `read` never matches it.
+/// Stands in for a peer that serves a correct manifest and then sends the
+/// wrong bytes for a chunk.
+struct WrongChunkFs {
+    bytes: Vec<u8>,
+}
+
+impl FileOps for WrongChunkFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
+        if path.as_str() != "big.bin" {
+            return Err(OpError::NotFound);
+        }
+        Ok(Entry {
+            name: "big.bin".to_owned(),
+            kind: FileKind::File,
+            size: u64::try_from(self.bytes.len()).unwrap_or(0),
+            modified_unix_secs: 1_000_000,
+        })
+    }
+
+    fn read(&self, path: &RemotePath, _offset: u64, length: u32) -> Result<Vec<u8>, OpError> {
+        if path.as_str() != "big.bin" {
+            return Err(OpError::NotFound);
+        }
+        // Every byte answered is wrong, on purpose: the manifest this peer
+        // serves is honest, but nothing it reads back ever matches it.
+        let want = usize::try_from(length).unwrap_or(0);
+        Ok(vec![0xFFu8; want])
+    }
+
+    fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        if path.as_str() != "big.bin" {
+            return Err(OpError::NotFound);
+        }
+        Ok(manifest_from_bytes(&self.bytes, ChunkSize::one_mebibyte()))
+    }
+}
+
+#[test]
+fn a_peer_that_sends_a_wrong_chunk_in_the_first_pass_fails_verification() {
+    let side = build("Vamana");
+    let peer = start_peer_with(
+        &side.key,
+        Arc::new(WrongChunkFs {
+            bytes: sample_bytes(mib(2)),
+        }),
+    );
+    pair_with_peer(&side, &peer);
+
+    let id = pull_big(&side, &peer, "wrong.bin");
+    wait_transfer(&side, &id, "the transfer to fail verification", |t| {
+        t.state == TransferState::Failed
+    });
+
+    let info = side
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the failed transfer is still listed");
+    let error = info.error.expect("a failed transfer carries an error");
+    assert_eq!(
+        code_of_error(&error),
+        "TransferError::ChunkFailedVerification"
+    );
+    let FerryError::Failed { detail, .. } = error;
+    assert_eq!(
+        detail.as_deref(),
+        Some("0"),
+        "the first chunk is the one that fails, and its index travels as the detail"
+    );
+    assert!(
+        !side.download_root().join("wrong.bin").exists(),
+        "nothing that fails verification is ever landed"
     );
 
     side.engine.stop();

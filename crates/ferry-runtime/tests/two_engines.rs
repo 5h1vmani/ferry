@@ -33,10 +33,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // Aliased: `ferry_runtime::DeviceKind`, used unaliased below, is the
 // boundary enum `Config` and `DeviceInfo` carry. This is `ferry-core`'s own,
 // needed only for the raw `exchange_hello` call in the no-reconnect test.
+use ferry_core::chunk::{ChunkSize, manifest_from_bytes};
 use ferry_core::noise::{PublicKey, StaticKey};
+use ferry_core::ops::OpError;
 use ferry_core::path::RemotePath;
 use ferry_core::peers::DeviceKind as CoreDeviceKind;
-use ferry_core::rpc::{Client, exchange_hello};
+use ferry_core::rpc::{Client, RpcError, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
     AccessVerb, Actor, Config, DeviceKind, Engine, EngineListener, KeyPair, PairingState, Root,
@@ -947,6 +949,53 @@ fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
         after.into_iter().map(|e| e.name).collect::<Vec<_>>(),
         vec!["Renamed".to_owned()],
         "the already-open connection sees the new root without reconnecting"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// docs/engine-contract.md item 16a: a manifest request answers with the
+/// same manifest `ManifestBuilder` gives over the file's own bytes, once it
+/// has travelled a real, paired connection.
+#[test]
+fn a_manifest_request_crosses_the_wire() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let _phone_key = pair(&mac, &phone);
+
+    let bytes = sample_bytes();
+    std::fs::write(phone.shared_root.join("holiday.bin"), &bytes)
+        .expect("the file should write to the shared root");
+
+    let connection = tcp::connect(
+        loopback_addr(&phone),
+        &static_key(&mac.key),
+        &public_key(&phone.key),
+    )
+    .expect("a paired peer should be able to connect");
+    let mut stream = connection.stream;
+    exchange_hello(&mut stream, "Vamana", CoreDeviceKind::Mac)
+        .expect("the name exchange should run");
+    let mut client = Client::new(stream);
+
+    let path = RemotePath::parse("Root/holiday.bin").expect("a valid path");
+    let manifest = client
+        .manifest(&path)
+        .expect("the peer should answer a manifest request");
+    let expected = manifest_from_bytes(&bytes, ChunkSize::one_mebibyte());
+    assert_eq!(
+        manifest, expected,
+        "the served manifest must match the file's own bytes"
+    );
+
+    let root_path = RemotePath::parse("Root").expect("a valid path");
+    let dir_error = client
+        .manifest(&root_path)
+        .expect_err("a directory has no manifest");
+    assert!(
+        matches!(dir_error, RpcError::Remote(OpError::IsADirectory)),
+        "expected IsADirectory, got {dir_error:?}"
     );
 
     mac.engine.stop();

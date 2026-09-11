@@ -1,6 +1,7 @@
 //! The file operations layer.
 //!
-//! Nine operations, defined in `docs/protocol.md` section 8. Either side of a
+//! Nine operations, defined in `docs/protocol.md` section 8, plus a manifest
+//! request added by `docs/engine-contract.md` item 16a. Either side of a
 //! connection can serve them, and either side can call them.
 //!
 //! [`Request`] and [`Response`] each start with their own tag byte. The two
@@ -18,6 +19,7 @@
 //! this side to allocate an unbounded amount of memory from a few header
 //! bytes.
 
+use crate::chunk::Manifest;
 use crate::limits;
 use crate::path::RemotePath;
 use crate::wire::{Decoder, Encoder, WireError};
@@ -33,6 +35,7 @@ const REQUEST_RENAME: u8 = 6;
 const REQUEST_SET_MTIME: u8 = 7;
 const REQUEST_MKDIR: u8 = 8;
 const REQUEST_DELETE: u8 = 9;
+const REQUEST_MANIFEST: u8 = 10;
 
 // Wire tags for `Response`. This is a separate space from the opcodes above.
 // See the module documentation for why a response must decode without the
@@ -180,6 +183,15 @@ pub enum Request {
         /// The file or directory to delete.
         path: RemotePath,
     },
+    /// Compute a file's manifest: its length, chunk size, chaining values,
+    /// and root hash.
+    ///
+    /// Refused on a directory with [`OpError::IsADirectory`].
+    /// `docs/engine-contract.md` item 16a.
+    Manifest {
+        /// The file to describe.
+        path: RemotePath,
+    },
 }
 
 impl Request {
@@ -199,6 +211,7 @@ impl Request {
             Self::SetMtime { .. } => REQUEST_SET_MTIME,
             Self::Mkdir { .. } => REQUEST_MKDIR,
             Self::Delete { .. } => REQUEST_DELETE,
+            Self::Manifest { .. } => REQUEST_MANIFEST,
         }
     }
 
@@ -260,6 +273,10 @@ impl Request {
             }
             Self::Delete { path } => {
                 e.u8(REQUEST_DELETE);
+                encode_path(&mut e, path);
+            }
+            Self::Manifest { path } => {
+                e.u8(REQUEST_MANIFEST);
                 encode_path(&mut e, path);
             }
         }
@@ -337,6 +354,9 @@ impl Request {
             REQUEST_DELETE => Self::Delete {
                 path: decode_path(&mut d)?,
             },
+            REQUEST_MANIFEST => Self::Manifest {
+                path: decode_path(&mut d)?,
+            },
             other => return Err(WireError::UnknownTag(other)),
         };
         d.finish()?;
@@ -375,6 +395,11 @@ pub enum Response {
     /// Answers [`Request::Truncate`], [`Request::Rename`],
     /// [`Request::SetMtime`], [`Request::Mkdir`], and [`Request::Delete`].
     Ok,
+    /// A file's manifest, answering [`Request::Manifest`].
+    Manifest {
+        /// The manifest, encoded with [`Manifest::encode`].
+        manifest: Manifest,
+    },
 }
 
 impl Response {
@@ -417,6 +442,9 @@ impl Response {
                 e.u32(*written);
             }
             Self::Ok => {}
+            Self::Manifest { manifest } => {
+                e.bytes(&manifest.encode());
+            }
         }
         e.finish()
     }
@@ -504,6 +532,21 @@ impl Response {
         Decoder::new(bytes).finish()
     }
 
+    /// Decode the reply to a `manifest` request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WireError::TooLong`] when the manifest is over
+    /// [`limits::MAX_MANIFEST_BYTES`], and [`WireError::BadManifest`] when
+    /// the bytes do not decode as a manifest that agrees with itself.
+    pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, WireError> {
+        let mut d = Decoder::new(bytes);
+        let manifest_bytes = d.bytes(limits::MAX_MANIFEST_BYTES)?;
+        let manifest = Manifest::decode(manifest_bytes).map_err(|_| WireError::BadManifest)?;
+        d.finish()?;
+        Ok(manifest)
+    }
+
     /// Decode a reply, given the opcode of the request it answers.
     ///
     /// The opcode decides the shape. A reply that does not fit that shape
@@ -536,6 +579,9 @@ impl Response {
                 Self::decode_ok(bytes)?;
                 Ok(Self::Ok)
             }
+            REQUEST_MANIFEST => Ok(Self::Manifest {
+                manifest: Self::decode_manifest(bytes)?,
+            }),
             other => Err(WireError::UnknownTag(other)),
         }
     }
@@ -649,11 +695,19 @@ fn decode_i64(value: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{Entry, FileKind, OpError, Request, Response, WireError};
+    use crate::chunk::{ChunkSize, manifest_from_bytes};
     use crate::limits;
     use crate::path::RemotePath;
 
     fn path(text: &str) -> RemotePath {
         RemotePath::parse(text).unwrap()
+    }
+
+    fn sample_manifest() -> super::Manifest {
+        manifest_from_bytes(
+            b"a manifest request's own answer",
+            ChunkSize::one_mebibyte(),
+        )
     }
 
     fn sample_entry() -> Entry {
@@ -700,6 +754,9 @@ mod tests {
                 path: path("DCIM/NewFolder"),
             },
             Request::Delete {
+                path: path("DCIM/Camera/a.jpg"),
+            },
+            Request::Manifest {
                 path: path("DCIM/Camera/a.jpg"),
             },
         ]
@@ -758,6 +815,14 @@ mod tests {
                     path: path("DCIM/Camera"),
                 },
                 Response::Ok,
+            ),
+            (
+                Request::Manifest {
+                    path: path("DCIM/Camera/a.jpg"),
+                },
+                Response::Manifest {
+                    manifest: sample_manifest(),
+                },
             ),
         ]
     }

@@ -408,7 +408,7 @@
     },
     "TransferError::ChunkFailedVerification": {
       "stopped": "The transfer stopped.",
-      "why": "Part of the file did not match. The file changed on the other device during the transfer.",
+      "why": "Part of the file did not match, at chunk {detail}. The file changed on the other device during the transfer.",
       "todo": "Start it again."
     },
     "TransferError::Local": {
@@ -450,6 +450,11 @@
       "stopped": "The connection was refused.",
       "why": "The other end is not Ferry.",
       "todo": "Check the address."
+    },
+    "WireError::BadManifest": {
+      "stopped": "A message could not be decoded.",
+      "why": "It held a manifest Ferry refuses.",
+      "todo": "Update Ferry on both devices."
     },
     "WireError::InvalidPath": {
       "stopped": "A message could not be decoded.",

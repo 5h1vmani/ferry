@@ -29,9 +29,11 @@
 //!
 //! # Detail
 //!
-//! Only one row in `design/errors.json` uses `{detail}`, and that is
-//! `Runtime::BadConfig`. Its detail is a whole sentence, because the row puts
-//! it where the "why" line goes. Every other code carries no detail.
+//! Two rows in `design/errors.json` use `{detail}`. `Runtime::BadConfig`'s
+//! detail is a whole sentence, because the row puts it where the "why" line
+//! goes. `TransferError::ChunkFailedVerification`'s detail is the failing
+//! chunk's index, as digits, per `docs/engine-contract.md` item 16a. Every
+//! other code carries no detail.
 
 use ferry_core::adb::AdbError;
 use ferry_core::chunk::{ChunkSizeError, ManifestError};
@@ -84,6 +86,7 @@ pub fn from_wire(error: &WireError) -> FerryError {
         WireError::UnknownTag(_) => "WireError::UnknownTag",
         WireError::TrailingBytes => "WireError::TrailingBytes",
         WireError::InvalidPath => "WireError::InvalidPath",
+        WireError::BadManifest => "WireError::BadManifest",
     })
 }
 
@@ -219,8 +222,11 @@ pub fn from_transfer(error: &TransferError) -> FerryError {
         TransferError::Local(_) => failed("TransferError::Local"),
         TransferError::Record(inner) => from_manifest(*inner),
         TransferError::BadPath(_) => failed("TransferError::BadPath"),
-        TransferError::ChunkFailedVerification { .. } => {
-            failed("TransferError::ChunkFailedVerification")
+        // The failing chunk's index is the one fact the code alone cannot
+        // carry, so it travels as the detail. docs/engine-contract.md item
+        // 16a.
+        TransferError::ChunkFailedVerification { index } => {
+            failed_with("TransferError::ChunkFailedVerification", &index.to_string())
         }
         TransferError::ShortRead { .. } => failed("TransferError::ShortRead"),
         TransferError::NoRandomness => failed("TransferError::NoRandomness"),

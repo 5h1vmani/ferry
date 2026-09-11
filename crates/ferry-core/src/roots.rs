@@ -38,6 +38,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::chunk::Manifest;
 use crate::localfs::LocalFs;
 use crate::ops::{Entry, FileKind, OpError};
 use crate::path::RemotePath;
@@ -334,6 +335,17 @@ impl FileOps for Roots {
         }
         root.fs.delete(&sub)
     }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        // A manifest reveals only what `read` already reveals, so a
+        // read-only root is readable here the same way `read` treats it:
+        // no writable check.
+        if path.is_root() {
+            return Err(OpError::IsADirectory);
+        }
+        let (root, sub) = self.locate(path)?;
+        root.fs.manifest(&sub)
+    }
 }
 
 // A name is 1 to 64 bytes of UTF-8, holds no control character, no `/`, and
@@ -466,6 +478,14 @@ mod tests {
             Err(OpError::PermissionDenied)
         );
         assert_eq!(roots.read(&path("Desktop/a.txt"), 0, 5).unwrap(), b"hello");
+    }
+
+    #[test]
+    fn a_read_only_root_allows_a_manifest_request() {
+        let dir = TempDir::new("readonly-manifest");
+        std::fs::write(dir.path.join("a.txt"), b"hello").unwrap();
+        let roots = Roots::open(vec![spec("Desktop", &dir, false)]).unwrap();
+        assert!(roots.manifest(&path("Desktop/a.txt")).is_ok());
     }
 
     #[test]

@@ -31,6 +31,13 @@ pub enum WireError {
     /// See `crate::path::RemotePath::parse`, which runs the checks.
     #[error("path failed validation")]
     InvalidPath,
+    /// A manifest was not valid.
+    ///
+    /// See `crate::chunk::Manifest::decode`, which runs the checks: a bad
+    /// chunk size, a chunk count that disagrees with the length, or chunks
+    /// that do not merge to the stated root hash.
+    #[error("manifest failed validation")]
+    BadManifest,
 }
 
 /// Appends values to a growing buffer.

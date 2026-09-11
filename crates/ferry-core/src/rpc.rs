@@ -20,6 +20,7 @@
 
 use std::io::{self, Read, Write};
 
+use crate::chunk::Manifest;
 use crate::frame::{Frame, FrameError, FrameKind, read_frame, write_frame};
 use crate::ops::{Entry, OpError, Request, Response};
 use crate::path::RemotePath;
@@ -109,6 +110,19 @@ pub trait FileOps: Send + Sync {
     /// Returns [`OpError::NotEmpty`] for a directory holding anything. Delete
     /// is not recursive in version 2.
     fn delete(&self, path: &RemotePath) -> Result<(), OpError>;
+
+    /// Compute a file's manifest: its length, chunk size, chaining values,
+    /// and root hash.
+    ///
+    /// This reveals only what a `stat` already reveals and nothing more, so
+    /// an implementation logs it as `Stat`. `docs/engine-contract.md` item
+    /// 16a.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpError::NotFound`] when the path does not exist, and
+    /// [`OpError::IsADirectory`] when it names a directory.
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError>;
 }
 
 /// The reason a call failed.
@@ -412,6 +426,16 @@ impl<S: Read + Write> Client<S> {
         let payload = self.call_payload(&Request::Delete { path: path.clone() })?;
         Ok(Response::decode_ok(&payload)?)
     }
+
+    /// Compute a file's manifest.
+    ///
+    /// # Errors
+    ///
+    /// As [`Client::call`].
+    pub fn manifest(&mut self, path: &RemotePath) -> Result<Manifest, RpcError> {
+        let payload = self.call_payload(&Request::Manifest { path: path.clone() })?;
+        Ok(Response::decode_manifest(&payload)?)
+    }
 }
 
 fn handle(ops: &dyn FileOps, request: &Request) -> Result<Response, OpError> {
@@ -450,6 +474,9 @@ fn handle(ops: &dyn FileOps, request: &Request) -> Result<Response, OpError> {
             .map(|()| Response::Ok),
         Request::Mkdir { path } => ops.mkdir(path).map(|()| Response::Ok),
         Request::Delete { path } => ops.delete(path).map(|()| Response::Ok),
+        Request::Manifest { path } => Ok(Response::Manifest {
+            manifest: ops.manifest(path)?,
+        }),
     }
 }
 

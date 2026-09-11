@@ -11,6 +11,7 @@ use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use ferry_core::chunk::Manifest;
 use ferry_core::ops::{Entry, OpError};
 use ferry_core::path::RemotePath;
 use ferry_core::roots::Roots;
@@ -200,6 +201,16 @@ impl FileOps for GuardedFs {
         let result = self.current()?.delete(path);
         if result.is_ok() {
             self.record(AccessVerb::Delete, path.as_str(), None, None);
+        }
+        result
+    }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        let result = self.current()?.manifest(path);
+        if result.is_ok() {
+            // It reveals what a `stat` reveals and nothing more, so it is
+            // logged as one. docs/engine-contract.md item 16a.
+            self.record(AccessVerb::Stat, path.as_str(), None, None);
         }
         result
     }
