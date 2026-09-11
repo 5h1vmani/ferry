@@ -780,6 +780,41 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func pullFolder(deviceKeyHex: String, remotePath: String) throws  -> String
     
     /**
+     * Send one file to a paired device.
+     *
+     * `docs/engine-contract.md`, item 5. `local_path` is absolute on this
+     * device; `remote_path` is root-relative on the peer and names the
+     * file, not its folder. Runs on its own thread, the same as `pull`, and
+     * resumes on its own when the device becomes reachable again.
+     *
+     * # Errors
+     *
+     * Returns a `PathError` code when `remote_path` is refused, and
+     * `Runtime::NotPaired` when the device is not stored. A local file that
+     * is missing, a directory, a symlink, or a special file, and a
+     * read-only root on the peer, surface as the matching error on the
+     * transfer row instead, once a worker attempts it. See `push.rs`.
+     */
+    func push(deviceKeyHex: String, localPath: String, remotePath: String) throws  -> String
+    
+    /**
+     * Send several files into one folder on a paired device, as one batch.
+     *
+     * `docs/engine-contract.md`, item 5. Each file lands at
+     * `remote_folder/<file name>`. Dials the device to confirm
+     * `remote_folder` is really a folder before anything is queued, the
+     * same way `pull_folder` confirms its own folder by listing it.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired`, `Runtime::NotStarted`, an `OpError`
+     * code when the dial or the folder check fails, and
+     * `OpError::NotADirectory` when `remote_folder` names a file on the
+     * peer.
+     */
+    func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: String) throws  -> String
+    
+    /**
      * Restart a failed transfer from its resume point.
      *
      * # Errors
@@ -1273,6 +1308,61 @@ open func pullFolder(deviceKeyHex: String, remotePath: String)throws  -> String 
             self.uniffiCloneHandle(),
         FfiConverterString.lower(deviceKeyHex),
         FfiConverterString.lower(remotePath),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Send one file to a paired device.
+     *
+     * `docs/engine-contract.md`, item 5. `local_path` is absolute on this
+     * device; `remote_path` is root-relative on the peer and names the
+     * file, not its folder. Runs on its own thread, the same as `pull`, and
+     * resumes on its own when the device becomes reachable again.
+     *
+     * # Errors
+     *
+     * Returns a `PathError` code when `remote_path` is refused, and
+     * `Runtime::NotPaired` when the device is not stored. A local file that
+     * is missing, a directory, a symlink, or a special file, and a
+     * read-only root on the peer, surface as the matching error on the
+     * transfer row instead, once a worker attempts it. See `push.rs`.
+     */
+open func push(deviceKeyHex: String, localPath: String, remotePath: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_push(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(localPath),
+        FfiConverterString.lower(remotePath),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Send several files into one folder on a paired device, as one batch.
+     *
+     * `docs/engine-contract.md`, item 5. Each file lands at
+     * `remote_folder/<file name>`. Dials the device to confirm
+     * `remote_folder` is really a folder before anything is queued, the
+     * same way `pull_folder` confirms its own folder by listing it.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired`, `Runtime::NotStarted`, an `OpError`
+     * code when the dial or the folder check fails, and
+     * `OpError::NotADirectory` when `remote_folder` names a file on the
+     * peer.
+     */
+open func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_push_files(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterSequenceString.lower(localPaths),
+        FfiConverterString.lower(remoteFolder),uniffiCallStatus
     )
 })
 }
@@ -3310,8 +3400,6 @@ public func FfiConverterTypeDeviceKind_lower(_ value: DeviceKind) -> RustBuffer 
 
 /**
  * Which way a transfer moves a file.
- *
- * Always `Pull` until item 5 lands.
  */
 
 public enum Direction: Equatable, Hashable {
@@ -4339,6 +4427,31 @@ fileprivate struct FfiConverterOptionTypeTransport: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeAccessEntry: FfiConverterRustBuffer {
     typealias SwiftType = [AccessEntry]
 
@@ -4623,6 +4736,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pull_folder() != 63626) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_push() != 54602) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_push_files() != 64808) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {

@@ -743,6 +743,10 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pull_folder(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_push(
+    ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_push_files(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_retry(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_retry_batch(
@@ -831,6 +835,10 @@ internal object UniffiLib {
     external fun uniffi_ferry_runtime_fn_method_engine_pull(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`localName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_pull_folder(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_push(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`localPath`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_push_files(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`localPaths`: RustBuffer.ByValue,`remoteFolder`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_retry(`ptr`: Long,`transferId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
@@ -1028,6 +1036,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pull_folder() and 0xFFFF) != 63626) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_push() and 0xFFFF) != 54602) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_push_files() and 0xFFFF) != 64808) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_retry() and 0xFFFF) != 46891) {
@@ -1723,6 +1737,41 @@ public interface EngineInterface {
     fun `pullFolder`(`deviceKeyHex`: kotlin.String, `remotePath`: kotlin.String): kotlin.String
     
     /**
+     * Send one file to a paired device.
+     *
+     * `docs/engine-contract.md`, item 5. `local_path` is absolute on this
+     * device; `remote_path` is root-relative on the peer and names the
+     * file, not its folder. Runs on its own thread, the same as `pull`, and
+     * resumes on its own when the device becomes reachable again.
+     *
+     * # Errors
+     *
+     * Returns a `PathError` code when `remote_path` is refused, and
+     * `Runtime::NotPaired` when the device is not stored. A local file that
+     * is missing, a directory, a symlink, or a special file, and a
+     * read-only root on the peer, surface as the matching error on the
+     * transfer row instead, once a worker attempts it. See `push.rs`.
+     */
+    fun `push`(`deviceKeyHex`: kotlin.String, `localPath`: kotlin.String, `remotePath`: kotlin.String): kotlin.String
+    
+    /**
+     * Send several files into one folder on a paired device, as one batch.
+     *
+     * `docs/engine-contract.md`, item 5. Each file lands at
+     * `remote_folder/<file name>`. Dials the device to confirm
+     * `remote_folder` is really a folder before anything is queued, the
+     * same way `pull_folder` confirms its own folder by listing it.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired`, `Runtime::NotStarted`, an `OpError`
+     * code when the dial or the folder check fails, and
+     * `OpError::NotADirectory` when `remote_folder` names a file on the
+     * peer.
+     */
+    fun `pushFiles`(`deviceKeyHex`: kotlin.String, `localPaths`: List<kotlin.String>, `remoteFolder`: kotlin.String): kotlin.String
+    
+    /**
      * Restart a failed transfer from its resume point.
      *
      * # Errors
@@ -2322,6 +2371,71 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         
         FfiConverterString.lower(`deviceKeyHex`),
         FfiConverterString.lower(`remotePath`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Send one file to a paired device.
+     *
+     * `docs/engine-contract.md`, item 5. `local_path` is absolute on this
+     * device; `remote_path` is root-relative on the peer and names the
+     * file, not its folder. Runs on its own thread, the same as `pull`, and
+     * resumes on its own when the device becomes reachable again.
+     *
+     * # Errors
+     *
+     * Returns a `PathError` code when `remote_path` is refused, and
+     * `Runtime::NotPaired` when the device is not stored. A local file that
+     * is missing, a directory, a symlink, or a special file, and a
+     * read-only root on the peer, surface as the matching error on the
+     * transfer row instead, once a worker attempts it. See `push.rs`.
+     */
+    @Throws(FerryException::class)override fun `push`(`deviceKeyHex`: kotlin.String, `localPath`: kotlin.String, `remotePath`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_push(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterString.lower(`localPath`),
+        FfiConverterString.lower(`remotePath`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Send several files into one folder on a paired device, as one batch.
+     *
+     * `docs/engine-contract.md`, item 5. Each file lands at
+     * `remote_folder/<file name>`. Dials the device to confirm
+     * `remote_folder` is really a folder before anything is queued, the
+     * same way `pull_folder` confirms its own folder by listing it.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired`, `Runtime::NotStarted`, an `OpError`
+     * code when the dial or the folder check fails, and
+     * `OpError::NotADirectory` when `remote_folder` names a file on the
+     * peer.
+     */
+    @Throws(FerryException::class)override fun `pushFiles`(`deviceKeyHex`: kotlin.String, `localPaths`: List<kotlin.String>, `remoteFolder`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_push_files(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),
+        FfiConverterSequenceString.lower(`localPaths`),
+        FfiConverterString.lower(`remoteFolder`),_status)
 }
     }
     )
@@ -3891,8 +4005,6 @@ public object FfiConverterTypeDeviceKind: FfiConverterRustBuffer<DeviceKind> {
 
 /**
  * Which way a transfer moves a file.
- *
- * Always `Pull` until item 5 lands.
  */
 
 enum class Direction {
@@ -4733,6 +4845,34 @@ public object FfiConverterOptionalTypeTransport: FfiConverterRustBuffer<Transpor
         } else {
             buf.put(1)
             FfiConverterTypeTransport.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
+    override fun read(buf: ByteBuffer): List<kotlin.String> {
+        val len = buf.getInt()
+        return List<kotlin.String>(len) {
+            FfiConverterString.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<kotlin.String>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterString.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<kotlin.String>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterString.write(it, buf)
         }
     }
 }

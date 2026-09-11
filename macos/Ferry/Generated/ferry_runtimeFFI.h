@@ -363,6 +363,16 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_pull(uint64_t ptr, RustBuffer d
 RustBuffer uniffi_ferry_runtime_fn_method_engine_pull_folder(uint64_t ptr, RustBuffer device_key_hex, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PUSH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PUSH
+RustBuffer uniffi_ferry_runtime_fn_method_engine_push(uint64_t ptr, RustBuffer device_key_hex, RustBuffer local_path, RustBuffer remote_path, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PUSH_FILES
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PUSH_FILES
+RustBuffer uniffi_ferry_runtime_fn_method_engine_push_files(uint64_t ptr, RustBuffer device_key_hex, RustBuffer local_paths, RustBuffer remote_folder, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RETRY
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_RETRY
 void uniffi_ferry_runtime_fn_method_engine_retry(uint64_t ptr, RustBuffer transfer_id, RustCallStatus *_Nonnull out_status
@@ -797,6 +807,18 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_pull(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PULL_FOLDER
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PULL_FOLDER
 uint16_t uniffi_ferry_runtime_checksum_method_engine_pull_folder(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PUSH
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PUSH
+uint16_t uniffi_ferry_runtime_checksum_method_engine_push(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PUSH_FILES
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_PUSH_FILES
+uint16_t uniffi_ferry_runtime_checksum_method_engine_push_files(void
     
 );
 #endif
