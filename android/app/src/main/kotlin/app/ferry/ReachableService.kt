@@ -89,9 +89,15 @@ class ReachableService : Service() {
         // Stopping here is the only chance left to release the engine in
         // that case, so the lock file does not stay held with nothing on
         // screen and no service either.
+        //
+        // stop() joins every worker and can take several seconds against a
+        // peer that stopped answering. This runs on the main thread same as
+        // MainActivity.onDestroy, and for the same reason: a plain thread,
+        // not a coroutine, because a coroutine scoped to this service would
+        // be cancelled by this same onDestroy.
         val app = application as? FerryApplication
         if (app == null || !app.hasActivity()) {
-            FerryEngine.stop()
+            Thread { FerryEngine.stop() }.start()
         }
         super.onDestroy()
     }
