@@ -49,6 +49,14 @@ class ReachableService : Service() {
     override fun onDestroy() {
         FerryEngine.setReachable(false)
         running = false
+        // The activity can have finished while this service kept running.
+        // Stopping here is the only chance left to release the engine in
+        // that case, so the lock file does not stay held with nothing on
+        // screen and no service either.
+        val app = application as? FerryApplication
+        if (app == null || !app.hasActivity()) {
+            FerryEngine.stop()
+        }
         super.onDestroy()
     }
 
