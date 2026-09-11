@@ -599,6 +599,9 @@ first, because Finder expects it; the wire stays non-recursive. `MOVE` is
 `rename` within one root; across roots it is 502. `COPY` of a file reads
 and writes through the bridge; `COPY` of a folder is 403. `PROPPATCH`
 sets the modified time when asked and answers 403 per property otherwise.
+A `.ferry-part` name is 404 on `GET`, `HEAD`, and `PROPFIND`, and never
+listed. A failed landing removes the spool file. A write on a locked
+resource without its token is 423.
 
 **Lifecycle.** The Mac app starts the bridge and mounts when a phone
 becomes reachable, names the volume after the device, and reports the
@@ -642,7 +645,7 @@ fn offer_scanned(&self, payload: Vec<u8>) -> Result<(), FerryError>;
 
 // PairingState gains
 Offering { offer: PairingOffer },
-Requested { name: String, transport: Transport },
+Requested { name: String, kind: DeviceKind, transport: Transport },
 ```
 
 **Flow.** `start_pairing_with(Qr)` on the Mac makes a nonce and a two
