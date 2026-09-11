@@ -42,7 +42,7 @@ use ferry_core::peers::DeviceKind as CoreDeviceKind;
 use ferry_core::rpc::{Client, RpcError, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
-    AccessVerb, Actor, Config, DeviceKind, Direction, Engine, EngineListener, KeyPair,
+    AccessVerb, Actor, Config, DeviceKind, Direction, Engine, EngineListener, KeyPair, Origin,
     PairingMethod, PairingState, Root, TransferState, Transport, generate_key,
 };
 
@@ -775,6 +775,80 @@ fn turning_on_automatic_copying_copies_the_camera_folder_once() {
     mac.inbox.wait_until("the second run to finish", move || {
         engine.auto_copy(wanted.clone()).last_run_files == Some(0)
     });
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// G2: `maybe_spawn_run`'s guard used to release a device's run slot the
+/// moment `run` returned, right after the batch was queued, not once the
+/// batch it queued actually finished moving files. `set_auto_copy(true)`
+/// is itself one of item 14's three triggers, so calling it a second time
+/// while the first run's batch is still moving is a legitimate second
+/// trigger, not a test artifact, and it must start no second run.
+#[test]
+fn a_second_reachability_transition_during_a_moving_batch_starts_no_second_run() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("DCIM")).expect("a folder for the camera roll");
+    // Large enough that the pull it starts is still moving by the time the
+    // test polls for it and fires the second trigger: many sequential
+    // one-mebibyte chunk reads over loopback take measurably longer than
+    // one poll tick, unlike a file so small the whole batch could finish
+    // before the test ever observes it in flight.
+    let big = vec![7u8; 48 * 1024 * 1024];
+    std::fs::write(phone.shared_root.join("DCIM/big.bin"), &big)
+        .expect("the phone's shared folder should accept a file");
+
+    mac.engine
+        .list(phone_key.clone(), String::new())
+        .expect("listing the phone's roots should succeed");
+
+    mac.engine
+        .set_auto_copy(phone_key.clone(), true)
+        .expect("the device is paired, so the switch should turn on");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = phone_key.clone();
+    mac.inbox.wait_until(
+        "the automatic batch to appear and still be moving",
+        move || {
+            engine.batches().iter().any(|b| {
+                b.device_key_hex == wanted
+                    && b.origin == Origin::Automatic
+                    && b.ended_unix_secs.is_none()
+            })
+        },
+    );
+
+    mac.engine
+        .set_auto_copy(phone_key.clone(), true)
+        .expect("turning it on again while it is already on should still succeed");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = phone_key.clone();
+    mac.inbox.wait_until("the run to finish", move || {
+        engine.auto_copy(wanted.clone()).last_run_files == Some(1)
+    });
+
+    assert_eq!(
+        std::fs::read(mac.download_root.join("DCIM/big.bin")).expect("big.bin should have landed"),
+        big,
+        "the file lands whole and exactly once"
+    );
+
+    let automatic_batches = mac
+        .engine
+        .batches()
+        .into_iter()
+        .filter(|b| b.device_key_hex == phone_key && b.origin == Origin::Automatic)
+        .count();
+    assert_eq!(
+        automatic_batches, 1,
+        "the second trigger must not have queued a second batch"
+    );
 
     mac.engine.stop();
     phone.engine.stop();

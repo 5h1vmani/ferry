@@ -336,6 +336,14 @@ pub(crate) fn record_run(
     store.record_run(device_key_hex, ended_unix_secs, files);
     drop(store.save());
     drop(store);
+    // G2: a run that queued a batch holds the device's slot in
+    // `auto_copy_running` past `run`'s own return, so a second reachability
+    // transition while the batch is still moving files starts no second
+    // run. This is where that slot is released once the batch it queued
+    // reaches its end. A run that queued nothing already released its own
+    // slot when `run` returned; removing an already-removed key here is a
+    // no-op, so calling this unconditionally is safe either way.
+    lock(&shared.auto_copy_running).remove(device_key_hex);
     notify(shared, Change::Devices);
 }
 
@@ -366,25 +374,41 @@ fn maybe_spawn_run(shared: &Arc<Shared>, device_key_hex: &str) {
 }
 
 /// Releases this device's slot in `shared.auto_copy_running` on every way
-/// out of [`run`], including an early return or a panic, so a run that
-/// fails never leaves the device stuck unable to run again.
+/// out of [`run`], including an early return or a panic, unless this run
+/// queued a batch: [`RunGuard::queued`] marks that, and then the slot
+/// stays held, released instead by [`record_run`] once that batch reaches
+/// its end. G2: this is what stops a second reachability transition from
+/// starting a second run while the first run's batch is still moving
+/// files.
 struct RunGuard<'a> {
     shared: &'a Arc<Shared>,
     device_key_hex: &'a str,
+    queued: bool,
+}
+
+impl RunGuard<'_> {
+    /// Mark that this run queued a batch, so its slot outlives `run`
+    /// itself.
+    fn queued(&mut self) {
+        self.queued = true;
+    }
 }
 
 impl Drop for RunGuard<'_> {
     fn drop(&mut self) {
-        lock(&self.shared.auto_copy_running).remove(self.device_key_hex);
+        if !self.queued {
+            lock(&self.shared.auto_copy_running).remove(self.device_key_hex);
+        }
     }
 }
 
 fn run(shared: &Arc<Shared>, device_key_hex: &str) {
-    let _guard = RunGuard {
+    let mut guard = RunGuard {
         shared,
         device_key_hex,
+        queued: false,
     };
-    run_inner(shared, device_key_hex);
+    run_inner(shared, device_key_hex, &mut guard);
 }
 
 /// The run's own connection failed, or the peer's answer was too large to
@@ -393,7 +417,7 @@ fn run(shared: &Arc<Shared>, device_key_hex: &str) {
 /// nobody is watching.
 struct WalkFailed;
 
-fn run_inner(shared: &Arc<Shared>, device_key_hex: &str) -> Option<()> {
+fn run_inner(shared: &Arc<Shared>, device_key_hex: &str, guard: &mut RunGuard<'_>) -> Option<()> {
     let key = key_from_hex(device_key_hex)?;
     lock(&shared.state).peers.get(&key)?;
 
@@ -447,7 +471,12 @@ fn run_inner(shared: &Arc<Shared>, device_key_hex: &str) -> Option<()> {
         return Some(());
     }
 
-    queue_batch(shared, device_key_hex, &source, &to_queue);
+    if queue_batch(shared, device_key_hex, &source, &to_queue) {
+        // The slot now stays held until `record_run` releases it, once
+        // `transfer::finish` sees every transfer in this batch reach `Done`
+        // or `Failed`.
+        guard.queued();
+    }
     Some(())
 }
 
@@ -456,12 +485,16 @@ fn run_inner(shared: &Arc<Shared>, device_key_hex: &str) -> Option<()> {
 /// `transfer::finish` records the run once every transfer in it ends. On a
 /// failure to write the batch record, or to build every row, nothing is
 /// queued and nothing is recorded; the files found are still new next run.
+///
+/// Returns whether a batch was actually queued: `run_inner` uses this to
+/// decide whether its `RunGuard` keeps the device's run slot held for
+/// `record_run` to release later, or releases it itself at once.
 fn queue_batch(
     shared: &Arc<Shared>,
     device_key_hex: &str,
     source: &RemotePath,
     files: &[(RemotePath, u64)],
-) {
+) -> bool {
     let started_unix_secs = now_unix_secs();
     let prefix = format!("{}/", source.as_str());
     let chunk_size = *lock(&shared.chunk_size);
@@ -473,10 +506,10 @@ fn queue_batch(
             .strip_prefix(&prefix)
             .unwrap_or(full_path.as_str());
         let Ok(destination) = RemotePath::parse(&format!("DCIM/{relative}")) else {
-            return;
+            return false;
         };
         let Ok(session) = SessionId::generate() else {
-            return;
+            return false;
         };
         let id = format!("{device_key_hex}-{session}");
         let file_name = destination
@@ -510,7 +543,7 @@ fn queue_batch(
     }
 
     let Ok(batch_session) = SessionId::generate() else {
-        return;
+        return false;
     };
     let batch_id = format!("{device_key_hex}-{batch_session}");
     for row in &mut rows {
@@ -529,7 +562,7 @@ fn queue_batch(
         done_bytes: 0,
     };
     if batch::write_batch(&shared.batch_path(&batch_id), &BatchRecord::of(&batch_row)).is_err() {
-        return;
+        return false;
     }
 
     {
@@ -543,6 +576,7 @@ fn queue_batch(
     for id in &ids {
         transfer::spawn(shared, id);
     }
+    true
 }
 
 // ---------------------------------------------------------------------------
