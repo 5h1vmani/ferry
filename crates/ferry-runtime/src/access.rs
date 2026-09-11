@@ -457,6 +457,44 @@ fn is_day_file_name(name: &str) -> bool {
     name.len() == 8 && name.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// Restrict `dir` to this account only, the way `ferry-core`'s `peers.rs`
+/// restricts the files it writes. The access log names every path a paired
+/// device has touched, so the folder it lives in gets the same treatment as
+/// a secret key: readable and writable by nobody else.
+#[cfg(unix)]
+fn set_dir_private(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn set_dir_private(_dir: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+/// Open `path` in append mode, creating it if it is not there yet, in mode
+/// `0o600` on Unix so a day file is readable only by this account. The mode
+/// is set as part of the same syscall that creates the file, as
+/// `ferry-core`'s `peers.rs` does for a secret key, so there is no moment
+/// where a fresh day file exists with a wider mode. Unlike a secret key, a
+/// day file is opened many times as the day goes on, so this cannot use
+/// `create_new`: reopening an existing file leaves its mode exactly as it
+/// was, which is what an append needs.
+#[cfg(unix)]
+fn open_day_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_day_file(path: &Path) -> io::Result<fs::File> {
+    fs::OpenOptions::new().append(true).create(true).open(path)
+}
+
 /// The access log, one file per UTC day, under `<data_dir>/access_log/`.
 ///
 /// See the module documentation for the on-disk framing and the retention
@@ -484,6 +522,7 @@ impl AccessLog {
     pub(crate) fn open(data_dir: &Path) -> Result<Self, AccessLogError> {
         let dir = data_dir.join("access_log");
         fs::create_dir_all(&dir)?;
+        set_dir_private(&dir)?;
         Ok(Self {
             dir,
             sequences: HashMap::new(),
@@ -556,10 +595,7 @@ impl AccessLog {
             frame.u8(FORMAT_VERSION);
         }
         frame.bytes(&encode_entry(fields, at_unix_secs));
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)?;
+        let mut file = open_day_file(&path)?;
         file.write_all(&frame.finish())?;
         file.sync_all()?;
         self.sequences.insert(day, next_sequence + 1);
@@ -882,6 +918,36 @@ mod tests {
         assert_eq!(found[0].bytes, Some(10));
         assert_eq!(found[0].at_unix_secs, BASE_TIME);
         assert!(found[0].id.starts_with(&super::day_key(BASE_TIME)));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn on_unix_the_folder_and_its_day_files_are_created_readable_by_this_account_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("permissions");
+        let mut log = AccessLog::open(&dir).expect("the store should open");
+        log.append(
+            BASE_TIME,
+            &fields("device", AccessVerb::Read, "one", Some(1)),
+        )
+        .expect("the append should succeed");
+
+        let access_log_dir = dir.join("access_log");
+        let dir_mode = fs::metadata(&access_log_dir)
+            .expect("the folder should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700, "the access log folder is private");
+
+        let day_path = access_log_dir.join(super::day_key(BASE_TIME));
+        let file_mode = fs::metadata(&day_path)
+            .expect("the day file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "a day file is private");
     }
 
     #[test]
