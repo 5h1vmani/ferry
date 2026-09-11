@@ -617,3 +617,30 @@ fn forget_closes_the_devices_pool_so_an_open_bridge_serves_nothing_more() {
     mac.engine.stop();
     phone.engine.stop();
 }
+
+// ---------------------------------------------------------------------------
+// Audit `docs/audits/third-run-engine.md`, finding 10: a bridge after `stop`.
+// ---------------------------------------------------------------------------
+
+/// A `mount_start` that lands after `stop` began must be refused.
+///
+/// `Engine::stop` copies the keys of every running bridge and then stops
+/// each one. A bridge started after that copy was never joined, so one
+/// loopback port and two threads stayed alive after `stop` returned, each
+/// holding a handle on the engine's shared state.
+#[test]
+fn a_stopped_engine_starts_no_new_bridge() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let phone_key = pair(&mac, &phone);
+
+    mac.engine.stop();
+
+    let error = mac
+        .engine
+        .mount_start(phone_key)
+        .expect_err("a stopped engine should start no bridge");
+    assert_eq!(code_of_error(&error), "Runtime::NotReachable");
+
+    phone.engine.stop();
+}

@@ -53,7 +53,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use crate::errors::failed_with;
+use crate::errors::{failed, failed_with};
 use crate::state::lock as lock_mutex;
 use crate::{FerryError, MountEndpoint};
 
@@ -118,9 +118,9 @@ impl MountRegistry {
     /// # Errors
     ///
     /// Returns `Runtime::MountFailed` when the loopback port cannot be
-    /// bound or the password cannot be generated, and `Runtime::NotPaired`
+    /// bound or the password cannot be generated, `Runtime::NotPaired`
     /// when the device was forgotten between the caller's own check and
-    /// this call.
+    /// this call, and `Runtime::NotReachable` when the engine is stopping.
     pub(crate) fn start(
         &self,
         shared: &Arc<crate::engine::Shared>,
@@ -128,6 +128,15 @@ impl MountRegistry {
         device_name: &str,
     ) -> Result<MountEndpoint, FerryError> {
         let mut mounts = lock_mutex(&self.mounts);
+        // `Engine::stop` sets `stopping`, then copies the keys here and
+        // stops each one. A bridge started after that copy would never be
+        // joined, so its port and its two threads would outlive `stop`.
+        // Refusing here, under the same lock the copy takes, is what closes
+        // that gap. An endpoint already running is refused too: `stop_all`
+        // is about to take it away.
+        if shared.stopping() {
+            return Err(failed("Runtime::NotReachable"));
+        }
         if let Some(mount) = mounts.get(device_key_hex) {
             return Ok(mount.endpoint.clone());
         }
