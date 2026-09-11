@@ -33,6 +33,8 @@
 
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use ferry_core::chunk::Manifest;
 use ferry_core::limits;
@@ -52,23 +54,86 @@ use super::http;
 /// files while it waits.
 pub(crate) const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 
-/// A spool file's path, removed the moment this drops. Every caller of
-/// [`new_spool_path`] holds one of these for exactly as long as the spool
-/// file may exist: a short body, a dropped connection, or any other early
-/// return cleans it up the same way a successful landing's own explicit
-/// `drop` does. `docs/engine-contract.md`, item 6: "a failed landing
-/// removes the spool file."
-pub(crate) struct SpoolFile(PathBuf);
+/// The spool folder's running total, across every device, checked against
+/// [`MAX_SPOOL_BYTES`] instead of a fresh recursive walk of the folder on
+/// every `PUT` and `COPY` (`docs/audits/fable-engineering.md`, finding 4;
+/// walking on every request made the cost of a Finder copy grow with the
+/// square of the file count).
+///
+/// One instance lives on `dav::MountRegistry`, for the life of the engine.
+/// [`SpoolBytes::init_from`] walks the folder once, the first time any
+/// bridge starts; after that, [`new_spool_path`] adds a created file's
+/// reserved size and [`SpoolFile`]'s `Drop`, together with [`sweep_spool`],
+/// subtract a removed one's, so the total stays exact without walking
+/// again.
+pub(crate) struct SpoolBytes {
+    total: AtomicU64,
+    walked: AtomicBool,
+}
+
+impl SpoolBytes {
+    pub(crate) const fn new() -> Self {
+        Self {
+            total: AtomicU64::new(0),
+            walked: AtomicBool::new(false),
+        }
+    }
+
+    /// Walks `root` once, the very first time this is called for this
+    /// instance. Every call after that is a no-op: `add` and `sub` have
+    /// kept the total exact since the first walk.
+    pub(crate) fn init_from(&self, root: &Path) {
+        if self.walked.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.total.store(dir_bytes(root), Ordering::SeqCst);
+    }
+
+    /// The running total right now.
+    pub(crate) fn get(&self) -> u64 {
+        self.total.load(Ordering::SeqCst)
+    }
+
+    fn add(&self, bytes: u64) {
+        self.total.fetch_add(bytes, Ordering::SeqCst);
+    }
+
+    /// Subtracts `bytes`, saturating at zero: a mismatch between what was
+    /// added and what is actually removed must never wrap this past
+    /// `u64::MAX` and make the cap look free when the folder is, in truth,
+    /// still full.
+    fn sub(&self, bytes: u64) {
+        let _ = self
+            .total
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_sub(bytes))
+            });
+    }
+}
+
+/// A spool file's path and its reserved size, removed the moment this
+/// drops. Every caller of [`new_spool_path`] holds one of these for exactly
+/// as long as the spool file may exist: a short body, a dropped connection,
+/// or any other early return cleans it up the same way a successful
+/// landing's own explicit `drop` does, and lowers [`SpoolBytes`] by the same
+/// amount [`new_spool_path`] raised it by. `docs/engine-contract.md`, item
+/// 6: "a failed landing removes the spool file."
+pub(crate) struct SpoolFile {
+    path: PathBuf,
+    size: u64,
+    shared: Arc<Shared>,
+}
 
 impl SpoolFile {
     pub(crate) fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
 impl Drop for SpoolFile {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        let _ = std::fs::remove_file(&self.path);
+        self.shared.mounts.spool_bytes.sub(self.size);
     }
 }
 
@@ -84,42 +149,58 @@ pub(crate) enum SpoolError {
 
 /// Creates a fresh, empty spool file under
 /// `data_dir/dav_spool/<device key hex>/` with a random name, and returns
-/// it.
+/// it. `expected_len` is the number of bytes this landing will write into
+/// it (a `PUT`'s `Content-Length`, or a `COPY`'s source size): reserved in
+/// [`SpoolBytes`] the moment this returns `Ok`, and released by
+/// [`SpoolFile`]'s `Drop`, whether or not the landing that follows
+/// succeeds.
 ///
 /// # Errors
 ///
-/// Returns [`SpoolError::Full`] when the spool folder's total size is
+/// Returns [`SpoolError::Full`] when the spool folder's running total is
 /// already at or past [`MAX_SPOOL_BYTES`], and [`SpoolError::Failed`] when
 /// the folder cannot be made or a name cannot be generated.
 pub(crate) fn new_spool_path(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     device_key_hex: &str,
+    expected_len: u64,
 ) -> Result<SpoolFile, SpoolError> {
     let root = shared.data_dir.join("dav_spool");
     let dir = root.join(device_key_hex);
     std::fs::create_dir_all(&dir).map_err(|_| SpoolError::Failed)?;
-    if dir_bytes(&root) >= MAX_SPOOL_BYTES {
+    if shared.mounts.spool_bytes.get() >= MAX_SPOOL_BYTES {
         return Err(SpoolError::Full);
     }
     let name = super::random_hex(16).map_err(|_| SpoolError::Failed)?;
-    Ok(SpoolFile(dir.join(name)))
+    shared.mounts.spool_bytes.add(expected_len);
+    Ok(SpoolFile {
+        path: dir.join(name),
+        size: expected_len,
+        shared: Arc::clone(shared),
+    })
 }
 
 /// Removes every leftover file under `data_dir/dav_spool/<device key
 /// hex>/`, left behind by a crash or an ungraceful quit before this
-/// device's bridge last stopped. Called once, at `mount_start`, only on a
-/// bridge that is not already running: a live bridge's own spool files are
-/// never swept out from under it.
+/// device's bridge last stopped, and lowers [`SpoolBytes`] by what was
+/// removed. Called once, at `mount_start`, only on a bridge that is not
+/// already running: a live bridge's own spool files are never swept out
+/// from under it.
 pub(crate) fn sweep_spool(shared: &Shared, device_key_hex: &str) {
     let dir = shared.data_dir.join("dav_spool").join(device_key_hex);
+    let removed = dir_bytes(&dir);
     let _ = std::fs::remove_dir_all(&dir);
+    shared.mounts.spool_bytes.sub(removed);
 }
 
 /// The combined size of every file under `dir`, walked recursively.
 ///
 /// Best effort: a folder that cannot be read contributes 0 rather than
-/// failing [`new_spool_path`] outright, so a transient I/O error here never
-/// wrongly refuses an otherwise healthy `PUT`.
+/// failing outright, so a transient I/O error here never wrongly refuses an
+/// otherwise healthy `PUT`. Used only by [`SpoolBytes::init_from`], once,
+/// and by [`sweep_spool`] to learn what it is about to remove; no longer
+/// called on every `PUT` or `COPY` (`docs/audits/fable-engineering.md`,
+/// finding 4).
 fn dir_bytes(dir: &Path) -> u64 {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;

@@ -903,7 +903,7 @@ fn copy_verb(
         return no_body(out, "403 Forbidden");
     }
 
-    let spool = match put::new_spool_path(shared, &bridge.device_key_hex) {
+    let spool = match put::new_spool_path(shared, &bridge.device_key_hex, entry.size) {
         Ok(spool) => spool,
         Err(put::SpoolError::Full) => return no_body(out, "507 Insufficient Storage"),
         Err(put::SpoolError::Failed) => return no_body(out, "500 Internal Server Error"),
@@ -1026,7 +1026,7 @@ fn put_file(
     if !bridge.locks.allows(target, head.header("if")) {
         refuse!("423 Locked");
     }
-    let spool = match put::new_spool_path(shared, &bridge.device_key_hex) {
+    let spool = match put::new_spool_path(shared, &bridge.device_key_hex, content_length) {
         Ok(spool) => spool,
         Err(put::SpoolError::Full) => refuse!("507 Insufficient Storage"),
         Err(put::SpoolError::Failed) => refuse!("500 Internal Server Error"),

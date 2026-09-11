@@ -97,13 +97,26 @@ struct Mount {
 /// idempotent.
 pub(crate) struct MountRegistry {
     mounts: Mutex<BTreeMap<String, Mount>>,
+    /// The spool folder's running byte total, across every device.
+    /// `docs/audits/fable-engineering.md`, finding 4: kept exact instead of
+    /// walked on every `PUT` and `COPY`. See [`put::SpoolBytes`].
+    spool_bytes: put::SpoolBytes,
 }
 
 impl MountRegistry {
     pub(crate) fn new() -> Self {
         Self {
             mounts: Mutex::new(BTreeMap::new()),
+            spool_bytes: put::SpoolBytes::new(),
         }
+    }
+
+    /// The spool folder's total size right now. Test only, through
+    /// `Engine::spool_bytes`: proves the running count kept by
+    /// [`put::SpoolBytes`] matches what a walk of the folder would find,
+    /// without paying for that walk. Not exported to the apps.
+    pub(crate) fn spool_bytes_total(&self) -> u64 {
+        self.spool_bytes.get()
     }
 
     /// Start serving `device_key_hex`'s roots over `WebDAV` on a random
@@ -146,6 +159,13 @@ impl MountRegistry {
         // Anything still here is left over from a crash or an ungraceful
         // quit before this device's bridge last stopped.
         put::sweep_spool(shared, device_key_hex);
+
+        // Finding 4: the first bridge this engine ever starts walks the
+        // whole spool folder once, to seed the running count every later
+        // `PUT` and `COPY` keeps exact. Every start after that is a no-op
+        // here; `self.spool_bytes` already tracks reality.
+        self.spool_bytes
+            .init_from(&shared.data_dir.join("dav_spool"));
 
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|error| failed_with("Runtime::MountFailed", &error.to_string()))?;

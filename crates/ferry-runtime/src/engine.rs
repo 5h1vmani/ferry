@@ -2309,6 +2309,19 @@ impl Engine {
         u32::try_from(lock(&self.shared.state).workers).unwrap_or(u32::MAX)
     }
 
+    /// The spool folder's total size right now, across every device.
+    ///
+    /// Kept as a running count instead of walked on every `PUT` and `COPY`
+    /// (`docs/audits/fable-engineering.md`, finding 4). The integration
+    /// test needs it to prove that count stays exact across two `PUT`s and
+    /// a removed spool file, since a walk of the count's own bookkeeping
+    /// cannot be observed any other way. It is not exported to the apps.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn spool_bytes(&self) -> u64 {
+        self.shared.mounts.spool_bytes_total()
+    }
+
     /// How many connections this engine has accepted and begun to serve.
     ///
     /// The item 19 test needs it to prove that two listings in a row reuse

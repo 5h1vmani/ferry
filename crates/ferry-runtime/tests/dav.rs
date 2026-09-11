@@ -1429,7 +1429,13 @@ fn the_bridge_answers_every_i2_write_verb() {
 }
 
 #[test]
-// I2-3: the spool file is never left behind, and its folder has a bound.
+// I2-3: the spool file is never left behind. The folder's total size cap
+// is its own test, `put_refuses_once_a_leftover_already_fills_the_spool_cap`
+// below: `docs/audits/fable-engineering.md`, finding 4, moved the cap check
+// from a walk on every `PUT` to a running count seeded by one walk at the
+// first `mount_start`, which this test's own `mount_start` call, already
+// past by the time a `PUT` here could plant a sparse file, can no longer
+// see.
 fn put_bounds_the_spool_folder_and_cleans_up_a_dropped_body() {
     let mac_key = generate_key().expect("a fresh key pair");
     let phone_key = generate_key().expect("a fresh key pair");
@@ -1515,15 +1521,81 @@ fn put_bounds_the_spool_folder_and_cleans_up_a_dropped_body() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // --- The spool folder's total size cap answers 507. A sparse file
-    // reports the size `new_spool_path` checks against without this test
-    // writing anywhere near 64 GiB of real bytes.
-    std::fs::create_dir_all(&spool_dir).expect("the spool folder should exist");
-    let sparse = spool_dir.join("already-huge");
+    phone.engine.stop();
+    mac.engine.stop();
+}
+
+#[test]
+// I2-3: the spool folder's total size cap answers 507.
+//
+// `docs/audits/fable-engineering.md`, finding 4: the running count
+// `new_spool_path` checks against is seeded by one walk of the whole
+// `dav_spool` folder, the first time any bridge on this engine starts
+// (`dav::MountRegistry::start`), not by a fresh walk on every `PUT`. So
+// this plants its sparse, 64 GiB leftover under a device key that is not
+// the one about to mount, before `mount_start` ever runs: a real leftover
+// from a crash sits exactly like this, under whichever device's folder
+// crashed, until that device's own bridge starts and sweeps it, and the
+// cap must still see it in the meantime. Planting it under the mounting
+// device's own key would not prove anything, since `MountRegistry::start`
+// sweeps that key's folder, real leftover or test fixture alike, before
+// the one walk ever runs.
+fn put_refuses_once_a_leftover_already_fills_the_spool_cap() {
+    let mac_key = generate_key().expect("a fresh key pair");
+    let phone_key = generate_key().expect("a fresh key pair");
+    let mac = build_side(
+        "Cap Mac",
+        DeviceKind::Mac,
+        mac_key.clone(),
+        &[],
+        &phone_key,
+        "Cap Phone",
+        DeviceKind::Phone,
+    );
+    let phone = build_side(
+        "Cap Phone",
+        DeviceKind::Phone,
+        phone_key,
+        &[],
+        &mac_key,
+        "Cap Mac",
+        DeviceKind::Mac,
+    );
+    phone.engine.set_reachable(true);
+    let key_hex = mac
+        .engine
+        .devices()
+        .first()
+        .expect("the phone should already be paired")
+        .key_hex
+        .clone();
+
+    // A sparse file reports the size the running count is seeded with
+    // without this test writing anywhere near 64 GiB of real bytes. It
+    // sits under a device key distinct from `key_hex`, so the sweep
+    // `mount_start` runs for `key_hex` never touches it, and the one walk
+    // that follows the sweep counts it.
+    let leftover_dir = mac.data.path().join("dav_spool").join("leftover-device");
+    std::fs::create_dir_all(&leftover_dir).expect("the leftover folder should create");
+    let sparse = leftover_dir.join("already-huge");
     let file = std::fs::File::create(&sparse).expect("a sparse file should create");
     file.set_len(64 * 1024 * 1024 * 1024)
         .expect("a sparse file should grow without writing real bytes");
     drop(file);
+
+    mac.engine.offer_candidate(loopback_addr(&phone));
+    mac.engine
+        .list(key_hex.clone(), String::new())
+        .expect("listing should succeed once dialable");
+    let endpoint = mac
+        .engine
+        .mount_start(key_hex)
+        .expect("mount_start should succeed, and walk the leftover into the running count");
+    let addr: SocketAddr = format!("127.0.0.1:{}", port_of(&endpoint.url))
+        .parse()
+        .expect("a loopback address");
+    let host = format!("127.0.0.1:{}", port_of(&endpoint.url));
+
     let mut client = TestClient::connect(addr);
     let response = client.request(
         "PUT",
@@ -1534,7 +1606,6 @@ fn put_bounds_the_spool_folder_and_cleans_up_a_dropped_body() {
         Some(&pattern(10)),
     );
     assert_eq!(response.status, 507);
-    std::fs::remove_file(&sparse).expect("the sparse fixture should clean up");
 
     phone.engine.stop();
     mac.engine.stop();
