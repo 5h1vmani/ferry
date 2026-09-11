@@ -701,6 +701,85 @@ fn pull_folder_groups_its_transfers_into_one_batch() {
 }
 
 // ---------------------------------------------------------------------------
+// Item 14: automatic copying, end to end over two real engines.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, item 14, over the real named-root system
+/// `pull_folder`'s own test above already proves: turning the switch on for
+/// a device that is already reachable copies its whole `DCIM` folder once,
+/// and turning it off then on again, with nothing new on the phone, copies
+/// nothing and still records that the run happened.
+#[test]
+fn turning_on_automatic_copying_copies_the_camera_folder_once() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("DCIM")).expect("a folder for the camera roll");
+    let bytes_a = sample_bytes();
+    let bytes_b = sample_bytes();
+    std::fs::write(phone.shared_root.join("DCIM/a.jpg"), &bytes_a)
+        .expect("the phone's shared folder should accept a file");
+    std::fs::write(phone.shared_root.join("DCIM/b.jpg"), &bytes_b)
+        .expect("the phone's shared folder should accept a file");
+
+    // Nothing has dialed the phone yet, so the Mac does not yet consider it
+    // reachable. A listing is the cheapest real operation that dials it.
+    mac.engine
+        .list(phone_key.clone(), String::new())
+        .expect("listing the phone's roots should succeed");
+
+    let before = mac.engine.auto_copy(phone_key.clone());
+    assert!(!before.enabled, "the switch starts off");
+
+    mac.engine
+        .set_auto_copy(phone_key.clone(), true)
+        .expect("the device is paired, so the switch should turn on");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = phone_key.clone();
+    mac.inbox.wait_until("the first run to finish", move || {
+        engine.auto_copy(wanted.clone()).last_run_files == Some(2)
+    });
+
+    let after_first_run = mac.engine.auto_copy(phone_key.clone());
+    assert!(after_first_run.enabled);
+    assert_eq!(after_first_run.source, "Root/DCIM");
+    assert_eq!(
+        after_first_run.destination,
+        format!("{}/DCIM", mac.download_root.display())
+    );
+    assert!(after_first_run.last_run_unix_secs.is_some());
+    assert_eq!(
+        std::fs::read(mac.download_root.join("DCIM/a.jpg")).expect("a.jpg should have landed"),
+        bytes_a
+    );
+    assert_eq!(
+        std::fs::read(mac.download_root.join("DCIM/b.jpg")).expect("b.jpg should have landed"),
+        bytes_b
+    );
+
+    // Turning the switch off and back on again is the alternative
+    // `docs/engine-contract.md` item 14 names to a second reachability
+    // transition, for proving the same files are never copied twice.
+    mac.engine
+        .set_auto_copy(phone_key.clone(), false)
+        .expect("turning the switch off should succeed");
+    mac.engine
+        .set_auto_copy(phone_key.clone(), true)
+        .expect("turning it back on should succeed");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = phone_key.clone();
+    mac.inbox.wait_until("the second run to finish", move || {
+        engine.auto_copy(wanted.clone()).last_run_files == Some(0)
+    });
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // Item 13: the access log records what each side did.
 // ---------------------------------------------------------------------------
 

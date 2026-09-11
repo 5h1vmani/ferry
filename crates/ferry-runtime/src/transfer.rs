@@ -66,7 +66,7 @@ use crate::guard::{Cut, StopAware};
 use crate::notify::Change;
 use crate::record::{FirstPass, Meta, Record, read_record, write_record};
 use crate::state::{key_from_hex, lock, now_unix_secs};
-use crate::{Direction, FerryError, TransferState, Transport};
+use crate::{Direction, FerryError, Origin, TransferState, Transport};
 
 /// The shortest wait before trying again.
 pub(crate) const BACKOFF_MIN: Duration = Duration::from_secs(1);
@@ -281,6 +281,8 @@ fn clear_running(shared: &Arc<Shared>, id: &str) {
 
 /// Write a transfer's new state down and tell the app.
 fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<FerryError>) {
+    let mut held_write: Option<(String, String, u64, i64)> = None;
+    let mut auto_copy_update: Option<(String, u32)> = None;
     let batch_update = {
         let mut locked = lock(&shared.state);
         let Some(row) = locked.transfers.get_mut(id) else {
@@ -300,13 +302,30 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
         let bytes_total = row.bytes_total;
         let batch_id = row.batch_id.clone();
 
+        // docs/engine-contract.md item 14: every completed pull, manual or
+        // automatic, writes a row to the held index. `source_size` and
+        // `source_mtime` are always set by the time a pull reaches `Done`:
+        // `first_pass`, above, sets both before the first chunk is asked
+        // for.
+        if state == TransferState::Done
+            && row.direction == Direction::Pull
+            && let (Some(size), Some(mtime)) = (row.source_size, row.source_mtime)
+        {
+            held_write = Some((
+                row.device_key_hex.clone(),
+                row.source.as_str().to_owned(),
+                size,
+                mtime,
+            ));
+        }
+
         // docs/engine-contract.md, batch D, item 2, and the D4 fix: this
         // row's own record is removed right after this, by the caller, once
         // it is `Done`, so a restart would not see it to count again. The
         // batch keeps a floor of its own, raised here and written down,
         // that `BatchRow::info` reports at least, once this row is gone.
-        if state == TransferState::Done {
-            batch_id.and_then(|batch_id| {
+        let batch_update = if state == TransferState::Done {
+            batch_id.clone().and_then(|batch_id| {
                 let batch = locked.batches.get_mut(&batch_id)?;
                 batch.done_files += 1;
                 batch.done_bytes += bytes_total;
@@ -314,7 +333,26 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
             })
         } else {
             None
+        };
+
+        // docs/engine-contract.md item 14: once every transfer in an
+        // automatic batch has reached `Done` or `Failed`, the batch has
+        // ended, and the run it came from is recorded. `BatchRow::info`
+        // already knows how to tell: `ended_unix_secs` is `Some` exactly
+        // once none of its transfers is still `Queued`, `Active` or
+        // `Paused`.
+        if matches!(state, TransferState::Done | TransferState::Failed)
+            && let Some(batch_id) = &batch_id
+            && let Some(batch) = locked.batches.get(batch_id)
+            && batch.origin == Origin::Automatic
+        {
+            let info = batch.info(&locked.transfers);
+            if info.ended_unix_secs.is_some() {
+                auto_copy_update = Some((batch.device_key_hex.clone(), info.files_done));
+            }
         }
+
+        batch_update
     };
     if let Some((path, record)) = batch_update {
         // The record is best effort here, the same as every other batch
@@ -322,8 +360,42 @@ fn finish(shared: &Arc<Shared>, id: &str, state: TransferState, error: Option<Fe
         // the live count still fills in for this run.
         drop(batch::write_batch(&path, &record));
     }
+    if let Some((device_key_hex, source_path, size, mtime)) = held_write {
+        record_held_row(shared, id, &device_key_hex, &source_path, size, mtime);
+    }
+    if let Some((device_key_hex, files_done)) = auto_copy_update {
+        crate::auto_copy::record_run(shared, &device_key_hex, now_unix_secs(), files_done);
+    }
     notify(shared, Change::Transfers);
     notify(shared, Change::Devices);
+}
+
+/// Write one row to the held index for a pull that just reached `Done`.
+///
+/// The record this transfer finished with still holds the manifest whose
+/// root hash the row needs; `run_once` removes that record right after
+/// `finish` returns. Best effort, the same as the batch record write above:
+/// a failed write here costs one file copied again, never a wrong answer.
+fn record_held_row(
+    shared: &Arc<Shared>,
+    id: &str,
+    device_key_hex: &str,
+    source_path: &str,
+    size: u64,
+    mtime: i64,
+) {
+    let Ok(Some(Record::Ready(_meta, transfer))) = read_record(&shared.record_path(id)) else {
+        return;
+    };
+    let mut held = lock(&shared.held);
+    held.record(crate::held::HeldRow {
+        device_key_hex: device_key_hex.to_owned(),
+        source_path: source_path.to_owned(),
+        size,
+        mtime,
+        root: *transfer.manifest.root().as_bytes(),
+    });
+    drop(held.save());
 }
 
 /// What one attempt needs to know, copied out from under the lock.

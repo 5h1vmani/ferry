@@ -218,12 +218,14 @@
 uniffi::setup_scaffolding!();
 
 mod access;
+mod auto_copy;
 mod batch;
 mod dav;
 mod engine;
 pub mod errors;
 mod folder;
 mod guard;
+mod held;
 mod notify;
 mod record;
 mod state;
@@ -442,7 +444,8 @@ pub struct TransferInfo {
 pub enum Origin {
     /// A person asked for it.
     Manual,
-    /// Ferry decided, under item 14's rule. Never emitted until item 14.
+    /// Ferry decided, under item 14's rule. `auto_copy.rs` is the only
+    /// place that ever builds one.
     Automatic,
 }
 
@@ -492,6 +495,32 @@ pub struct BatchInfo {
     /// The error of the first `Failed` transfer in this batch, in id order.
     /// `None` unless `state` is `Failed`.
     pub error: Option<FerryError>,
+}
+
+/// Job 7: whether this device copies a paired device's camera folder to
+/// itself on its own, and what its last run did.
+///
+/// `docs/engine-contract.md`, item 14. `source` and `destination` are never
+/// stored: `source` is learned fresh from the peer's own roots each time a
+/// run starts, and is the placeholder `"DCIM"` until the first run has
+/// learned it; `destination` is always computed from the current download
+/// folder. [`Engine::auto_copy`] always answers, even for a device that is
+/// not paired.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct AutoCopy {
+    /// Which device this describes.
+    pub device_key_hex: String,
+    /// Whether the switch is on.
+    pub enabled: bool,
+    /// The peer folder watched, root-relative: `"Internal storage/DCIM"`.
+    pub source: String,
+    /// Where copies land: `"<download_dir>/DCIM"`.
+    pub destination: String,
+    /// When the last run ended, if one ever has.
+    pub last_run_unix_secs: Option<i64>,
+    /// How many files the last run copied, zero when it found nothing new.
+    /// `Some` exactly when `last_run_unix_secs` is.
+    pub last_run_files: Option<u32>,
 }
 
 /// What kind of thing an [`Entry`] names, mirroring

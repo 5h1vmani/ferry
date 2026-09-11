@@ -434,7 +434,7 @@ calls `shutdown(Both)` on each after setting the flag. The clone lives in
 `Shared`, keyed by the same connection id the access log uses. Test: a
 peer that accepts and never answers; `stop` returns within two seconds.
 
-### 14. Automatic copying, job 7: open
+### 14. Automatic copying, job 7: built
 
 ```rust
 #[derive(uniffi::Record)]

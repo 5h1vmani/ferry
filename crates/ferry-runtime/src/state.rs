@@ -124,6 +124,12 @@ pub(crate) struct DeviceLive {
     /// not persisted: an OS mount does not survive an engine restart
     /// either, so nothing here needs to.
     pub(crate) mount_path: Option<String>,
+    /// This device's first shared root, as `auto_copy.rs`'s run last learned
+    /// it. `docs/engine-contract.md`, item 14: `AutoCopy.source` is never
+    /// stored, so this is only ever a cache for `Engine::auto_copy` to read
+    /// without a network call, cleared like everything else in `DeviceLive`
+    /// by an engine restart.
+    pub(crate) auto_copy_source_root: Option<String>,
 }
 
 /// One device that could be paired, with the address to dial it on.

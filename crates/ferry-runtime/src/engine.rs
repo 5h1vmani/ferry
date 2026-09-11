@@ -41,7 +41,7 @@ use crate::state::{
 };
 use crate::transfer::{self, BACKOFF_MIN};
 use crate::{
-    AccessEntry, AccessVerb, Actor, BatchInfo, Config, DeviceInfo, DeviceKind, Direction,
+    AccessEntry, AccessVerb, Actor, AutoCopy, BatchInfo, Config, DeviceInfo, DeviceKind, Direction,
     EngineListener, Entry, EntryKind, FerryError, KeyPair, MountEndpoint, Origin, PairingCandidate,
     PairingState, Root, Status, TransferInfo, TransferState, Transport,
 };
@@ -324,6 +324,19 @@ pub(crate) struct Shared {
     /// waiting for the peer or the idle timeout in `tcp.rs`.
     /// `docs/engine-contract.md` item 16c.
     pub(crate) sockets: Mutex<HashMap<u64, TcpStream>>,
+    // ---- Item 14: automatic copying. See `auto_copy.rs`. ----
+    /// The current download folder, as a path. Updated by `set_download_dir`
+    /// alongside `download_fs`, since `download_dir_config` is only ever the
+    /// value `new` was given. `Engine::auto_copy` reads this to report
+    /// `AutoCopy.destination`.
+    pub(crate) download_dir: Mutex<PathBuf>,
+    /// Every device's stored automatic copy setting.
+    pub(crate) auto_copy: Mutex<crate::auto_copy::AutoCopyStore>,
+    /// Every file this device has pulled to completion, manual or automatic.
+    pub(crate) held: Mutex<crate::held::HeldStore>,
+    /// Which devices have an automatic copy run in flight right now. One run
+    /// per device at a time.
+    pub(crate) auto_copy_running: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Shared {
@@ -671,6 +684,10 @@ impl Engine {
         };
         let peers = PeerStore::load(&data_dir.join("peers.bin"), assumed_peer_kind)
             .map_err(|_| bad_config("The paired device list could not be read."))?;
+        // docs/engine-contract.md item 14: a corrupt or missing file here is
+        // not a startup failure. See `auto_copy.rs` and `held.rs`.
+        let auto_copy = crate::auto_copy::AutoCopyStore::load(&data_dir.join("auto_copy"));
+        let held = crate::held::HeldStore::load(&data_dir.join("held"));
 
         // Last, because nothing below it can fail and leave the claim behind.
         let dir_lock = DirLock::take(data_dir.join("lock"))?;
@@ -706,6 +723,10 @@ impl Engine {
             next_connection: AtomicU64::new(0),
             mounts: dav::MountRegistry::new(),
             sockets: Mutex::new(HashMap::new()),
+            download_dir: Mutex::new(PathBuf::from(&config.download_dir)),
+            auto_copy: Mutex::new(auto_copy),
+            held: Mutex::new(held),
+            auto_copy_running: Mutex::new(std::collections::HashSet::new()),
         });
 
         load_saved_transfers(&shared);
@@ -805,6 +826,11 @@ impl Engine {
             .keep(std::thread::spawn(move || access_log_loop(&shared)));
 
         transfer::resume_all(&self.shared);
+        // docs/engine-contract.md item 14: the third of the run's three
+        // triggers. In practice nothing is reachable this early, since
+        // `state.live` starts empty every time `new` builds a fresh state;
+        // it is here for whatever later makes that not so.
+        crate::auto_copy::run_for_every_reachable_enabled(&self.shared);
         Ok(())
     }
 
@@ -983,6 +1009,9 @@ impl Engine {
         let fs = LocalFs::open(&path)
             .map_err(|_| bad_config("The download folder could not be opened."))?;
         *lock(&self.shared.download_fs) = Some(Arc::new(fs));
+        // docs/engine-contract.md item 14: `Engine::auto_copy` reports the
+        // current download folder, not the one `new` was given.
+        *lock(&self.shared.download_dir) = path;
         Ok(())
     }
 
@@ -1045,6 +1074,26 @@ impl Engine {
         }
         notify(&self.shared, Change::Devices);
         Ok(())
+    }
+
+    /// Job 7: whether this device copies a paired device's camera folder to
+    /// itself on its own, and what its last run did.
+    ///
+    /// `docs/engine-contract.md`, item 14. Always answers; see [`AutoCopy`].
+    #[must_use]
+    pub fn auto_copy(&self, device_key_hex: String) -> AutoCopy {
+        crate::auto_copy::get(&self.shared, &device_key_hex)
+    }
+
+    /// Turns automatic copying on or off for one device.
+    ///
+    /// `docs/engine-contract.md`, item 14.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::NotPaired` when no device has that key.
+    pub fn set_auto_copy(&self, device_key_hex: String, enabled: bool) -> Result<(), FerryError> {
+        crate::auto_copy::set_enabled(&self.shared, &device_key_hex, enabled)
     }
 
     /// Forget a device: remove its key and every transfer record for it.
@@ -2713,14 +2762,24 @@ pub(crate) fn mark_reachable(
     addr: SocketAddr,
     via: Transport,
 ) {
-    let mut state = lock(&shared.state);
-    let live: &mut DeviceLive = state.live_mut(key_hex);
-    live.reachable_via = Some(via);
-    live.last_addr = Some(addr);
-    live.last_seen_unix_secs = Some(now_unix_secs());
-    if via == Transport::Usb {
-        live.usb_port = Some(addr.port());
-    } else {
-        live.last_wifi_success_unix_secs = Some(now_unix_secs());
+    let became_reachable = {
+        let mut state = lock(&shared.state);
+        let live: &mut DeviceLive = state.live_mut(key_hex);
+        let was_reachable = live.reachable_via.is_some();
+        live.reachable_via = Some(via);
+        live.last_addr = Some(addr);
+        live.last_seen_unix_secs = Some(now_unix_secs());
+        if via == Transport::Usb {
+            live.usb_port = Some(addr.port());
+        } else {
+            live.last_wifi_success_unix_secs = Some(now_unix_secs());
+        }
+        !was_reachable
+    };
+    if became_reachable {
+        // docs/engine-contract.md item 14: the first of the run's three
+        // triggers. Outside the lock just released, since this may spawn a
+        // thread.
+        crate::auto_copy::on_became_reachable(shared, key_hex);
     }
 }
