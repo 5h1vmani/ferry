@@ -486,6 +486,13 @@ pub(crate) fn parse_rfc1123(text: &str) -> Option<i64> {
     let month_name = parts.next()?;
     let month = u32::try_from(MONTHS.iter().position(|m| *m == month_name)?).ok()? + 1;
     let year: i64 = parts.next()?.parse().ok()?;
+    // Checked before `days_from_civil` does any arithmetic on `year`: this
+    // is a proleptic Gregorian calculation, not a validated calendar, and
+    // an extreme year is not a real date this bridge should ever be asked
+    // to store, whatever it would compute to.
+    if !(1601..=9999).contains(&year) {
+        return None;
+    }
     let time = parts.next()?;
     let mut time_parts = time.split(':');
     let hour: i64 = time_parts.next()?.parse().ok()?;
@@ -575,6 +582,28 @@ mod tests {
     fn parse_rfc1123_refuses_nonsense() {
         assert_eq!(parse_rfc1123("not a date"), None);
         assert_eq!(parse_rfc1123(""), None);
+    }
+
+    #[test]
+    fn parse_rfc1123_refuses_a_year_outside_1601_to_9999() {
+        assert_eq!(
+            parse_rfc1123("Tue, 09 Sep 1600 12:00:00 GMT"),
+            None,
+            "one year before the earliest year accepted"
+        );
+        assert_eq!(
+            parse_rfc1123("Fri, 09 Sep 10000 12:00:00 GMT"),
+            None,
+            "one year past the latest year accepted"
+        );
+        assert!(
+            parse_rfc1123("Wed, 09 Sep 1601 12:00:00 GMT").is_some(),
+            "the earliest year accepted"
+        );
+        assert!(
+            parse_rfc1123("Thu, 09 Sep 9999 12:00:00 GMT").is_some(),
+            "the latest year accepted"
+        );
     }
 
     #[test]
