@@ -197,6 +197,37 @@ Steps 7 to 11 were added for the I2 fix pass, saving.
     It should show a "rename" line for step 9 and a "delete" line for
     step 10, alongside the "write" line from step 8.
 
+### Part F: the phone's screens
+
+Added 11 September 2026, for the phone's own designed screens.
+
+1. On the phone, open Ferry. Devices should show the paired Mac,
+   reachable, with its transport badge.
+2. Start a copy between the two devices. The phone's Devices screen
+   should show a Transfers row under the Mac, with a bar and a speed.
+3. Open Settings on the phone. It should list this phone's name and
+   shared storage, then All files access, Notifications, and Location
+   under Permissions.
+4. Tap Access log. It should list, grouped by day, what this phone
+   served to the Mac and what it read from it.
+5. Under Paired, it should show the Mac's name, its key fingerprint, and
+   "Forget this Mac".
+
+### Part G: pairing by scan, from the phone
+
+Added 11 September 2026. This is `docs/engine-contract.md` item 12, the
+phone's half.
+
+1. On the phone, forget the Mac from Settings, so pairing can run again.
+2. On the phone, tap Pair, then "Scan the Mac's code". On the Mac, click
+   "Pair a phone"; it should show the square code.
+3. Grant the camera the first time the phone asks for it. The phone
+   should show "Point the camera at the Mac's screen."
+4. Point the camera at the Mac's code. The phone should show the Mac's
+   name and "Confirm on the Mac."
+5. On the Mac, confirm the phone that scanned in. Devices on the phone
+   should then show the Mac, reachable.
+
 ### What to send back
 
 For each part, one line: worked, or what you saw instead. Paste the exact
@@ -231,6 +262,37 @@ Mac app open, so the phone can reach it.
    inside one of the shared folders, then save. The save should finish
    with no error. The file should appear in that folder on the Mac. The
    phone's access log should gain a line saying this phone wrote it.
+
+### What to send back
+
+For each step, one line: worked, or what you saw instead. Paste the exact
+words from any error block.
+
+---
+
+## Task 6: trusted networks, both apps
+
+**Open.** Added 11 September 2026. This is `docs/engine-contract.md` item
+18. Wi-Fi presence should hold only for a network a paired device has
+joined before. Nothing below has run on a real phone yet.
+
+Build and install both apps as in task 3.
+
+1. Pair the phone and the Mac while both are on your home Wi-Fi.
+2. Open Settings on the Mac. The Networks section should list the home
+   network among the trusted names.
+3. Open Settings on the phone. The same Networks section should list the
+   home network too.
+4. On the Mac, remove the home network from the trusted list. The Mac's
+   presence control should say "Ferry is quiet on this network."
+5. On the phone, wait a few seconds. The Mac should drop out of the
+   phone's device list.
+6. On the Mac, add the home network to the trusted list again by hand.
+   The Mac should become reachable to the phone again within a few
+   seconds.
+7. On the phone, next time Android asks for the location permission,
+   refuse it. Every screen and every transfer already working should
+   behave exactly as it did before the refusal.
 
 ### What to send back
 
