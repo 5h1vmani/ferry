@@ -165,6 +165,10 @@ pub(crate) fn push_files(
         return Err(from_path(PathError::Empty));
     }
     let key = key_from_hex(device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+    let destinations: Vec<RemotePath> = local_paths
+        .iter()
+        .map(|local_path| destination_in_folder(local_path, &folder))
+        .collect::<Result<_, _>>()?;
     {
         let state = lock(&shared.state);
         if !state.started {
@@ -172,6 +176,19 @@ pub(crate) fn push_files(
         }
         if state.peers.get(&key).is_none() {
             return Err(failed("Runtime::NotPaired"));
+        }
+        // H5, extended to push_files: refuse the whole call, before
+        // anything is queued, when any planned destination collides with a
+        // live push already in flight on this device (`live_push_exists`,
+        // the same check `push` runs), or with another destination this
+        // very call would also create -- one batch whose own files would
+        // race each other into the same name.
+        for (index, destination) in destinations.iter().enumerate() {
+            if live_push_exists(&state, device_key_hex, destination)
+                || destinations[..index].contains(destination)
+            {
+                return Err(failed("Runtime::PushInFlight"));
+            }
         }
     }
 
@@ -195,8 +212,8 @@ pub(crate) fn push_files(
     let chunk_size = *lock(&shared.chunk_size);
     let mut rows = rows_for_files(
         local_paths,
+        &destinations,
         device_key_hex,
-        &folder,
         started_unix_secs,
         chunk_size,
     )?;
@@ -245,18 +262,21 @@ pub(crate) fn push_files(
 /// `push_files` was given. Mirrors `rows_for_folder` in `engine.rs`: every
 /// row is built before anything touches state, so a failure part way
 /// through leaves nothing behind.
+///
+/// `destinations` is `local_paths`' own planned destinations, one per path
+/// in the same order, already computed by `push_files` so the collision
+/// guard and these rows never disagree about what a file's destination is.
 fn rows_for_files(
     local_paths: &[String],
+    destinations: &[RemotePath],
     device_key_hex: &str,
-    folder: &RemotePath,
     started_unix_secs: i64,
     chunk_size: ChunkSize,
 ) -> Result<Vec<TransferRow>, FerryError> {
     let mut rows = Vec::with_capacity(local_paths.len());
-    for local_path in local_paths {
+    for (local_path, destination) in local_paths.iter().zip(destinations) {
         let leaf = local_leaf_name(local_path);
-        let destination =
-            RemotePath::parse(&format!("{}/{leaf}", folder.as_str())).map_err(from_path)?;
+        let destination = destination.clone();
         let source = store_local_path(local_path)?;
         let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
         rows.push(TransferRow {
@@ -322,6 +342,15 @@ fn local_leaf_name(local_path: &str) -> String {
         .to_owned()
 }
 
+/// The destination `push_files` gives a file at `local_path` inside
+/// `folder`: the folder's path with the local file's leaf name appended.
+/// Shared by `push_files`'s collision guard and `rows_for_files`, so the
+/// two never disagree about what a file's destination is.
+fn destination_in_folder(local_path: &str, folder: &RemotePath) -> Result<RemotePath, FerryError> {
+    let leaf = local_leaf_name(local_path);
+    RemotePath::parse(&format!("{}/{leaf}", folder.as_str())).map_err(from_path)
+}
+
 /// Whether a push to `device_key_hex`'s `destination` is already `Queued`,
 /// `Active`, or `Paused`.
 ///
@@ -329,7 +358,9 @@ fn local_leaf_name(local_path: &str) -> String {
 /// land it. This is about two pushes in flight at once, not one push
 /// resuming after a real interruption, which is a single row moving
 /// through those same states one attempt at a time, never two rows for
-/// the same name at once.
+/// the same name at once. Used by both `push` and `push_files`: a batch
+/// can collide with a single push, or with another batch, exactly as
+/// easily as two single pushes can collide with each other.
 fn live_push_exists(
     state: &crate::state::State,
     device_key_hex: &str,
@@ -536,6 +567,14 @@ fn build(shared: &Arc<Shared>, id: &str, plan: &Plan) -> Result<Transfer, Outcom
             row.bytes_total = manifest.length();
             row.source_size = Some(manifest.length());
             row.source_mtime = Some(entry.modified_unix_secs);
+            // The same fault item 16a's fix caught in a pull's first pass
+            // (`transfer.rs`, F6): the row started out with whichever chunk
+            // size `set_chunk_size` named when it was created, a
+            // placeholder until this file's own manifest is known. That
+            // manifest is the one this transfer verifies against, so
+            // `chunks_total` and `chunks_verified` must be counted at its
+            // chunk size from here on, not the placeholder.
+            row.chunk_size = manifest.chunk_size();
         }
     }
     let transfer = Transfer::new(manifest, plan.source.clone(), plan.destination.clone())
