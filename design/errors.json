@@ -114,7 +114,7 @@
     "NoiseError::BadKeyLength": {
       "stopped": "The stored key is unusable.",
       "why": "It is not the size Ferry expects.",
-      "todo": "Forget every device and pair again. The key is made fresh."
+      "todo": "Remove Ferry's stored device key, then open Ferry again. On the Mac that key is in Keychain Access under Ferry, and on the phone it is cleared with the app's data."
     },
     "NoiseError::BadPattern": {
       "stopped": "Ferry has a fault.",

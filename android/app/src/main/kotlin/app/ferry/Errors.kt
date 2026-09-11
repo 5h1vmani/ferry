@@ -31,7 +31,7 @@ object FerryErrors {
         "ManifestError::WrongChunkCount" to Words("The transfer could not resume.", "Its saved record is damaged.", "Start it again. It begins from zero."),
         "NoiseError::BadHandshakePayload" to Words("Pairing stopped.", "The other device sent a malformed handshake.", "Try again. If it repeats, update Ferry on both devices."),
         "NoiseError::BadHello" to Words("Pairing stopped.", "The scanning device sent a malformed name.", "Try again. If it repeats, update Ferry on both devices."),
-        "NoiseError::BadKeyLength" to Words("The stored key is unusable.", "It is not the size Ferry expects.", "Forget every device and pair again. The key is made fresh."),
+        "NoiseError::BadKeyLength" to Words("The stored key is unusable.", "It is not the size Ferry expects.", "Remove Ferry's stored device key, then open Ferry again. On the Mac that key is in Keychain Access under Ferry, and on the phone it is cleared with the app's data."),
         "NoiseError::BadPattern" to Words("Ferry has a fault.", "An internal setting is wrong.", "Restart Ferry."),
         "NoiseError::CommitmentMismatch" to Words("Pairing stopped.", "The other device changed its identity during pairing. This can mean someone on the network interfered.", "Do not confirm. Try again on a network you trust, or over the cable."),
         "NoiseError::Crypto" to Words("The connection was refused.", "The handshake failed.", "If this keeps happening, forget the device and pair again."),
