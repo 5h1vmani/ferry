@@ -179,6 +179,10 @@
     <string name="pairing_title">Pairing</string>
     <string name="pairing_choose_title">Pair with a Mac.</string>
     <string name="pairing_choose_body">Scanning is quicker when the Mac is in front of you. A code works from anywhere on the network.</string>
+    <!-- Read before the location permission prompt fires, so the person
+         knows why Ferry is asking. Pairing is the first moment that is
+         worth asking, because only the Wi-Fi network name needs it. -->
+    <string name="pairing_location_reason">Location, so Ferry can read the Wi-Fi name.</string>
     <string name="pairing_scan_the_code">Scan the Mac\'s code</string>
     <string name="pairing_scan_instead">Scan the Mac\'s code instead</string>
     <string name="pairing_use_code_instead">Use a pairing code instead</string>
@@ -209,6 +213,10 @@
     <string name="first_run_all_files_why">Ferry serves the shared folders to the Mac. Without it, every transfer fails.</string>
     <string name="first_run_notifications_title">Notifications</string>
     <string name="first_run_notifications_why">One notification says Ferry is reachable, and stops it.</string>
+    <!-- A third thing exists, location, but it is asked for later, at
+         pairing, not here: naming it now would make this "three things"
+         with only two controls on screen. -->
+    <string name="first_run_location_later">Location is asked separately, when pairing starts.</string>
     <string name="first_run_grant">Grant access</string>
     <string name="first_run_skip">Skip</string>
 

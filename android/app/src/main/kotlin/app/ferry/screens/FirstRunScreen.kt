@@ -76,6 +76,16 @@ fun FirstRunScreen(
             title = stringResource(R.string.first_run_notifications_title),
             why = stringResource(R.string.first_run_notifications_why),
         )
+        Spacer(Modifier.height(FerrySpace.s5))
+        // A third permission, location, is real but not asked here: it is
+        // asked the first time pairing starts, on the Choosing screen, so
+        // this screen still names only the two things it actually asks
+        // for. Stated so the later prompt is not a surprise.
+        Text(
+            text = stringResource(R.string.first_run_location_later),
+            style = FerryFont.caption(),
+            color = FerryColor.textSecondary(),
+        )
 
         Spacer(Modifier.weight(1f))
 

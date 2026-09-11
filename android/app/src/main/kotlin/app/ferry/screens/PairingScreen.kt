@@ -78,6 +78,7 @@ fun PairingScreen(
     cameraRefused: Boolean,
     onRequestCamera: () -> Unit,
     onOpenAppSettings: () -> Unit,
+    onRequestLocation: () -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -153,6 +154,7 @@ fun PairingScreen(
                 is PairingStep.Choosing -> ChoosingContent(
                     onScan = useScan,
                     onUseCode = useCode,
+                    onRequestLocation = onRequestLocation,
                 )
 
                 is PairingStep.Scanning -> ScanningContent(
@@ -284,8 +286,19 @@ private fun Padded(content: @Composable () -> Unit) {
 }
 
 // Both ways in, side by side, with the fewer-steps one first.
+//
+// This is also where location is asked for: only the network name needs
+// it, and only pairing needs the name, so this is the first screen worth
+// asking from. The line explaining why renders before the prompt fires,
+// because onRequestLocation runs in a LaunchedEffect against this
+// composable's own entry, not the tap that got here.
 @Composable
-private fun ChoosingContent(onScan: () -> Unit, onUseCode: () -> Unit) {
+private fun ChoosingContent(
+    onScan: () -> Unit,
+    onUseCode: () -> Unit,
+    onRequestLocation: () -> Unit,
+) {
+    LaunchedEffect(Unit) { onRequestLocation() }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -300,6 +313,12 @@ private fun ChoosingContent(onScan: () -> Unit, onUseCode: () -> Unit) {
         Spacer(Modifier.height(FerrySpace.s2))
         Text(
             text = stringResource(R.string.pairing_choose_body),
+            style = FerryFont.body(),
+            color = FerryColor.textSecondary(),
+        )
+        Spacer(Modifier.height(FerrySpace.s2))
+        Text(
+            text = stringResource(R.string.pairing_location_reason),
             style = FerryFont.body(),
             color = FerryColor.textSecondary(),
         )

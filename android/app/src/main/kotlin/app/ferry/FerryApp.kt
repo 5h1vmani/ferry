@@ -179,11 +179,6 @@ fun FerryApp(
                     if (!isAdvertising) {
                         onSetAdvertising(true)
                     }
-                    // Only the network name needs location, and only
-                    // pairing needs the name, so this is the first moment
-                    // that is worth asking. requestLocationIfNeeded is a
-                    // no-op past the first time.
-                    onRequestLocation()
                     goTo(Screen.Pairing)
                 },
                 onSettingsClick = { goTo(Screen.Settings) },
@@ -204,6 +199,12 @@ fun FerryApp(
                 cameraRefused = cameraRefused,
                 onRequestCamera = onRequestCamera,
                 onOpenAppSettings = onOpenAppSettings,
+                // Only the network name needs location, and only pairing
+                // needs the name, so the Choosing screen is the first
+                // moment worth asking, with the line explaining why
+                // rendered before the prompt fires. onRequestLocation is
+                // a no-op past the first time.
+                onRequestLocation = onRequestLocation,
                 onDone = { goTo(Screen.Devices) },
             )
 
