@@ -1,5 +1,23 @@
 //! The engine object and the threads it owns.
 
+// The module map. This file keeps the `Engine` type, the constants, the
+// `From` conversions at the boundary, and the `mod` and `pub(crate) use`
+// lines below, so every path another module used before the split still
+// resolves. The work lives beside it:
+//
+// - `shared.rs`: the state every thread shares, and the data folder lock.
+// - `api/`: nothing yet. The methods the apps call stay in this file,
+//   because `UniFFI` hashes each one's module path into the bindings, so
+//   moving one changes the generated Swift and Kotlin.
+// - `remote.rs`: the one call every remote file operation goes through.
+// - `records_load.rs`: transfer and batch records, read and written.
+// - `inbound.rs`: accepting a connection and deciding who is calling.
+// - `pairing.rs`: both pairing methods, end to end.
+// - `serving.rs`: serving one paired peer on an open connection.
+// - `discovery_loop.rs`: browsing mDNS and building candidates.
+// - `loops.rs`: the background loops a started engine runs.
+// - `../networks.rs`: `apply_presence`, beside the rule it applies.
+
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;

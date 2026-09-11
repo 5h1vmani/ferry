@@ -32,7 +32,9 @@ down. A run that ignores one will pay for it again.
    branch was green on its own. Merges broke the tree twice in one day.
 3. **One test file per item.** New tests go in a file named for the item,
    never appended to a shared file. Three merges conflicted only because
-   every batch appended to the same test file.
+   every batch appended to the same test file. A test goes in the file of
+   its concern, and a file over a thousand lines is split before the next
+   batch.
 4. **One cargo target directory per worktree.** Two worktrees sharing a
    target directory can link against each other's stale crate. The build
    looks successful and is wrong. Accept the one-time dependency rebuild.
