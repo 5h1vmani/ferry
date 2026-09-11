@@ -98,6 +98,7 @@ object FerryErrors {
         "TcpError::Noise" to Words("The connection was refused.", "The device did not prove it is the one paired.", "If this keeps happening, forget the device and pair again."),
         "TcpError::Timeout" to Words("The connection timed out.", "The device did not answer in time.", "Check that Ferry is open and reachable on it."),
         "TcpError::TooManyPending" to Words("The connection was refused.", "Too many devices are connecting at once.", "Wait a moment and try again."),
+        "TcpError::TooManyPendingFromAddr" to Words("The connection was refused.", "Too many connections are already arriving from that device.", "Wait a moment and try again."),
         "TcpError::Version" to Words("The connection was refused.", "The two devices run versions that cannot talk.", "Update Ferry on both devices."),
         "TransferError::BadPath" to Words("The transfer could not resume.", "Its saved record holds a bad path.", "Start it again."),
         "TransferError::ChunkFailedVerification" to Words("The transfer stopped.", "Part of the file did not match, at chunk {detail}. The file changed on the other device during the transfer.", "Start it again."),

@@ -95,6 +95,7 @@ enum FerryErrors {
         "TcpError::Noise": (stopped: "The connection was refused.", why: "The device did not prove it is the one paired.", todo: "If this keeps happening, forget the device and pair again."),
         "TcpError::Timeout": (stopped: "The connection timed out.", why: "The device did not answer in time.", todo: "Check that Ferry is open and reachable on it."),
         "TcpError::TooManyPending": (stopped: "The connection was refused.", why: "Too many devices are connecting at once.", todo: "Wait a moment and try again."),
+        "TcpError::TooManyPendingFromAddr": (stopped: "The connection was refused.", why: "Too many connections are already arriving from that device.", todo: "Wait a moment and try again."),
         "TcpError::Version": (stopped: "The connection was refused.", why: "The two devices run versions that cannot talk.", todo: "Update Ferry on both devices."),
         "TransferError::BadPath": (stopped: "The transfer could not resume.", why: "Its saved record holds a bad path.", todo: "Start it again."),
         "TransferError::ChunkFailedVerification": (stopped: "The transfer stopped.", why: "Part of the file did not match, at chunk {detail}. The file changed on the other device during the transfer.", todo: "Start it again."),
