@@ -720,7 +720,12 @@ folder a person left is not worth the wire. The thread skips a child
 whose head is already cached, skips a child that is not an image by
 extension, and reads `min(size, HEAD_LEN)` bytes of each other child
 through the ordinary pool borrow, so it competes fairly with Finder's own
-requests and can hold at most one of the four connections. The image
+requests and can hold at most one of the four connections. One head takes
+at most `limits::MAX_READS_PER_CHUNK` reads, which is 64, and the thread
+reads `running` before every one of them. A peer that answers one byte per
+read therefore costs 64 round trips and a short head that is dropped, not
+65536 round trips, and `MountRegistry::stop` waits for one read rather
+than for a whole head. The image
 extensions are the constant `IMAGE_EXTENSIONS`: jpg, jpeg, png, heic,
 heif, gif, webp, tif, tiff, bmp, dng, cr2, nef, arw. Compared without
 case.
