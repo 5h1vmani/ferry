@@ -101,12 +101,14 @@ mac_build() {
 # ---- android mode helper: source env.sh, then gradle, in a subshell so
 # the env and the cd never leak into a later step of an "all" run. The
 # task ":app:compileDebugKotlin" exists under this repo's Gradle setup
-# (AGP 9's built-in Kotlin support), confirmed with `gradle :app:tasks`. ----
+# (AGP 9's built-in Kotlin support), confirmed with `gradle :app:tasks`.
+# The compile task never merges the manifest, so a bad manifest element
+# would pass it and fail at install. The manifest task runs first. ----
 android_build() {
   (
     source "$repo_root/scripts/env.sh" &&
       cd "$repo_root/android" &&
-      gradle :app:compileDebugKotlin -q
+      gradle :app:processDebugMainManifest :app:compileDebugKotlin -q
   )
 }
 
