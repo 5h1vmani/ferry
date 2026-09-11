@@ -12,11 +12,11 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferry_core::chunk::ChunkSize;
-use ferry_core::noise::{PublicKey, QR_NONCE_LEN, SecureStream};
+use ferry_core::noise::{Paired, PublicKey, QR_NONCE_LEN, SecureStream};
 use ferry_core::path::RemotePath;
 use ferry_core::peers::{DeviceKind as CoreDeviceKind, PeerStore};
-use ferry_core::tcp::PairedConnection;
 
+use crate::engine::SocketRegistration;
 use crate::networks::TrustedNetworks;
 use crate::{
     DeviceInfo, DeviceKind, Direction, FerryError, Origin, PairingCandidate, PairingState,
@@ -147,8 +147,12 @@ pub(crate) struct Candidate {
 /// It sits here, unread, until `confirm_pairing` takes it out. Holding it is
 /// the whole reason pairing has a Code state.
 pub(crate) struct HeldPairing {
-    /// The paired channel, the peer key, and the code.
-    pub(crate) connection: PairedConnection,
+    /// The encrypted channel, the peer key, and the code, exactly as Noise
+    /// XX produced them. `PairedConnection`'s own `version` field is not
+    /// read past `hold_pairing`, and its `socket` field is what `_socket`
+    /// below registers, so this stores `Paired` itself rather than the
+    /// whole wrapper.
+    pub(crate) connection: Paired,
     /// The address of the other device.
     pub(crate) addr: SocketAddr,
     /// True when this side accepted the connection rather than dialing it.
@@ -157,6 +161,13 @@ pub(crate) struct HeldPairing {
     /// side that dialed lets it go, because two servers on one stream would
     /// both wait for the other to speak.
     pub(crate) accepted: bool,
+    /// Keeps `connection`'s raw socket registered with `Shared` for as long
+    /// as it sits here, so `stop` can close it directly instead of leaving
+    /// it open for up to the two minute pairing deadline. Never read; kept
+    /// only for its `Drop` impl, which unregisters the socket the moment
+    /// this hold ends, whichever way it ends.
+    /// `docs/engine-contract.md` item 16c.
+    pub(crate) _socket: SocketRegistration,
 }
 
 /// A QR pairing handshake that finished and is waiting for `confirm_pairing`.
@@ -190,6 +201,10 @@ pub(crate) struct RequestedPairing {
     /// exchange against `name` and `kind`, because the identity a person
     /// confirmed must be the identity the pairing finishes with.
     pub(crate) hello_done: bool,
+    /// As [`HeldPairing::_socket`]: keeps `stream`'s raw socket registered
+    /// with `Shared` for as long as this sits here. `docs/engine-contract.md`
+    /// item 16c.
+    pub(crate) _socket: SocketRegistration,
 }
 
 /// Where pairing is, and what it is holding.

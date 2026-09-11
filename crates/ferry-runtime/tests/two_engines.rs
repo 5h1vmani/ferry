@@ -1889,7 +1889,7 @@ fn a_second_hello_that_disagrees_with_message_one_fails_pairing() {
     let attacker_key = StaticKey::generate().expect("a fresh key pair");
     let dial = std::thread::spawn(move || {
         // Message one's hello: this is what the Mac shows as `Requested`.
-        let mut stream = tcp::pair_ik(
+        let (mut stream, _socket) = tcp::pair_ik(
             addr,
             &attacker_key,
             &offer.static_key,

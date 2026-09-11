@@ -2934,7 +2934,12 @@ fn hold_pairing(
     addr: SocketAddr,
     accepted: bool,
 ) -> Result<(), FerryError> {
-    let code = connection.paired.code.to_string();
+    let PairedConnection {
+        paired,
+        version: _,
+        socket: raw_socket,
+    } = connection;
+    let code = paired.code.to_string();
     let expires_unix_secs;
     {
         let mut state = lock(&shared.state);
@@ -2949,10 +2954,16 @@ fn hold_pairing(
             .pairing
             .deadline_unix_secs
             .unwrap_or_else(now_unix_secs);
+        // `docs/engine-contract.md` item 16c: a code pairing is held for as
+        // long as the pairing deadline allows, so its socket is registered
+        // the same way an ordinary connection's is, for `stop` to close.
+        let socket_id = shared.next_connection_id();
+        let socket = SocketRegistration::new(shared, socket_id, raw_socket);
         state.pairing.held = Some(HeldPairing {
-            connection,
+            connection: paired,
             addr,
             accepted,
+            _socket: socket,
         });
     }
     shared.set_pairing(&PairingState::Code {
@@ -2980,7 +2991,11 @@ fn hold_qr_pairing(
     connection: IkPairedConnection,
     addr: SocketAddr,
 ) -> Result<(), FerryError> {
-    let IkPairedConnection { accepted, .. } = connection;
+    let IkPairedConnection {
+        accepted,
+        socket: raw_socket,
+        ..
+    } = connection;
     let name = accepted.name.clone();
     let kind = accepted.kind;
     {
@@ -2992,6 +3007,11 @@ fn hold_qr_pairing(
         // the race above, is what makes a second scan of the same code
         // refused instead of merely unlucky.
         state.pairing.offer_nonce = None;
+        // `docs/engine-contract.md` item 16c: as `hold_pairing`, this
+        // connection is held waiting for a confirm, so its socket is
+        // registered for `stop` to close.
+        let socket_id = shared.next_connection_id();
+        let socket = SocketRegistration::new(shared, socket_id, raw_socket);
         state.pairing.requested = Some(RequestedPairing {
             stream: accepted.stream,
             peer: accepted.peer,
@@ -2999,6 +3019,7 @@ fn hold_qr_pairing(
             name: accepted.name,
             kind,
             hello_done: false,
+            _socket: socket,
         });
     }
     shared.set_pairing(&PairingState::Requested {
@@ -3032,12 +3053,19 @@ fn hold_scanned_pairing(
     addr: SocketAddr,
     name: String,
     kind: CoreDeviceKind,
+    raw_socket: TcpStream,
 ) {
     {
         let mut state = lock(&shared.state);
         if state.pairing.requested.is_some() || !state.pairing.is_running() {
             return;
         }
+        // `docs/engine-contract.md` item 16c: this side dialled the offer
+        // and now holds the connection waiting for a confirm, so its socket
+        // is registered too, the same as the offering side's is in
+        // `hold_qr_pairing`.
+        let socket_id = shared.next_connection_id();
+        let socket = SocketRegistration::new(shared, socket_id, raw_socket);
         state.pairing.requested = Some(RequestedPairing {
             stream: stream.into_inner(),
             peer: peer_key,
@@ -3045,6 +3073,7 @@ fn hold_scanned_pairing(
             name: name.clone(),
             kind,
             hello_done: true,
+            _socket: socket,
         });
     }
     shared.set_pairing(&PairingState::Requested {
@@ -3067,8 +3096,8 @@ fn pair_after_confirm(shared: &Arc<Shared>, taken: Confirming) {
     match taken {
         Confirming::Code(held) => finish_pairing(
             shared,
-            held.connection.paired.peer,
-            held.connection.paired.stream,
+            held.connection.peer,
+            held.connection.stream,
             held.addr,
             held.accepted,
             None,
@@ -3080,6 +3109,11 @@ fn pair_after_confirm(shared: &Arc<Shared>, taken: Confirming) {
             name,
             kind,
             hello_done,
+            // The hold is over either way: what follows is either an
+            // immediate drop or `finish_pairing`'s own bounded exchange,
+            // neither of which is the open-ended wait `_socket` was
+            // registered against. `docs/engine-contract.md` item 16c.
+            _socket: _,
         }) => {
             if hello_done {
                 // The scanning side. The names crossed before `Requested`
@@ -3495,9 +3529,11 @@ fn dial_offer(shared: &Arc<Shared>, offer: &Offer) {
             &shared.display_name,
             shared.kind,
         ) {
-            Ok(stream) => {
+            Ok((stream, socket)) => {
                 // Names cross, and then this side asks its own person about
-                // the name it got; see `hold_scanned_pairing`.
+                // the name it got; see `hold_scanned_pairing`, which is
+                // where `socket` is registered, once the connection is
+                // actually held waiting for that confirm.
                 let (name, kind, stream) = match hello_with_deadline(shared, stream) {
                     Ok(triple) => triple,
                     Err(error) => {
@@ -3505,7 +3541,7 @@ fn dial_offer(shared: &Arc<Shared>, offer: &Offer) {
                         return;
                     }
                 };
-                hold_scanned_pairing(shared, offer.static_key, stream, *addr, name, kind);
+                hold_scanned_pairing(shared, offer.static_key, stream, *addr, name, kind, socket);
                 return;
             }
             Err(error) => last_error = Some(error),
@@ -3653,19 +3689,29 @@ fn serve_connection(shared: &Arc<Shared>, connection: Connection, peer: PublicKe
 /// established and removes itself when it ends. Using a guard, instead of a
 /// bare register-then-unregister pair, means an early return or a panic on
 /// any path still frees the entry.
-pub(crate) struct SocketRegistration<'a> {
-    shared: &'a Arc<Shared>,
+///
+/// Owns a clone of `Arc<Shared>`, rather than borrowing one, so this can
+/// live inside state that outlives the stack frame that created it: a code
+/// or QR pairing holds its connection in `Pairing::held` or
+/// `Pairing::requested`, inside `Shared` itself, for as long as a person
+/// takes to compare a code or confirm a name, so a borrowed reference could
+/// not be stored there.
+pub(crate) struct SocketRegistration {
+    shared: Arc<Shared>,
     id: u64,
 }
 
-impl<'a> SocketRegistration<'a> {
-    pub(crate) fn new(shared: &'a Arc<Shared>, id: u64, socket: TcpStream) -> Self {
+impl SocketRegistration {
+    pub(crate) fn new(shared: &Arc<Shared>, id: u64, socket: TcpStream) -> Self {
         shared.register_socket(id, socket);
-        Self { shared, id }
+        Self {
+            shared: Arc::clone(shared),
+            id,
+        }
     }
 }
 
-impl Drop for SocketRegistration<'_> {
+impl Drop for SocketRegistration {
     fn drop(&mut self) {
         self.shared.unregister_socket(self.id);
     }

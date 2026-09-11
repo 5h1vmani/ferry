@@ -116,13 +116,26 @@
 //! /// What a successful `pair` or `NegotiatedPending::pair` produces.
 //! /// `Paired` has no room for a version field and this crate does not own
 //! /// that type, so this wraps it instead of changing it.
-//! pub struct PairedConnection { pub paired: Paired, pub version: u16 }
+//! pub struct PairedConnection {
+//!     pub paired: Paired,
+//!     pub version: u16,
+//!     /// A clone of the raw socket, taken before `paired.stream` boxed it.
+//!     /// The caller registers this with `Shared` so `stop` can close it
+//!     /// directly while the connection is held for a confirm.
+//!     /// `docs/engine-contract.md` item 16c.
+//!     pub socket: TcpStream,
+//! }
 //!
 //! /// What a successful `pair_ik` or `NegotiatedPending::pair_ik` produces.
 //! /// `IkAccepted` already carries everything a QR pairing needs and no
 //! /// code, so this only adds the version, for symmetry with the other two
 //! /// connection types.
-//! pub struct IkPairedConnection { pub accepted: IkAccepted, pub version: u16 }
+//! pub struct IkPairedConnection {
+//!     pub accepted: IkAccepted,
+//!     pub version: u16,
+//!     /// As `PairedConnection::socket`.
+//!     pub socket: TcpStream,
+//! }
 //!
 //! /// Dial a peer, agree a version, and run KK as initiator.
 //! pub fn connect(addr: SocketAddr, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError>;
@@ -130,8 +143,9 @@
 //! pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpError>;
 //! /// Dial the address from a scanned QR offer, agree a version, and run IK
 //! /// as initiator, with the offer's nonce and this device's hello in
-//! /// message one.
-//! pub fn pair_ik(addr: SocketAddr, key: &StaticKey, responder: &PublicKey, nonce: &[u8; 16], my_name: &str, my_kind: DeviceKind) -> Result<SecureStream, TcpError>;
+//! /// message one. The raw socket is returned alongside the stream, as
+//! /// `PairedConnection::socket` is, for the same reason.
+//! pub fn pair_ik(addr: SocketAddr, key: &StaticKey, responder: &PublicKey, nonce: &[u8; 16], my_name: &str, my_kind: DeviceKind) -> Result<(SecureStream, TcpStream), TcpError>;
 //! ```
 //!
 //! `Paired` is `crate::noise::Paired`. The pending counter decrements when a
@@ -743,16 +757,19 @@ impl NegotiatedPending {
             slot: _slot,
             ..
         } = self;
-        // Pairing runs once, while a person is watching both screens, and
-        // already has its own timeout; it does not register for `stop` to
-        // close directly the way an ordinary connection does.
-        let (connection, _socket) = negotiating.finish(agreed, |s, agreed| {
-            noise::pair_as_responder(s, key, &agreed.prologue).map(|paired| PairedConnection {
-                paired,
-                version: agreed.version,
-            })
+        // `docs/engine-contract.md` item 16c: a code pairing is held,
+        // waiting for a confirm, for as long as the pairing deadline
+        // allows, so the caller registers `socket` with `Shared` the same
+        // way `NegotiatedPending::connect` does, for `stop` to close.
+        let ((paired, version), socket) = negotiating.finish(agreed, |s, agreed| {
+            noise::pair_as_responder(s, key, &agreed.prologue)
+                .map(|paired| (paired, agreed.version))
         })?;
-        Ok(connection)
+        Ok(PairedConnection {
+            paired,
+            version,
+            socket,
+        })
     }
 
     /// Run Noise IK as responder, inside the deadline [`Pending::negotiate`]
@@ -783,17 +800,18 @@ impl NegotiatedPending {
             slot: _slot,
             ..
         } = self;
-        // As `pair`: a QR pairing handshake runs once, while the Mac is
-        // showing `Requested`, and has its own deadline.
-        let (connection, _socket) = negotiating.finish(agreed, |s, agreed| {
-            noise::pair_ik_as_responder(s, key, expected_nonce, &agreed.prologue).map(|accepted| {
-                IkPairedConnection {
-                    accepted,
-                    version: agreed.version,
-                }
-            })
+        // As `pair`: a QR pairing handshake holds the connection while the
+        // Mac shows `Requested`, waiting for a confirm, so `socket` is
+        // registered the same way. `docs/engine-contract.md` item 16c.
+        let ((accepted, version), socket) = negotiating.finish(agreed, |s, agreed| {
+            noise::pair_ik_as_responder(s, key, expected_nonce, &agreed.prologue)
+                .map(|accepted| (accepted, agreed.version))
         })?;
-        Ok(connection)
+        Ok(IkPairedConnection {
+            accepted,
+            version,
+            socket,
+        })
     }
 
     /// Run Noise KK as responder, trying each of `candidates` in turn
@@ -873,6 +891,14 @@ pub struct PairedConnection {
     pub paired: Paired,
     /// The protocol version both sides agreed on, before pairing began.
     pub version: u16,
+    /// A clone of the raw socket, taken before `paired.stream` boxed it.
+    /// Register this with `Shared` so `stop` can call `shutdown` on it
+    /// directly; that is the only way to reach the socket once this value
+    /// exists. A code pairing is held, waiting for a confirm, for as long
+    /// as the two minute pairing deadline allows, so without this a `stop`
+    /// mid-pairing leaves the connection open instead of closing it.
+    /// `docs/engine-contract.md` item 16c.
+    pub socket: TcpStream,
 }
 
 /// What a successful [`pair_ik`] or [`NegotiatedPending::pair_ik`] produces.
@@ -887,6 +913,8 @@ pub struct IkPairedConnection {
     pub accepted: IkAccepted,
     /// The protocol version both sides agreed on, before pairing began.
     pub version: u16,
+    /// As [`PairedConnection::socket`]. `docs/engine-contract.md` item 16c.
+    pub socket: TcpStream,
 }
 
 /// Dial a peer, agree a version, and run KK as initiator.
@@ -963,22 +991,25 @@ pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpEr
     // delayed acknowledgement instead of reaching the wire at once.
     let _ = stream.set_nodelay(true);
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
-    // Pairing does not register a socket for `stop` to close; see
-    // `NegotiatedPending::pair`.
-    let (connection, _socket) = run_handshake(
+    // As `NegotiatedPending::pair`: the caller registers `socket` with
+    // `Shared` so `stop` can close it while this pairing is held.
+    // `docs/engine-contract.md` item 16c.
+    let ((paired, version), socket) = run_handshake(
         stream,
         Role::Initiator,
         Mode::PairByCode,
         deadline,
         Duration::from_secs(IDLE_TIMEOUT_SECS),
         |s, agreed| {
-            noise::pair_as_initiator(s, key, &agreed.prologue).map(|paired| PairedConnection {
-                paired,
-                version: agreed.version,
-            })
+            noise::pair_as_initiator(s, key, &agreed.prologue)
+                .map(|paired| (paired, agreed.version))
         },
     )?;
-    Ok(connection)
+    Ok(PairedConnection {
+        paired,
+        version,
+        socket,
+    })
 }
 
 /// Dial the address from a scanned QR offer, agree a version, and run IK as
@@ -998,6 +1029,14 @@ pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpEr
 /// [`TcpError::Noise`] means the responder did not hold the private key
 /// matching the static key from the offer, which is what stops an attacker
 /// without it from completing this handshake at all.
+///
+/// # Returns
+///
+/// The encrypted stream, alongside a clone of the raw socket taken before
+/// it was boxed. As with [`PairedConnection::socket`], the caller
+/// registers the socket with `Shared` so `stop` can close it while this
+/// side's own hold on the pairing (`dial_offer`, in `ferry-runtime`) waits
+/// for a confirm. `docs/engine-contract.md` item 16c.
 #[allow(clippy::too_many_arguments)]
 pub fn pair_ik(
     addr: SocketAddr,
@@ -1006,7 +1045,7 @@ pub fn pair_ik(
     nonce: &[u8; noise::QR_NONCE_LEN],
     my_name: &str,
     my_kind: DeviceKind,
-) -> Result<SecureStream, TcpError> {
+) -> Result<(SecureStream, TcpStream), TcpError> {
     let stream = TcpStream::connect_timeout(
         &addr,
         Duration::from_secs(limits::QR_ADDRESS_CONNECT_TIMEOUT_SECS),
@@ -1022,9 +1061,7 @@ pub fn pair_ik(
     // delayed acknowledgement instead of reaching the wire at once.
     let _ = stream.set_nodelay(true);
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
-    // As `pair`: a QR pairing handshake does not register a socket for
-    // `stop` to close.
-    let (stream, _socket) = run_handshake(
+    let (stream, socket) = run_handshake(
         stream,
         Role::Initiator,
         Mode::PairByQr,
@@ -1042,7 +1079,7 @@ pub fn pair_ik(
             )
         },
     )?;
-    Ok(stream)
+    Ok((stream, socket))
 }
 
 #[cfg(test)]
@@ -1446,7 +1483,7 @@ mod tests {
         });
 
         let key_initiator = StaticKey::generate().unwrap();
-        let mut initiator_stream = pair_ik(
+        let (mut initiator_stream, _socket) = pair_ik(
             addr,
             &key_initiator,
             &public_responder,
