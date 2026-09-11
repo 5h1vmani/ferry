@@ -753,7 +753,7 @@ second test proves the head cache misses after the file is written
 again with a new size. A pure test covers the extension check and the
 first in first out bound.
 
-### 18. Trusted networks, PLAN phase 2 item 7: open
+### 18. Trusted networks, PLAN phase 2 item 7: engine built, apps open
 
 Job 5 gets stronger. A device that paired at home stays silent in a
 café, and the phone saves the battery the advertiser and the browser
