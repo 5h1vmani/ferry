@@ -208,8 +208,10 @@ The default. Three steps instead of five, and no digits to compare.
 Why no digits here. Comparing six digits proves the same person holds both
 devices. Scanning the Mac's screen proves it too, and earlier: the phone
 learns the Mac's static key out of band, so there is no window in which a
-wrong confirm accepts a stranger. What remains is the Mac's half of the
-trust, and that is one named question with two answers.
+wrong confirm accepts a stranger. What remains is one named question on
+each side, with two answers. The Mac asks whether the phone it sees is
+yours. The phone asks the same about the Mac, so a scan of a stranger's
+code shows the stranger's name before anything is trusted.
 
 ### Pairing, the Mac, by code
 
