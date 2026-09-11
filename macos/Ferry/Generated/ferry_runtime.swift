@@ -646,9 +646,180 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func autoCopy(deviceKeyHex: String)  -> AutoCopy
     
     /**
-     * Every batch this engine has grouped, across every device.
+     * Turns automatic copying on or off for one device.
+     *
+     * `docs/engine-contract.md`, item 14.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
      */
-    func batches()  -> [BatchInfo]
+    func setAutoCopy(deviceKeyHex: String, enabled: Bool) throws 
+    
+    /**
+     * The roots currently served, as last set by `new` or `set_roots`.
+     *
+     * Before `start` has opened them, this is `Config.shared_roots` as
+     * given to `new`, unopened and unvalidated beyond being non-empty.
+     */
+    func roots()  -> [Root]
+    
+    /**
+     * Change where a pulled file lands.
+     *
+     * Creates the folder if it does not exist. The app is responsible for
+     * persisting `path` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::BadConfig` when the folder cannot be made or
+     * opened.
+     */
+    func setDownloadDir(path: String) throws 
+    
+    /**
+     * Advertise over mDNS and accept connections, or stop doing both.
+     *
+     * Turning this off does not close connections that are already serving.
+     * New ones are refused as soon as they are accepted.
+     */
+    func setReachable(on: Bool) 
+    
+    /**
+     * Replace the served roots.
+     *
+     * Takes effect for every already-connected peer on its next operation;
+     * nobody needs to reconnect. The app is responsible for persisting
+     * `roots` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when `roots` is refused: no roots at all,
+     * an invalid or duplicate name, a path that is not an existing folder,
+     * or two roots that overlap.
+     */
+    func setRoots(roots: [Root]) throws 
+    
+    /**
+     * The last four characters of this device's own mDNS name, while it is
+     * reachable.
+     *
+     * The Mac computes the same four characters, with the same
+     * [`last_four`], for the `short_code` it shows next to this device in
+     * its pairing candidate list. A person with several phones in the room
+     * can compare the two and tell which one they are holding.
+     *
+     * Returns `None` before [`Engine::set_reachable`] has turned advertising
+     * on, and after it has turned it off.
+     */
+    func shortCode()  -> String?
+    
+    /**
+     * Open the served roots and the download folder, bind the listener,
+     * and start every loop.
+     *
+     * A machine with no `adb` is not an error. USB is simply unavailable.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when the roots given to `new` cannot be
+     * opened, such as two that overlap or a path that is not an existing
+     * folder, unless `set_roots` already opened a fresher set; and
+     * `Runtime::BadConfig` with a detail when some other part fails to
+     * open.
+     */
+    func start() throws 
+    
+    /**
+     * Everything this engine currently is: whether it accepts connections,
+     * what port it listens on, and whether `adb` was found.
+     */
+    func status()  -> Status
+    
+    /**
+     * Stop everything and join every loop. Safe to call twice.
+     *
+     * After this returns the listener is never called again, no file is
+     * served to any device, and the data directory is free for another
+     * engine.
+     */
+    func stop() 
+    
+    /**
+     * Starts serving one device's shared roots over `WebDAV` on a random
+     * loopback port. Idempotent: a second call for a device that already
+     * has a bridge returns that same bridge's endpoint.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, and
+     * `Runtime::MountFailed` when the loopback port cannot be bound or the
+     * password cannot be generated.
+     */
+    func mountStart(deviceKeyHex: String) throws  -> MountEndpoint
+    
+    /**
+     * Stops serving one device's shared roots over `WebDAV`, and closes its
+     * port. Safe to call on a device with no running bridge.
+     *
+     * `docs/engine-contract.md`, item 6.
+     */
+    func mountStop(deviceKeyHex: String) 
+    
+    /**
+     * Records where the app mounted a device's bridge, or that it
+     * unmounted it. Read back through `DeviceInfo.mount_path`.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+    func setMountPath(deviceKeyHex: String, path: String?) throws 
+    
+    /**
+     * Remove a Wi-Fi network name from the trusted list.
+     *
+     * A name that is not trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `TransferError::Local` when local storage refuses the write.
+     */
+    func forgetNetwork(name: String) throws 
+    
+    /**
+     * The app reports the name of the Wi-Fi network it is on, or `None`
+     * when it cannot read one: Wi-Fi off, the location permission refused,
+     * or the name unknown.
+     *
+     * Called after [`Engine::start`] and on every change. Idempotent: the
+     * same name twice writes nothing and reports nothing.
+     *
+     * `docs/engine-contract.md`, item 18.
+     */
+    func setNetwork(name: String?) 
+    
+    /**
+     * Add a Wi-Fi network name to the trusted list.
+     *
+     * A name already trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NetworkName` for an empty name, a name over 32
+     * bytes, or a 33rd name. Returns `TransferError::Local` when local
+     * storage refuses the write.
+     */
+    func trustNetwork(name: String) throws 
+    
+    /**
+     * Every trusted Wi-Fi network name, oldest first.
+     */
+    func trustedNetworks()  -> [String]
     
     /**
      * Stop pairing and drop whatever it was holding, under either method.
@@ -671,6 +842,62 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func confirmPairing(accept: Bool) 
     
     /**
+     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     *
+     * Checked locally, in order: is this a Ferry offer at all, has it
+     * expired, is its key one this device already holds. Any of those
+     * three refuses at once, before a single byte reaches the network.
+     * Past that point the dial and the `IK` handshake run on their own
+     * thread, as `pick_candidate` runs its dial, and the outcome arrives
+     * through the listener. Once the names cross, this device publishes
+     * `Requested` with the other device's name and waits for
+     * `confirm_pairing`, the same as the offering Mac does. The scan proves
+     * the key came from a screen; it does not show whose screen, so this
+     * side asks that question before it stores anything.
+     *
+     * # Errors
+     *
+     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+     * or `PairingError::AlreadyPaired` for the three local checks above,
+     * and `Runtime::PairingBusy` when a pairing attempt is already running
+     * on this device.
+     */
+    func offerScanned(payload: Data) throws 
+    
+    /**
+     * Dial the chosen candidate and run the pairing handshake.
+     *
+     * The dial happens on its own thread, so this returns at once. The code
+     * arrives through the listener.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NoCandidate` when that candidate is not listed, and
+     * `Runtime::PairingBusy` when a code is already showing or another
+     * candidate is already being dialed.
+     */
+    func pickCandidate(id: String) throws 
+    
+    /**
+     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+     * out after two minutes either way.
+     *
+     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
+     * phone waits for one `XX` handshake and reports the code.
+     *
+     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+     * and publishes `Offering`. While offering, one `IK` handshake whose
+     * message one carries the current nonce is accepted; it shows
+     * `Requested` and holds the connection for `confirm_pairing`. Meant for
+     * the Mac; the phone's camera screen is not built yet, so nothing
+     * today calls this with `Qr` on a phone.
+     *
+     * Calling this while a pairing is already running only reports the
+     * current state again, under either method.
+     */
+    func startPairingWith(method: PairingMethod) 
+    
+    /**
      * Delete one file, or one empty folder, on a paired device.
      *
      * `docs/engine-contract.md`, item 19. The wire has no recursive
@@ -685,38 +912,6 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * peer's root is not writable.
      */
     func delete(deviceKeyHex: String, remotePath: String) throws 
-    
-    /**
-     * Every paired device, with what is known about it right now.
-     */
-    func devices()  -> [DeviceInfo]
-    
-    /**
-     * Forget a device: remove its key and every transfer record for it.
-     *
-     * A connection that is already serving this device stops answering at
-     * once, though its socket stays open until the peer goes away.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key, a
-     * `PeerError` code when the device list cannot be written, and
-     * `TransferError::Local` when a transfer record cannot be deleted. The
-     * last one matters: a record left on disk would start the transfer
-     * again on the next run.
-     */
-    func forget(keyHex: String) throws 
-    
-    /**
-     * Remove a Wi-Fi network name from the trusted list.
-     *
-     * A name that is not trusted is not an error and changes nothing.
-     *
-     * # Errors
-     *
-     * Returns `TransferError::Local` when local storage refuses the write.
-     */
-    func forgetNetwork(name: String) throws 
     
     /**
      * List every entry in one folder on a paired device.
@@ -758,64 +953,104 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func mkdir(deviceKeyHex: String, remotePath: String) throws 
     
     /**
-     * Starts serving one device's shared roots over `WebDAV` on a random
-     * loopback port. Idempotent: a second call for a device that already
-     * has a bridge returns that same bridge's endpoint.
+     * Read a byte range from a file on a paired device.
      *
-     * `docs/engine-contract.md`, item 6.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key, and
-     * `Runtime::MountFailed` when the loopback port cannot be bound or the
-     * password cannot be generated.
-     */
-    func mountStart(deviceKeyHex: String) throws  -> MountEndpoint
-    
-    /**
-     * Stops serving one device's shared roots over `WebDAV`, and closes its
-     * port. Safe to call on a device with no running bridge.
-     *
-     * `docs/engine-contract.md`, item 6.
-     */
-    func mountStop(deviceKeyHex: String) 
-    
-    /**
-     * Phone only. The bytes its camera decoded from the Mac's QR code.
-     *
-     * Checked locally, in order: is this a Ferry offer at all, has it
-     * expired, is its key one this device already holds. Any of those
-     * three refuses at once, before a single byte reaches the network.
-     * Past that point the dial and the `IK` handshake run on their own
-     * thread, as `pick_candidate` runs its dial, and the outcome arrives
-     * through the listener. Once the names cross, this device publishes
-     * `Requested` with the other device's name and waits for
-     * `confirm_pairing`, the same as the offering Mac does. The scan proves
-     * the key came from a screen; it does not show whose screen, so this
-     * side asks that question before it stores anything.
+     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
+     * one mebibyte. A longer ask is clamped, not refused, so the caller
+     * gets a short read, which is an ordinary read result: fewer bytes
+     * than asked for also means the end of the file.
      *
      * # Errors
      *
-     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
-     * or `PairingError::AlreadyPaired` for the three local checks above,
-     * and `Runtime::PairingBusy` when a pairing attempt is already running
-     * on this device.
+     * As [`Engine::list`], including `OpError::IsADirectory` when the path
+     * names a folder.
      */
-    func offerScanned(payload: Data) throws 
+    func readAt(deviceKeyHex: String, remotePath: String, offset: UInt64, len: UInt32) throws  -> Data
     
     /**
-     * Dial the chosen candidate and run the pairing handshake.
+     * Move or rename a file or folder on a paired device, within one root.
      *
-     * The dial happens on its own thread, so this returns at once. The code
-     * arrives through the listener.
+     * `docs/engine-contract.md`, item 19. Across two roots the peer
+     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
+     * bridge turns into 502.
      *
      * # Errors
      *
-     * Returns `Runtime::NoCandidate` when that candidate is not listed, and
-     * `Runtime::PairingBusy` when a code is already showing or another
-     * candidate is already being dialed.
+     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
+     * roots, `OpError::AlreadyExists` when something is already at `to`,
+     * and `OpError::PermissionDenied` when the peer's root is not
+     * writable.
      */
-    func pickCandidate(id: String) throws 
+    func rename(deviceKeyHex: String, from: String, to: String) throws 
+    
+    /**
+     * Describe one file or folder on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
+     * answers `queryDocument` with this. Blocks for one round trip, so the
+     * app calls it off the main thread, as it does [`Engine::list`].
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], including `OpError::NotFound` for a path that
+     * names no file.
+     */
+    func stat(deviceKeyHex: String, remotePath: String) throws  -> Entry
+    
+    /**
+     * Set a file's length on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's provider truncates
+     * to zero when it opens a document in a truncating mode.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    func truncate(deviceKeyHex: String, remotePath: String, len: UInt64) throws 
+    
+    /**
+     * Write a byte range to a file on a paired device, creating the file
+     * when it does not exist.
+     *
+     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
+     * bytes, one mebibyte, in one call is refused before anything reaches
+     * the wire, so a refused call writes nothing.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
+     * longer than one mebibyte, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+    func writeAt(deviceKeyHex: String, remotePath: String, offset: UInt64, bytes: Data) throws 
+    
+    /**
+     * Every batch this engine has grouped, across every device.
+     */
+    func batches()  -> [BatchInfo]
+    
+    /**
+     * Every paired device, with what is known about it right now.
+     */
+    func devices()  -> [DeviceInfo]
+    
+    /**
+     * Forget a device: remove its key and every transfer record for it.
+     *
+     * A connection that is already serving this device stops answering at
+     * once, though its socket stays open until the peer goes away.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, a
+     * `PeerError` code when the device list cannot be written, and
+     * `TransferError::Local` when a transfer record cannot be deleted. The
+     * last one matters: a record left on disk would start the transfer
+     * again on the next run.
+     */
+    func forget(keyHex: String) throws 
     
     /**
      * Fetch one file from a paired device into the shared root.
@@ -890,37 +1125,6 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: String) throws  -> String
     
     /**
-     * Read a byte range from a file on a paired device.
-     *
-     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
-     * one mebibyte. A longer ask is clamped, not refused, so the caller
-     * gets a short read, which is an ordinary read result: fewer bytes
-     * than asked for also means the end of the file.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], including `OpError::IsADirectory` when the path
-     * names a folder.
-     */
-    func readAt(deviceKeyHex: String, remotePath: String, offset: UInt64, len: UInt32) throws  -> Data
-    
-    /**
-     * Move or rename a file or folder on a paired device, within one root.
-     *
-     * `docs/engine-contract.md`, item 19. Across two roots the peer
-     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
-     * bridge turns into 502.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
-     * roots, `OpError::AlreadyExists` when something is already at `to`,
-     * and `OpError::PermissionDenied` when the peer's root is not
-     * writable.
-     */
-    func rename(deviceKeyHex: String, from: String, to: String) throws 
-    
-    /**
      * Restart a failed transfer from its resume point.
      *
      * # Errors
@@ -946,213 +1150,9 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func retryBatch(batchId: String) throws 
     
     /**
-     * The roots currently served, as last set by `new` or `set_roots`.
-     *
-     * Before `start` has opened them, this is `Config.shared_roots` as
-     * given to `new`, unopened and unvalidated beyond being non-empty.
-     */
-    func roots()  -> [Root]
-    
-    /**
-     * Turns automatic copying on or off for one device.
-     *
-     * `docs/engine-contract.md`, item 14.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key.
-     */
-    func setAutoCopy(deviceKeyHex: String, enabled: Bool) throws 
-    
-    /**
-     * Change where a pulled file lands.
-     *
-     * Creates the folder if it does not exist. The app is responsible for
-     * persisting `path` and passing it back in `Config` at the next launch.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::BadConfig` when the folder cannot be made or
-     * opened.
-     */
-    func setDownloadDir(path: String) throws 
-    
-    /**
-     * Records where the app mounted a device's bridge, or that it
-     * unmounted it. Read back through `DeviceInfo.mount_path`.
-     *
-     * `docs/engine-contract.md`, item 6.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key.
-     */
-    func setMountPath(deviceKeyHex: String, path: String?) throws 
-    
-    /**
-     * The app reports the name of the Wi-Fi network it is on, or `None`
-     * when it cannot read one: Wi-Fi off, the location permission refused,
-     * or the name unknown.
-     *
-     * Called after [`Engine::start`] and on every change. Idempotent: the
-     * same name twice writes nothing and reports nothing.
-     *
-     * `docs/engine-contract.md`, item 18.
-     */
-    func setNetwork(name: String?) 
-    
-    /**
-     * Advertise over mDNS and accept connections, or stop doing both.
-     *
-     * Turning this off does not close connections that are already serving.
-     * New ones are refused as soon as they are accepted.
-     */
-    func setReachable(on: Bool) 
-    
-    /**
-     * Replace the served roots.
-     *
-     * Takes effect for every already-connected peer on its next operation;
-     * nobody needs to reconnect. The app is responsible for persisting
-     * `roots` and passing it back in `Config` at the next launch.
-     *
-     * # Errors
-     *
-     * Returns a `RootsError` code when `roots` is refused: no roots at all,
-     * an invalid or duplicate name, a path that is not an existing folder,
-     * or two roots that overlap.
-     */
-    func setRoots(roots: [Root]) throws 
-    
-    /**
-     * The last four characters of this device's own mDNS name, while it is
-     * reachable.
-     *
-     * The Mac computes the same four characters, with the same
-     * [`last_four`], for the `short_code` it shows next to this device in
-     * its pairing candidate list. A person with several phones in the room
-     * can compare the two and tell which one they are holding.
-     *
-     * Returns `None` before [`Engine::set_reachable`] has turned advertising
-     * on, and after it has turned it off.
-     */
-    func shortCode()  -> String?
-    
-    /**
-     * Open the served roots and the download folder, bind the listener,
-     * and start every loop.
-     *
-     * A machine with no `adb` is not an error. USB is simply unavailable.
-     *
-     * # Errors
-     *
-     * Returns a `RootsError` code when the roots given to `new` cannot be
-     * opened, such as two that overlap or a path that is not an existing
-     * folder, unless `set_roots` already opened a fresher set; and
-     * `Runtime::BadConfig` with a detail when some other part fails to
-     * open.
-     */
-    func start() throws 
-    
-    /**
-     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
-     * out after two minutes either way.
-     *
-     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
-     * phone waits for one `XX` handshake and reports the code.
-     *
-     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
-     * and publishes `Offering`. While offering, one `IK` handshake whose
-     * message one carries the current nonce is accepted; it shows
-     * `Requested` and holds the connection for `confirm_pairing`. Meant for
-     * the Mac; the phone's camera screen is not built yet, so nothing
-     * today calls this with `Qr` on a phone.
-     *
-     * Calling this while a pairing is already running only reports the
-     * current state again, under either method.
-     */
-    func startPairingWith(method: PairingMethod) 
-    
-    /**
-     * Describe one file or folder on a paired device.
-     *
-     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
-     * answers `queryDocument` with this. Blocks for one round trip, so the
-     * app calls it off the main thread, as it does [`Engine::list`].
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], including `OpError::NotFound` for a path that
-     * names no file.
-     */
-    func stat(deviceKeyHex: String, remotePath: String) throws  -> Entry
-    
-    /**
-     * Everything this engine currently is: whether it accepts connections,
-     * what port it listens on, and whether `adb` was found.
-     */
-    func status()  -> Status
-    
-    /**
-     * Stop everything and join every loop. Safe to call twice.
-     *
-     * After this returns the listener is never called again, no file is
-     * served to any device, and the data directory is free for another
-     * engine.
-     */
-    func stop() 
-    
-    /**
      * Every transfer, as the app shows them.
      */
     func transfers()  -> [TransferInfo]
-    
-    /**
-     * Set a file's length on a paired device.
-     *
-     * `docs/engine-contract.md`, item 19. The phone's provider truncates
-     * to zero when it opens a document in a truncating mode.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
-     * peer's root is not writable.
-     */
-    func truncate(deviceKeyHex: String, remotePath: String, len: UInt64) throws 
-    
-    /**
-     * Add a Wi-Fi network name to the trusted list.
-     *
-     * A name already trusted is not an error and changes nothing.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NetworkName` for an empty name, a name over 32
-     * bytes, or a 33rd name. Returns `TransferError::Local` when local
-     * storage refuses the write.
-     */
-    func trustNetwork(name: String) throws 
-    
-    /**
-     * Every trusted Wi-Fi network name, oldest first.
-     */
-    func trustedNetworks()  -> [String]
-    
-    /**
-     * Write a byte range to a file on a paired device, creating the file
-     * when it does not exist.
-     *
-     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
-     * bytes, one mebibyte, in one call is refused before anything reaches
-     * the wire, so a refused call writes nothing.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
-     * longer than one mebibyte, and `OpError::PermissionDenied` when the
-     * peer's root is not writable.
-     */
-    func writeAt(deviceKeyHex: String, remotePath: String, offset: UInt64, bytes: Data) throws 
     
 }
 /**
@@ -1283,12 +1283,289 @@ open func autoCopy(deviceKeyHex: String) -> AutoCopy  {
 }
     
     /**
-     * Every batch this engine has grouped, across every device.
+     * Turns automatic copying on or off for one device.
+     *
+     * `docs/engine-contract.md`, item 14.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
      */
-open func batches() -> [BatchInfo]  {
-    return try!  FfiConverterSequenceTypeBatchInfo.lift(try! rustCall() {
+open func setAutoCopy(deviceKeyHex: String, enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
         uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_batches(
+    uniffi_ferry_runtime_fn_method_engine_set_auto_copy(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The roots currently served, as last set by `new` or `set_roots`.
+     *
+     * Before `start` has opened them, this is `Config.shared_roots` as
+     * given to `new`, unopened and unvalidated beyond being non-empty.
+     */
+open func roots() -> [Root]  {
+    return try!  FfiConverterSequenceTypeRoot.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_roots(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Change where a pulled file lands.
+     *
+     * Creates the folder if it does not exist. The app is responsible for
+     * persisting `path` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::BadConfig` when the folder cannot be made or
+     * opened.
+     */
+open func setDownloadDir(path: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_download_dir(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(path),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Advertise over mDNS and accept connections, or stop doing both.
+     *
+     * Turning this off does not close connections that are already serving.
+     * New ones are refused as soon as they are accepted.
+     */
+open func setReachable(on: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_reachable(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(on),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Replace the served roots.
+     *
+     * Takes effect for every already-connected peer on its next operation;
+     * nobody needs to reconnect. The app is responsible for persisting
+     * `roots` and passing it back in `Config` at the next launch.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when `roots` is refused: no roots at all,
+     * an invalid or duplicate name, a path that is not an existing folder,
+     * or two roots that overlap.
+     */
+open func setRoots(roots: [Root])throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_roots(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeRoot.lower(roots),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The last four characters of this device's own mDNS name, while it is
+     * reachable.
+     *
+     * The Mac computes the same four characters, with the same
+     * [`last_four`], for the `short_code` it shows next to this device in
+     * its pairing candidate list. A person with several phones in the room
+     * can compare the two and tell which one they are holding.
+     *
+     * Returns `None` before [`Engine::set_reachable`] has turned advertising
+     * on, and after it has turned it off.
+     */
+open func shortCode() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_short_code(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Open the served roots and the download folder, bind the listener,
+     * and start every loop.
+     *
+     * A machine with no `adb` is not an error. USB is simply unavailable.
+     *
+     * # Errors
+     *
+     * Returns a `RootsError` code when the roots given to `new` cannot be
+     * opened, such as two that overlap or a path that is not an existing
+     * folder, unless `set_roots` already opened a fresher set; and
+     * `Runtime::BadConfig` with a detail when some other part fails to
+     * open.
+     */
+open func start()throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_start(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Everything this engine currently is: whether it accepts connections,
+     * what port it listens on, and whether `adb` was found.
+     */
+open func status() -> Status  {
+    return try!  FfiConverterTypeStatus_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_status(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Stop everything and join every loop. Safe to call twice.
+     *
+     * After this returns the listener is never called again, no file is
+     * served to any device, and the data directory is free for another
+     * engine.
+     */
+open func stop()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_stop(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Starts serving one device's shared roots over `WebDAV` on a random
+     * loopback port. Idempotent: a second call for a device that already
+     * has a bridge returns that same bridge's endpoint.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, and
+     * `Runtime::MountFailed` when the loopback port cannot be bound or the
+     * password cannot be generated.
+     */
+open func mountStart(deviceKeyHex: String)throws  -> MountEndpoint  {
+    return try  FfiConverterTypeMountEndpoint_lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_mount_start(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Stops serving one device's shared roots over `WebDAV`, and closes its
+     * port. Safe to call on a device with no running bridge.
+     *
+     * `docs/engine-contract.md`, item 6.
+     */
+open func mountStop(deviceKeyHex: String)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_mount_stop(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Records where the app mounted a device's bridge, or that it
+     * unmounted it. Read back through `DeviceInfo.mount_path`.
+     *
+     * `docs/engine-contract.md`, item 6.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key.
+     */
+open func setMountPath(deviceKeyHex: String, path: String?)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_mount_path(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterOptionString.lower(path),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Remove a Wi-Fi network name from the trusted list.
+     *
+     * A name that is not trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `TransferError::Local` when local storage refuses the write.
+     */
+open func forgetNetwork(name: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_forget_network(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The app reports the name of the Wi-Fi network it is on, or `None`
+     * when it cannot read one: Wi-Fi off, the location permission refused,
+     * or the name unknown.
+     *
+     * Called after [`Engine::start`] and on every change. Idempotent: the
+     * same name twice writes nothing and reports nothing.
+     *
+     * `docs/engine-contract.md`, item 18.
+     */
+open func setNetwork(name: String?)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_set_network(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Add a Wi-Fi network name to the trusted list.
+     *
+     * A name already trusted is not an error and changes nothing.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NetworkName` for an empty name, a name over 32
+     * bytes, or a 33rd name. Returns `TransferError::Local` when local
+     * storage refuses the write.
+     */
+open func trustNetwork(name: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_trust_network(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Every trusted Wi-Fi network name, oldest first.
+     */
+open func trustedNetworks() -> [String]  {
+    return try!  FfiConverterSequenceString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_trusted_networks(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -1328,6 +1605,83 @@ open func confirmPairing(accept: Bool)  {try! rustCall() {
 }
     
     /**
+     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     *
+     * Checked locally, in order: is this a Ferry offer at all, has it
+     * expired, is its key one this device already holds. Any of those
+     * three refuses at once, before a single byte reaches the network.
+     * Past that point the dial and the `IK` handshake run on their own
+     * thread, as `pick_candidate` runs its dial, and the outcome arrives
+     * through the listener. Once the names cross, this device publishes
+     * `Requested` with the other device's name and waits for
+     * `confirm_pairing`, the same as the offering Mac does. The scan proves
+     * the key came from a screen; it does not show whose screen, so this
+     * side asks that question before it stores anything.
+     *
+     * # Errors
+     *
+     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
+     * or `PairingError::AlreadyPaired` for the three local checks above,
+     * and `Runtime::PairingBusy` when a pairing attempt is already running
+     * on this device.
+     */
+open func offerScanned(payload: Data)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_offer_scanned(
+            self.uniffiCloneHandle(),
+        FfiConverterData.lower(payload),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Dial the chosen candidate and run the pairing handshake.
+     *
+     * The dial happens on its own thread, so this returns at once. The code
+     * arrives through the listener.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NoCandidate` when that candidate is not listed, and
+     * `Runtime::PairingBusy` when a code is already showing or another
+     * candidate is already being dialed.
+     */
+open func pickCandidate(id: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_pick_candidate(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
+     * out after two minutes either way.
+     *
+     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
+     * phone waits for one `XX` handshake and reports the code.
+     *
+     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
+     * and publishes `Offering`. While offering, one `IK` handshake whose
+     * message one carries the current nonce is accepted; it shows
+     * `Requested` and holds the connection for `confirm_pairing`. Meant for
+     * the Mac; the phone's camera screen is not built yet, so nothing
+     * today calls this with `Qr` on a phone.
+     *
+     * Calling this while a pairing is already running only reports the
+     * current state again, under either method.
+     */
+open func startPairingWith(method: PairingMethod)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_start_pairing_with(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePairingMethod_lower(method),uniffiCallStatus
+    )
+}
+}
+    
+    /**
      * Delete one file, or one empty folder, on a paired device.
      *
      * `docs/engine-contract.md`, item 19. The wire has no recursive
@@ -1347,59 +1701,6 @@ open func delete(deviceKeyHex: String, remotePath: String)throws   {try rustCall
             self.uniffiCloneHandle(),
         FfiConverterString.lower(deviceKeyHex),
         FfiConverterString.lower(remotePath),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Every paired device, with what is known about it right now.
-     */
-open func devices() -> [DeviceInfo]  {
-    return try!  FfiConverterSequenceTypeDeviceInfo.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_devices(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Forget a device: remove its key and every transfer record for it.
-     *
-     * A connection that is already serving this device stops answering at
-     * once, though its socket stays open until the peer goes away.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key, a
-     * `PeerError` code when the device list cannot be written, and
-     * `TransferError::Local` when a transfer record cannot be deleted. The
-     * last one matters: a record left on disk would start the transfer
-     * again on the next run.
-     */
-open func forget(keyHex: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_forget(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(keyHex),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Remove a Wi-Fi network name from the trusted list.
-     *
-     * A name that is not trusted is not an error and changes nothing.
-     *
-     * # Errors
-     *
-     * Returns `TransferError::Local` when local storage refuses the write.
-     */
-open func forgetNetwork(name: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_forget_network(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(name),uniffiCallStatus
     )
 }
 }
@@ -1461,90 +1762,170 @@ open func mkdir(deviceKeyHex: String, remotePath: String)throws   {try rustCallW
 }
     
     /**
-     * Starts serving one device's shared roots over `WebDAV` on a random
-     * loopback port. Idempotent: a second call for a device that already
-     * has a bridge returns that same bridge's endpoint.
+     * Read a byte range from a file on a paired device.
      *
-     * `docs/engine-contract.md`, item 6.
+     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
+     * one mebibyte. A longer ask is clamped, not refused, so the caller
+     * gets a short read, which is an ordinary read result: fewer bytes
+     * than asked for also means the end of the file.
      *
      * # Errors
      *
-     * Returns `Runtime::NotPaired` when no device has that key, and
-     * `Runtime::MountFailed` when the loopback port cannot be bound or the
-     * password cannot be generated.
+     * As [`Engine::list`], including `OpError::IsADirectory` when the path
+     * names a folder.
      */
-open func mountStart(deviceKeyHex: String)throws  -> MountEndpoint  {
-    return try  FfiConverterTypeMountEndpoint_lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+open func readAt(deviceKeyHex: String, remotePath: String, offset: UInt64, len: UInt32)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
         uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_mount_start(
+    uniffi_ferry_runtime_fn_method_engine_read_at(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),
+        FfiConverterUInt64.lower(offset),
+        FfiConverterUInt32.lower(len),uniffiCallStatus
     )
 })
 }
     
     /**
-     * Stops serving one device's shared roots over `WebDAV`, and closes its
-     * port. Safe to call on a device with no running bridge.
+     * Move or rename a file or folder on a paired device, within one root.
      *
-     * `docs/engine-contract.md`, item 6.
+     * `docs/engine-contract.md`, item 19. Across two roots the peer
+     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
+     * bridge turns into 502.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
+     * roots, `OpError::AlreadyExists` when something is already at `to`,
+     * and `OpError::PermissionDenied` when the peer's root is not
+     * writable.
      */
-open func mountStop(deviceKeyHex: String)  {try! rustCall() {
+open func rename(deviceKeyHex: String, from: String, to: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
         uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_mount_stop(
+    uniffi_ferry_runtime_fn_method_engine_rename(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(from),
+        FfiConverterString.lower(to),uniffiCallStatus
     )
 }
 }
     
     /**
-     * Phone only. The bytes its camera decoded from the Mac's QR code.
+     * Describe one file or folder on a paired device.
      *
-     * Checked locally, in order: is this a Ferry offer at all, has it
-     * expired, is its key one this device already holds. Any of those
-     * three refuses at once, before a single byte reaches the network.
-     * Past that point the dial and the `IK` handshake run on their own
-     * thread, as `pick_candidate` runs its dial, and the outcome arrives
-     * through the listener. Once the names cross, this device publishes
-     * `Requested` with the other device's name and waits for
-     * `confirm_pairing`, the same as the offering Mac does. The scan proves
-     * the key came from a screen; it does not show whose screen, so this
-     * side asks that question before it stores anything.
+     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
+     * answers `queryDocument` with this. Blocks for one round trip, so the
+     * app calls it off the main thread, as it does [`Engine::list`].
      *
      * # Errors
      *
-     * Returns `PairingError::OfferNotFerry`, `PairingError::OfferExpired`,
-     * or `PairingError::AlreadyPaired` for the three local checks above,
-     * and `Runtime::PairingBusy` when a pairing attempt is already running
-     * on this device.
+     * As [`Engine::list`], including `OpError::NotFound` for a path that
+     * names no file.
      */
-open func offerScanned(payload: Data)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+open func stat(deviceKeyHex: String, remotePath: String)throws  -> Entry  {
+    return try  FfiConverterTypeEntry_lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
         uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_offer_scanned(
+    uniffi_ferry_runtime_fn_method_engine_stat(
             self.uniffiCloneHandle(),
-        FfiConverterData.lower(payload),uniffiCallStatus
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Set a file's length on a paired device.
+     *
+     * `docs/engine-contract.md`, item 19. The phone's provider truncates
+     * to zero when it opens a document in a truncating mode.
+     *
+     * # Errors
+     *
+     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
+     * peer's root is not writable.
+     */
+open func truncate(deviceKeyHex: String, remotePath: String, len: UInt64)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_truncate(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),
+        FfiConverterUInt64.lower(len),uniffiCallStatus
     )
 }
 }
     
     /**
-     * Dial the chosen candidate and run the pairing handshake.
+     * Write a byte range to a file on a paired device, creating the file
+     * when it does not exist.
      *
-     * The dial happens on its own thread, so this returns at once. The code
-     * arrives through the listener.
+     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
+     * bytes, one mebibyte, in one call is refused before anything reaches
+     * the wire, so a refused call writes nothing.
      *
      * # Errors
      *
-     * Returns `Runtime::NoCandidate` when that candidate is not listed, and
-     * `Runtime::PairingBusy` when a code is already showing or another
-     * candidate is already being dialed.
+     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
+     * longer than one mebibyte, and `OpError::PermissionDenied` when the
+     * peer's root is not writable.
      */
-open func pickCandidate(id: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+open func writeAt(deviceKeyHex: String, remotePath: String, offset: UInt64, bytes: Data)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
         uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_pick_candidate(
+    uniffi_ferry_runtime_fn_method_engine_write_at(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(id),uniffiCallStatus
+        FfiConverterString.lower(deviceKeyHex),
+        FfiConverterString.lower(remotePath),
+        FfiConverterUInt64.lower(offset),
+        FfiConverterData.lower(bytes),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Every batch this engine has grouped, across every device.
+     */
+open func batches() -> [BatchInfo]  {
+    return try!  FfiConverterSequenceTypeBatchInfo.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_batches(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Every paired device, with what is known about it right now.
+     */
+open func devices() -> [DeviceInfo]  {
+    return try!  FfiConverterSequenceTypeDeviceInfo.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_devices(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Forget a device: remove its key and every transfer record for it.
+     *
+     * A connection that is already serving this device stops answering at
+     * once, though its socket stays open until the peer goes away.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` when no device has that key, a
+     * `PeerError` code when the device list cannot be written, and
+     * `TransferError::Local` when a transfer record cannot be deleted. The
+     * last one matters: a record left on disk would start the transfer
+     * again on the next run.
+     */
+open func forget(keyHex: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_forget(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(keyHex),uniffiCallStatus
     )
 }
 }
@@ -1661,57 +2042,6 @@ open func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: St
 }
     
     /**
-     * Read a byte range from a file on a paired device.
-     *
-     * `docs/engine-contract.md`, item 19. At most [`MAX_READ_LEN`] bytes,
-     * one mebibyte. A longer ask is clamped, not refused, so the caller
-     * gets a short read, which is an ordinary read result: fewer bytes
-     * than asked for also means the end of the file.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], including `OpError::IsADirectory` when the path
-     * names a folder.
-     */
-open func readAt(deviceKeyHex: String, remotePath: String, offset: UInt64, len: UInt32)throws  -> Data  {
-    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_read_at(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterString.lower(remotePath),
-        FfiConverterUInt64.lower(offset),
-        FfiConverterUInt32.lower(len),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Move or rename a file or folder on a paired device, within one root.
-     *
-     * `docs/engine-contract.md`, item 19. Across two roots the peer
-     * answers `OpError::Unsupported`, the same refusal the `WebDAV`
-     * bridge turns into 502.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], plus `OpError::Unsupported` for a move across
-     * roots, `OpError::AlreadyExists` when something is already at `to`,
-     * and `OpError::PermissionDenied` when the peer's root is not
-     * writable.
-     */
-open func rename(deviceKeyHex: String, from: String, to: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_rename(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterString.lower(from),
-        FfiConverterString.lower(to),uniffiCallStatus
-    )
-}
-}
-    
-    /**
      * Restart a failed transfer from its resume point.
      *
      * # Errors
@@ -1751,256 +2081,6 @@ open func retryBatch(batchId: String)throws   {try rustCallWithError(FfiConverte
 }
     
     /**
-     * The roots currently served, as last set by `new` or `set_roots`.
-     *
-     * Before `start` has opened them, this is `Config.shared_roots` as
-     * given to `new`, unopened and unvalidated beyond being non-empty.
-     */
-open func roots() -> [Root]  {
-    return try!  FfiConverterSequenceTypeRoot.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_roots(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Turns automatic copying on or off for one device.
-     *
-     * `docs/engine-contract.md`, item 14.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key.
-     */
-open func setAutoCopy(deviceKeyHex: String, enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_set_auto_copy(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterBool.lower(enabled),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Change where a pulled file lands.
-     *
-     * Creates the folder if it does not exist. The app is responsible for
-     * persisting `path` and passing it back in `Config` at the next launch.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::BadConfig` when the folder cannot be made or
-     * opened.
-     */
-open func setDownloadDir(path: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_set_download_dir(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(path),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Records where the app mounted a device's bridge, or that it
-     * unmounted it. Read back through `DeviceInfo.mount_path`.
-     *
-     * `docs/engine-contract.md`, item 6.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NotPaired` when no device has that key.
-     */
-open func setMountPath(deviceKeyHex: String, path: String?)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_set_mount_path(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterOptionString.lower(path),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * The app reports the name of the Wi-Fi network it is on, or `None`
-     * when it cannot read one: Wi-Fi off, the location permission refused,
-     * or the name unknown.
-     *
-     * Called after [`Engine::start`] and on every change. Idempotent: the
-     * same name twice writes nothing and reports nothing.
-     *
-     * `docs/engine-contract.md`, item 18.
-     */
-open func setNetwork(name: String?)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_set_network(
-            self.uniffiCloneHandle(),
-        FfiConverterOptionString.lower(name),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Advertise over mDNS and accept connections, or stop doing both.
-     *
-     * Turning this off does not close connections that are already serving.
-     * New ones are refused as soon as they are accepted.
-     */
-open func setReachable(on: Bool)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_set_reachable(
-            self.uniffiCloneHandle(),
-        FfiConverterBool.lower(on),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Replace the served roots.
-     *
-     * Takes effect for every already-connected peer on its next operation;
-     * nobody needs to reconnect. The app is responsible for persisting
-     * `roots` and passing it back in `Config` at the next launch.
-     *
-     * # Errors
-     *
-     * Returns a `RootsError` code when `roots` is refused: no roots at all,
-     * an invalid or duplicate name, a path that is not an existing folder,
-     * or two roots that overlap.
-     */
-open func setRoots(roots: [Root])throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_set_roots(
-            self.uniffiCloneHandle(),
-        FfiConverterSequenceTypeRoot.lower(roots),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * The last four characters of this device's own mDNS name, while it is
-     * reachable.
-     *
-     * The Mac computes the same four characters, with the same
-     * [`last_four`], for the `short_code` it shows next to this device in
-     * its pairing candidate list. A person with several phones in the room
-     * can compare the two and tell which one they are holding.
-     *
-     * Returns `None` before [`Engine::set_reachable`] has turned advertising
-     * on, and after it has turned it off.
-     */
-open func shortCode() -> String?  {
-    return try!  FfiConverterOptionString.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_short_code(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Open the served roots and the download folder, bind the listener,
-     * and start every loop.
-     *
-     * A machine with no `adb` is not an error. USB is simply unavailable.
-     *
-     * # Errors
-     *
-     * Returns a `RootsError` code when the roots given to `new` cannot be
-     * opened, such as two that overlap or a path that is not an existing
-     * folder, unless `set_roots` already opened a fresher set; and
-     * `Runtime::BadConfig` with a detail when some other part fails to
-     * open.
-     */
-open func start()throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_start(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Enter pairing, by `method`. Replaces the old `start_pairing`. Times
-     * out after two minutes either way.
-     *
-     * `Code`: the Mac browses and polls `adb`, and reports candidates. The
-     * phone waits for one `XX` handshake and reports the code.
-     *
-     * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
-     * and publishes `Offering`. While offering, one `IK` handshake whose
-     * message one carries the current nonce is accepted; it shows
-     * `Requested` and holds the connection for `confirm_pairing`. Meant for
-     * the Mac; the phone's camera screen is not built yet, so nothing
-     * today calls this with `Qr` on a phone.
-     *
-     * Calling this while a pairing is already running only reports the
-     * current state again, under either method.
-     */
-open func startPairingWith(method: PairingMethod)  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_start_pairing_with(
-            self.uniffiCloneHandle(),
-        FfiConverterTypePairingMethod_lower(method),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Describe one file or folder on a paired device.
-     *
-     * `docs/engine-contract.md`, item 19. The phone's `DocumentsProvider`
-     * answers `queryDocument` with this. Blocks for one round trip, so the
-     * app calls it off the main thread, as it does [`Engine::list`].
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], including `OpError::NotFound` for a path that
-     * names no file.
-     */
-open func stat(deviceKeyHex: String, remotePath: String)throws  -> Entry  {
-    return try  FfiConverterTypeEntry_lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_stat(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterString.lower(remotePath),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Everything this engine currently is: whether it accepts connections,
-     * what port it listens on, and whether `adb` was found.
-     */
-open func status() -> Status  {
-    return try!  FfiConverterTypeStatus_lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_status(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Stop everything and join every loop. Safe to call twice.
-     *
-     * After this returns the listener is never called again, no file is
-     * served to any device, and the data directory is free for another
-     * engine.
-     */
-open func stop()  {try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_stop(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-}
-}
-    
-    /**
      * Every transfer, as the app shows them.
      */
 open func transfers() -> [TransferInfo]  {
@@ -2010,86 +2090,6 @@ open func transfers() -> [TransferInfo]  {
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
-}
-    
-    /**
-     * Set a file's length on a paired device.
-     *
-     * `docs/engine-contract.md`, item 19. The phone's provider truncates
-     * to zero when it opens a document in a truncating mode.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], plus `OpError::PermissionDenied` when the
-     * peer's root is not writable.
-     */
-open func truncate(deviceKeyHex: String, remotePath: String, len: UInt64)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_truncate(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterString.lower(remotePath),
-        FfiConverterUInt64.lower(len),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Add a Wi-Fi network name to the trusted list.
-     *
-     * A name already trusted is not an error and changes nothing.
-     *
-     * # Errors
-     *
-     * Returns `Runtime::NetworkName` for an empty name, a name over 32
-     * bytes, or a 33rd name. Returns `TransferError::Local` when local
-     * storage refuses the write.
-     */
-open func trustNetwork(name: String)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_trust_network(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(name),uniffiCallStatus
-    )
-}
-}
-    
-    /**
-     * Every trusted Wi-Fi network name, oldest first.
-     */
-open func trustedNetworks() -> [String]  {
-    return try!  FfiConverterSequenceString.lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_trusted_networks(
-            self.uniffiCloneHandle(),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Write a byte range to a file on a paired device, creating the file
-     * when it does not exist.
-     *
-     * `docs/engine-contract.md`, item 19. More than [`MAX_WRITE_LEN`]
-     * bytes, one mebibyte, in one call is refused before anything reaches
-     * the wire, so a refused call writes nothing.
-     *
-     * # Errors
-     *
-     * As [`Engine::list`], plus `Runtime::WriteTooLarge` when `bytes` is
-     * longer than one mebibyte, and `OpError::PermissionDenied` when the
-     * peer's root is not writable.
-     */
-open func writeAt(deviceKeyHex: String, remotePath: String, offset: UInt64, bytes: Data)throws   {try rustCallWithError(FfiConverterTypeFerryError_lift) {
-        uniffiCallStatus in
-    uniffi_ferry_runtime_fn_method_engine_write_at(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(deviceKeyHex),
-        FfiConverterString.lower(remotePath),
-        FfiConverterUInt64.lower(offset),
-        FfiConverterData.lower(bytes),uniffiCallStatus
-    )
-}
 }
     
 
@@ -5418,130 +5418,130 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_func_phone_port() != 57763) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_access_log() != 8085) {
+    if (uniffi_ferry_runtime_checksum_method_engine_access_log() != 52600) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_auto_copy() != 42194) {
+    if (uniffi_ferry_runtime_checksum_method_engine_auto_copy() != 3246) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_batches() != 62922) {
+    if (uniffi_ferry_runtime_checksum_method_engine_set_auto_copy() != 48894) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 50742) {
+    if (uniffi_ferry_runtime_checksum_method_engine_roots() != 37332) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 57704) {
+    if (uniffi_ferry_runtime_checksum_method_engine_set_download_dir() != 42826) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_delete() != 25057) {
+    if (uniffi_ferry_runtime_checksum_method_engine_set_reachable() != 54776) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_devices() != 18169) {
+    if (uniffi_ferry_runtime_checksum_method_engine_set_roots() != 57515) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_forget() != 37454) {
+    if (uniffi_ferry_runtime_checksum_method_engine_short_code() != 31377) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_forget_network() != 51909) {
+    if (uniffi_ferry_runtime_checksum_method_engine_start() != 60286) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_list() != 44634) {
+    if (uniffi_ferry_runtime_checksum_method_engine_status() != 14442) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_mkdir() != 27483) {
+    if (uniffi_ferry_runtime_checksum_method_engine_stop() != 51328) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_mount_start() != 53865) {
+    if (uniffi_ferry_runtime_checksum_method_engine_mount_start() != 32064) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_mount_stop() != 21724) {
+    if (uniffi_ferry_runtime_checksum_method_engine_mount_stop() != 5435) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_offer_scanned() != 29500) {
+    if (uniffi_ferry_runtime_checksum_method_engine_set_mount_path() != 10178) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 19467) {
+    if (uniffi_ferry_runtime_checksum_method_engine_forget_network() != 63026) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_pull() != 54016) {
+    if (uniffi_ferry_runtime_checksum_method_engine_set_network() != 13584) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_pull_folder() != 63626) {
+    if (uniffi_ferry_runtime_checksum_method_engine_trust_network() != 36145) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_push() != 54602) {
+    if (uniffi_ferry_runtime_checksum_method_engine_trusted_networks() != 39815) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_push_files() != 64808) {
+    if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 50545) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_read_at() != 57683) {
+    if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 65257) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_rename() != 24592) {
+    if (uniffi_ferry_runtime_checksum_method_engine_offer_scanned() != 41358) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_retry() != 46891) {
+    if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 3231) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_retry_batch() != 10629) {
+    if (uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() != 4073) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_roots() != 12455) {
+    if (uniffi_ferry_runtime_checksum_method_engine_delete() != 16352) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_set_auto_copy() != 20032) {
+    if (uniffi_ferry_runtime_checksum_method_engine_list() != 60805) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_set_download_dir() != 37682) {
+    if (uniffi_ferry_runtime_checksum_method_engine_mkdir() != 4904) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_set_mount_path() != 64178) {
+    if (uniffi_ferry_runtime_checksum_method_engine_read_at() != 16185) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_set_network() != 41065) {
+    if (uniffi_ferry_runtime_checksum_method_engine_rename() != 38096) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_set_reachable() != 6511) {
+    if (uniffi_ferry_runtime_checksum_method_engine_stat() != 50275) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_set_roots() != 12930) {
+    if (uniffi_ferry_runtime_checksum_method_engine_truncate() != 11283) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_short_code() != 63413) {
+    if (uniffi_ferry_runtime_checksum_method_engine_write_at() != 60219) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_start() != 60159) {
+    if (uniffi_ferry_runtime_checksum_method_engine_batches() != 47376) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() != 19085) {
+    if (uniffi_ferry_runtime_checksum_method_engine_devices() != 50099) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_stat() != 54510) {
+    if (uniffi_ferry_runtime_checksum_method_engine_forget() != 16254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_status() != 3994) {
+    if (uniffi_ferry_runtime_checksum_method_engine_pull() != 23002) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_stop() != 10378) {
+    if (uniffi_ferry_runtime_checksum_method_engine_pull_folder() != 41848) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_transfers() != 21287) {
+    if (uniffi_ferry_runtime_checksum_method_engine_push() != 7392) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_truncate() != 23969) {
+    if (uniffi_ferry_runtime_checksum_method_engine_push_files() != 32632) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_trust_network() != 27441) {
+    if (uniffi_ferry_runtime_checksum_method_engine_retry() != 61923) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_trusted_networks() != 41313) {
+    if (uniffi_ferry_runtime_checksum_method_engine_retry_batch() != 20998) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_write_at() != 44780) {
+    if (uniffi_ferry_runtime_checksum_method_engine_transfers() != 4544) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 19972) {
+    if (uniffi_ferry_runtime_checksum_constructor_engine_new() != 19946) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_enginelistener_devices_changed() != 48471) {
