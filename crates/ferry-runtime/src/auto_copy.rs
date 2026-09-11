@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use ferry_core::localfs::LocalFs;
 use ferry_core::path::RemotePath;
@@ -84,6 +84,23 @@ pub(crate) struct AutoCopyRow {
 pub(crate) struct AutoCopyStore {
     path: PathBuf,
     rows: BTreeMap<String, AutoCopyRow>,
+    /// Serializes `record_run` and `set_enabled` against each other.
+    ///
+    /// `docs/audits/fable-lifecycle.md`, finding 7: both used to hold
+    /// `shared.auto_copy` across `save`, which calls `fsync`, so a
+    /// `SwiftUI` read of `Engine::auto_copy` on the main actor waited on
+    /// that write.
+    /// The fix is the same shape as `engine.rs`'s own `save_peers`: clone
+    /// the store, change and save the clone with `shared.auto_copy` not
+    /// held, then swap it in under a brief second hold. That leaves a gap
+    /// where two writers could both clone the same starting point and the
+    /// second `save` to land would silently lose the first writer's change,
+    /// so this lock is held across each writer's whole clone-change-save-
+    /// swap sequence instead, the same job `save_peers`'s own `peers_write`
+    /// does. Sharing one `Arc` across every clone, rather than adding a
+    /// field to `Shared` alongside `auto_copy`, is what keeps this fix
+    /// inside this file.
+    write_lock: Arc<Mutex<()>>,
 }
 
 impl AutoCopyStore {
@@ -100,6 +117,7 @@ impl AutoCopyStore {
         Self {
             path: path.to_path_buf(),
             rows,
+            write_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -315,11 +333,18 @@ pub(crate) fn set_enabled(
     if lock(&shared.state).peers.get(&key).is_none() {
         return Err(failed("Runtime::NotPaired"));
     }
-    {
-        let mut store = lock(&shared.auto_copy);
-        store.set_enabled(device_key_hex, enabled);
-        store.save()?;
-    }
+    // docs/audits/fable-lifecycle.md, finding 7: `save_peers`'s own shape.
+    // `shared.auto_copy` is held only long enough to clone the store and,
+    // once the clone has saved, to swap it back in; the clone's own
+    // `write_lock` covers the `fsync` in between, so `Engine::auto_copy`
+    // never waits on it.
+    let write_lock = Arc::clone(&lock(&shared.auto_copy).write_lock);
+    let writing = lock(&write_lock);
+    let mut copy = lock(&shared.auto_copy).clone();
+    copy.set_enabled(device_key_hex, enabled);
+    copy.save()?;
+    *lock(&shared.auto_copy) = copy;
+    drop(writing);
     if enabled {
         let reachable = lock(&shared.state)
             .live
@@ -369,10 +394,15 @@ pub(crate) fn record_run(
     ended_unix_secs: i64,
     files: u32,
 ) {
-    let mut store = lock(&shared.auto_copy);
-    store.record_run(device_key_hex, ended_unix_secs, files);
-    drop(store.save());
-    drop(store);
+    // docs/audits/fable-lifecycle.md, finding 7: as `set_enabled`, above.
+    let write_lock = Arc::clone(&lock(&shared.auto_copy).write_lock);
+    let writing = lock(&write_lock);
+    let mut copy = lock(&shared.auto_copy).clone();
+    copy.record_run(device_key_hex, ended_unix_secs, files);
+    if copy.save().is_ok() {
+        *lock(&shared.auto_copy) = copy;
+    }
+    drop(writing);
     // G2: a run that queued a batch holds the device's slot in
     // `auto_copy_running` past `run`'s own return, so a second reachability
     // transition while the batch is still moving files starts no second
