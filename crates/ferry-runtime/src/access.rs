@@ -91,6 +91,14 @@ const MAX_DEVICE_KEY_HEX_LEN: usize = 64;
 /// could make one read allocate; it is not a wire limit anyone negotiates.
 const MAX_ENTRY_FRAME_BYTES: usize = 2048;
 
+/// The most bytes a torn tail from a crash mid append can ever leave: one
+/// frame's four byte length prefix plus its content, at the largest content
+/// [`decode_day_file`] will ever accept. An undecodable remainder longer
+/// than this is not a torn tail; it is damage somewhere the file's own
+/// framing cannot explain, and [`AccessLog::next_sequence`] treats it
+/// differently. See the module documentation, "Framing".
+const MAX_TORN_TAIL_BYTES: usize = MAX_ENTRY_FRAME_BYTES + 4;
+
 /// Why an access log operation failed.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum AccessLogError {
@@ -457,6 +465,12 @@ fn is_day_file_name(name: &str) -> bool {
     name.len() == 8 && name.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// Whether `name` is a day file set aside as damaged: an eight digit day
+/// followed by `.damaged`. See [`AccessLog::next_sequence`].
+fn is_damaged_file_name(name: &str) -> bool {
+    name.strip_suffix(".damaged").is_some_and(is_day_file_name)
+}
+
 /// Restrict `dir` to this account only, the way `ferry-core`'s `peers.rs`
 /// restricts the files it writes. The access log names every path a paired
 /// device has touched, so the folder it lives in gets the same treatment as
@@ -535,15 +549,27 @@ impl AccessLog {
         self.dir.join(day)
     }
 
+    /// Where `day`'s file is moved when [`AccessLog::next_sequence`] finds
+    /// more wrong with it than a torn tail.
+    fn damaged_path(&self, day: &str) -> PathBuf {
+        self.dir.join(format!("{day}.damaged"))
+    }
+
     /// The sequence number the next entry appended to `day` would get,
     /// learning it from the file on disk the first time `day` is asked
     /// about and caching it after that.
     ///
-    /// If the file's tail holds an unfinished frame from a crash mid write,
-    /// this cuts the file back to its last whole entry first. Without that,
-    /// the next append would land after the unfinished bytes rather than
-    /// replacing them, leaving garbage in the middle of the file instead of
-    /// only ever at the end where a reader can safely ignore it.
+    /// A day file is only ever appended to, so the one way a crash can leave
+    /// it wrong is a single unfinished frame at the very end; this cuts the
+    /// file back to its last whole entry when that is all the undecodable
+    /// remainder can be, so the next append lands cleanly after it rather
+    /// than after garbage. A remainder longer than one frame is not that: it
+    /// is damage the framing cannot explain, and truncating there would
+    /// throw away whole entries that happen to follow it, entries which
+    /// [`decode_day_file`] simply has no way to reach once it has stopped at
+    /// the bad one before them. That file is set aside as `<day>.damaged`
+    /// instead, kept for a person to look at, and a fresh file starts under
+    /// `day`'s own name so new entries keep landing somewhere readable.
     fn next_sequence(&mut self, day: &str) -> Result<u32, AccessLogError> {
         if let Some(&next) = self.sequences.get(day) {
             return Ok(next);
@@ -552,11 +578,17 @@ impl AccessLog {
         let count = match fs::read(&path) {
             Ok(bytes) => {
                 let (entries, good_len) = decode_day_file(&bytes)?;
-                if good_len < bytes.len() {
+                let bad_len = bytes.len() - good_len;
+                if bad_len == 0 {
+                    entries.len()
+                } else if bad_len <= MAX_TORN_TAIL_BYTES {
                     let file = fs::OpenOptions::new().write(true).open(&path)?;
                     file.set_len(u64::try_from(good_len).unwrap_or(u64::MAX))?;
+                    entries.len()
+                } else {
+                    fs::rename(&path, self.damaged_path(day))?;
+                    0
                 }
-                entries.len()
             }
             Err(err) if err.kind() == io::ErrorKind::NotFound => 0,
             Err(err) => return Err(AccessLogError::Io(err)),
@@ -664,11 +696,26 @@ impl AccessLog {
         out
     }
 
-    /// Delete every day file older than [`RETENTION_DAYS`] days, as measured
-    /// from `now`.
+    /// Every damaged day file's name (see [`AccessLog::next_sequence`]), in
+    /// no particular order: [`AccessLog::prune`] only checks each one's own
+    /// age, never sequences through them the way it does ordinary day files.
+    fn damaged_file_names(&self) -> Vec<String> {
+        fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| is_damaged_file_name(name))
+            .collect()
+    }
+
+    /// Delete every day file, and every day file set aside as damaged, older
+    /// than [`RETENTION_DAYS`] days, as measured from `now`.
     ///
-    /// A day file exactly [`RETENTION_DAYS`] days old is kept: it is not yet
-    /// older than the limit.
+    /// A file exactly [`RETENTION_DAYS`] days old is kept: it is not yet
+    /// older than the limit. A damaged file's age is the day named in its
+    /// own file name, the day it was writing to when it was set aside, not
+    /// the day it happened to be pruned.
     ///
     /// # Errors
     ///
@@ -680,6 +727,12 @@ impl AccessLog {
             if name < cutoff {
                 fs::remove_file(self.day_path(&name))?;
                 self.sequences.remove(&name);
+            }
+        }
+        for name in self.damaged_file_names() {
+            let day = name.strip_suffix(".damaged").unwrap_or(&name);
+            if day < cutoff.as_str() {
+                fs::remove_file(self.dir.join(&name))?;
             }
         }
         Ok(())
@@ -891,6 +944,82 @@ mod tests {
             entries: None,
             files: None,
         }
+    }
+
+    /// One entry, framed exactly as [`AccessLog::append`] would write it: a
+    /// four byte big endian length, then [`super::encode_entry`]'s bytes.
+    /// Lets a test build a day file by hand, byte for byte, to put something
+    /// in the middle of it that only `AccessLog::append` would never write.
+    fn frame_bytes(fields: &EntryFields, at_unix_secs: i64) -> Vec<u8> {
+        let content = super::encode_entry(fields, at_unix_secs);
+        let mut frame = u32::try_from(content.len())
+            .expect("a test entry's content fits in a u32")
+            .to_be_bytes()
+            .to_vec();
+        frame.extend_from_slice(&content);
+        frame
+    }
+
+    #[test]
+    fn a_flipped_byte_in_the_middle_sets_the_day_file_aside_and_a_later_append_still_works() {
+        let dir = temp_dir("damaged-middle");
+        let access_log_dir = dir.join("access_log");
+        fs::create_dir_all(&access_log_dir).expect("the access log folder should be makeable");
+        let day = super::day_key(BASE_TIME);
+        let day_path = access_log_dir.join(&day);
+
+        // Two large paths, so the good entry that follows the corrupted one
+        // is big enough that losing it, on top of the corrupted frame
+        // itself, is more than one frame's worth of bytes: exactly the case
+        // that must not be treated as an ordinary torn tail.
+        let big_path = "x".repeat(1024);
+        let one = fields("device", AccessVerb::Read, "one", Some(1));
+        let two = fields("device", AccessVerb::Read, &big_path, Some(2));
+        let three = fields("device", AccessVerb::Read, &big_path, Some(3));
+
+        let frame_one = frame_bytes(&one, BASE_TIME);
+        let mut frame_two = frame_bytes(&two, BASE_TIME + 1);
+        // The actor byte sits right after the device key's four byte length
+        // prefix and its text. No `Actor` variant is ever stored as 0xFF, so
+        // this alone makes the whole frame fail to decode, the way a single
+        // flipped bit on disk would.
+        let actor_offset = 4 + "device".len() + 4;
+        frame_two[actor_offset] = 0xFF;
+        let frame_three = frame_bytes(&three, BASE_TIME + 2);
+
+        let mut bytes = vec![super::FORMAT_VERSION];
+        bytes.extend_from_slice(&frame_one);
+        bytes.extend_from_slice(&frame_two);
+        bytes.extend_from_slice(&frame_three);
+        fs::write(&day_path, &bytes).expect("the hand built day file should write");
+
+        let mut log = AccessLog::open(&dir).expect("the store should open");
+        let wrote = log
+            .append(
+                BASE_TIME + 3,
+                &fields("device", AccessVerb::Read, "four", Some(4)),
+            )
+            .expect("appending after a damaged day file should still work");
+        assert!(wrote);
+
+        let damaged_path = access_log_dir.join(format!("{day}.damaged"));
+        assert!(
+            damaged_path.exists(),
+            "the damaged file should be set aside rather than truncated"
+        );
+        assert_eq!(
+            fs::read(&damaged_path).expect("the damaged file should be readable"),
+            bytes,
+            "the damaged file keeps exactly the bytes that were there, good entries included"
+        );
+
+        let found = log.query(None, 10);
+        assert_eq!(
+            found.len(),
+            1,
+            "only the entry appended after the file was set aside is readable"
+        );
+        assert_eq!(found[0].path, "four");
     }
 
     #[test]
