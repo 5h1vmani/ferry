@@ -18,7 +18,7 @@ use ferry_core::ops::{FileKind, OpError};
 use ferry_core::path::{PathError, RemotePath};
 // Aliased: `crate::DeviceKind` is the boundary enum `Config` and `DeviceInfo`
 // carry; this is `ferry-core`'s own, which `hello` and `PeerStore` speak.
-use ferry_core::peers::{DeviceKind as CoreDeviceKind, Peer, PeerStore};
+use ferry_core::peers::{DeviceKind as CoreDeviceKind, Peer, PeerError, PeerStore};
 use ferry_core::roots::{RootSpec, Roots};
 use ferry_core::rpc::{Client, MAX_NAME_LEN, exchange_hello, serve};
 use ferry_core::session::SessionId;
@@ -602,17 +602,16 @@ pub(crate) fn record_this(
 /// published in that case, so memory and disk still agree.
 pub(crate) fn save_peers(
     shared: &Arc<Shared>,
-    change: impl FnOnce(&mut PeerStore),
+    change: impl FnOnce(&mut PeerStore) -> Result<(), PeerError>,
 ) -> Result<(), FerryError> {
     let writing = lock(&shared.peers_write);
     let mut copy = lock(&shared.state).peers.clone();
-    change(&mut copy);
-    let written = copy.save();
-    if written.is_ok() {
+    let result = change(&mut copy).and_then(|()| copy.save());
+    if result.is_ok() {
         lock(&shared.state).peers = copy;
     }
     drop(writing);
-    written.map_err(|e| from_peer(&e))
+    result.map_err(|e| from_peer(&e))
 }
 
 /// The engine both apps link. See the crate documentation for the contract.
@@ -1132,6 +1131,7 @@ impl Engine {
         self.shared.mounts.stop(&key_hex);
         save_peers(&self.shared, |store| {
             drop(store.remove(&key));
+            Ok(())
         })?;
 
         let gone: Vec<String>;
@@ -2452,7 +2452,7 @@ fn finish_pairing(
             name: name.clone(),
             paired_unix_secs: now_unix_secs(),
             kind,
-        });
+        })
     }) {
         fail_pairing(shared, error);
         return;

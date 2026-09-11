@@ -28,7 +28,9 @@
 //!     // on every peer, since it predates the kind byte
 //!     pub fn load(path: &Path, assumed_kind: DeviceKind) -> Result<Self, PeerError>;
 //!     pub fn save(&self) -> Result<(), PeerError>;            // writes to a temp name, then renames
-//!     pub fn add(&mut self, peer: Peer);                       // replaces an existing entry for the same key
+//!     // replaces an existing entry for the same key; refuses a new key
+//!     // past MAX_PEERS
+//!     pub fn add(&mut self, peer: Peer) -> Result<(), PeerError>;
 //!     pub fn remove(&mut self, key: &PublicKey) -> Option<Peer>;
 //!     pub fn get(&self, key: &PublicKey) -> Option<&Peer>;
 //!     pub fn all(&self) -> &[Peer];
@@ -223,8 +225,25 @@ impl PeerStore {
     }
 
     /// Add a peer, replacing any existing entry for the same key.
-    pub fn add(&mut self, peer: Peer) {
+    ///
+    /// F7: `save` already refused a store over [`MAX_PEERS`], but only once
+    /// something tried to write it to disk. Refusing here too means the
+    /// limit bounds how many peers a pairing trial can hold in memory in
+    /// the first place, not only what survives to be saved. A peer that
+    /// already has an entry may still be replaced past the limit: this
+    /// never grows the count, so it is never what the limit is protecting
+    /// against.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PeerError::TooMany`] when the store already holds
+    /// [`MAX_PEERS`] peers and `peer.key` does not name one of them.
+    pub fn add(&mut self, peer: Peer) -> Result<(), PeerError> {
+        if !self.peers.contains_key(&peer.key) && self.peers.len() >= MAX_PEERS {
+            return Err(PeerError::TooMany);
+        }
         self.peers.insert(peer.key, peer);
+        Ok(())
     }
 
     /// Remove a peer, returning it if it was present.
@@ -504,8 +523,8 @@ fn to_hex(bytes: [u8; 8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeviceKind, FORMAT_VERSION_1, FileSecretStore, Peer, PeerError, PeerStore, SecretStore,
-        encoded_key_capacity,
+        DeviceKind, FORMAT_VERSION_1, FileSecretStore, MAX_PEERS, Peer, PeerError, PeerStore,
+        SecretStore, encoded_key_capacity,
     };
     use crate::noise::{PublicKey, StaticKey};
     use crate::wire::{Encoder, WireError};
@@ -564,8 +583,12 @@ mod tests {
         let path = dir.join("peers.bin");
 
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
-        store.add(sample_peer(1, "Shiva's MacBook", 1_700_000_000));
-        store.add(sample_peer(2, "Shiva's Pixel", 1_700_000_500));
+        store
+            .add(sample_peer(1, "Shiva's MacBook", 1_700_000_000))
+            .unwrap();
+        store
+            .add(sample_peer(2, "Shiva's Pixel", 1_700_000_500))
+            .unwrap();
         store.save().unwrap();
 
         let loaded = PeerStore::load(&path, DeviceKind::Phone).unwrap();
@@ -580,18 +603,22 @@ mod tests {
         let path = dir.join("peers.bin");
 
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
-        store.add(Peer {
-            key: key(1),
-            name: "A Mac".to_string(),
-            paired_unix_secs: 1,
-            kind: DeviceKind::Mac,
-        });
-        store.add(Peer {
-            key: key(2),
-            name: "A Phone".to_string(),
-            paired_unix_secs: 2,
-            kind: DeviceKind::Phone,
-        });
+        store
+            .add(Peer {
+                key: key(1),
+                name: "A Mac".to_string(),
+                paired_unix_secs: 1,
+                kind: DeviceKind::Mac,
+            })
+            .unwrap();
+        store
+            .add(Peer {
+                key: key(2),
+                name: "A Phone".to_string(),
+                paired_unix_secs: 2,
+                kind: DeviceKind::Phone,
+            })
+            .unwrap();
         store.save().unwrap();
 
         // Loaded with the opposite assumed kind from what was stored. A
@@ -633,11 +660,66 @@ mod tests {
         let path = dir.join("peers.bin");
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
 
-        store.add(sample_peer(1, "old-name", 100));
-        store.add(sample_peer(1, "new-name", 200));
+        store.add(sample_peer(1, "old-name", 100)).unwrap();
+        store.add(sample_peer(1, "new-name", 200)).unwrap();
 
         assert_eq!(store.all().len(), 1);
         assert_eq!(store.get(&key(1)).unwrap().name, "new-name");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_65th_distinct_peer_is_refused_in_memory() {
+        // F7: `save` already refused a store over MAX_PEERS, but only once
+        // something tried to write it. `add` must refuse the same way
+        // before the count ever grows past the limit in memory, so a
+        // pairing trial cannot hold more than MAX_PEERS candidates even
+        // before anything is saved.
+        let dir = unique_temp_dir("max-peers");
+        let path = dir.join("peers.bin");
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
+
+        for i in 0..MAX_PEERS {
+            let byte = u8::try_from(i % 256).unwrap_or(0);
+            store
+                .add(sample_peer(byte, "device", 100))
+                .unwrap_or_else(|_| panic!("peer {i} is within the bound"));
+        }
+        assert_eq!(store.all().len(), MAX_PEERS);
+
+        let refused = store.add(sample_peer(255, "one too many", 100));
+        assert!(matches!(refused, Err(PeerError::TooMany)));
+        assert_eq!(
+            store.all().len(),
+            MAX_PEERS,
+            "the refused peer must not have been added"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_still_replaces_an_existing_key_once_the_store_is_full() {
+        // A replacement never grows the count, so it is never what the
+        // limit is protecting against, even once the store is already at
+        // the bound.
+        let dir = unique_temp_dir("max-peers-replace");
+        let path = dir.join("peers.bin");
+        let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
+
+        for i in 0..MAX_PEERS {
+            let byte = u8::try_from(i % 256).unwrap_or(0);
+            store
+                .add(sample_peer(byte, "device", 100))
+                .unwrap_or_else(|_| panic!("peer {i} is within the bound"));
+        }
+
+        store
+            .add(sample_peer(0, "renamed", 200))
+            .expect("replacing an existing key must succeed even at the bound");
+        assert_eq!(store.all().len(), MAX_PEERS);
+        assert_eq!(store.get(&key(0)).unwrap().name, "renamed");
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -647,7 +729,7 @@ mod tests {
         let dir = unique_temp_dir("remove");
         let path = dir.join("peers.bin");
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
-        store.add(sample_peer(1, "device", 100));
+        store.add(sample_peer(1, "device", 100)).unwrap();
 
         let removed = store.remove(&key(1));
         assert_eq!(removed, Some(sample_peer(1, "device", 100)));
@@ -662,7 +744,7 @@ mod tests {
         let path = dir.join("peers.bin");
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         let long_name = "a".repeat(257);
-        store.add(sample_peer(1, &long_name, 100));
+        store.add(sample_peer(1, &long_name, 100)).unwrap();
 
         assert!(matches!(store.save(), Err(PeerError::NameTooLong)));
 
@@ -674,7 +756,7 @@ mod tests {
         let dir = unique_temp_dir("bad_version");
         let path = dir.join("peers.bin");
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
-        store.add(sample_peer(1, "device", 100));
+        store.add(sample_peer(1, "device", 100)).unwrap();
         store.save().unwrap();
 
         let mut bytes = fs::read(&path).unwrap();
@@ -694,7 +776,7 @@ mod tests {
         let dir = unique_temp_dir("trailing");
         let path = dir.join("peers.bin");
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
-        store.add(sample_peer(1, "device", 100));
+        store.add(sample_peer(1, "device", 100)).unwrap();
         store.save().unwrap();
 
         let mut bytes = fs::read(&path).unwrap();
@@ -746,7 +828,7 @@ mod tests {
         let secret_path = dir.join("key.bin");
 
         let mut store = PeerStore::load(&peers_path, DeviceKind::Phone).unwrap();
-        store.add(sample_peer(1, "device", 100));
+        store.add(sample_peer(1, "device", 100)).unwrap();
         store.save().unwrap();
 
         let secret_store = FileSecretStore::new(secret_path.clone());

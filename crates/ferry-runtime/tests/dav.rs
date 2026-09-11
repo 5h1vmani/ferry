@@ -74,12 +74,14 @@ fn seed_peer(
 ) {
     let mut peers = PeerStore::load(&data_dir.join("peers.bin"), core_kind(peer_kind))
         .expect("a missing peer store loads empty");
-    peers.add(Peer {
-        key: public_key_of(peer_key),
-        name: peer_name.to_owned(),
-        paired_unix_secs: 0,
-        kind: core_kind(peer_kind),
-    });
+    peers
+        .add(Peer {
+            key: public_key_of(peer_key),
+            name: peer_name.to_owned(),
+            paired_unix_secs: 0,
+            kind: core_kind(peer_kind),
+        })
+        .expect("a fresh store is well under MAX_PEERS");
     peers.save().expect("the seeded peer store should save");
 }
 
