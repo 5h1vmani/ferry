@@ -93,6 +93,7 @@ object FerryErrors {
         "Runtime::PairingTimeout" to Words("Pairing stopped.", "No device appeared within two minutes.", "Turn pairing on for the other device and try again."),
         "Runtime::PushInFlight" to Words("The file was not sent.", "A push to that name on that device is already in progress.", "Wait for it to finish, then try again."),
         "Runtime::TransferNotFound" to Words("The transfer was not found.", "It is no longer in the list.", "Nothing to do."),
+        "Runtime::WriteTooLarge" to Words("The file was not saved.", "One write carried more than 1 MiB. Ferry writes 1 MiB at a time.", "Save the file again."),
         "TcpError::Io" to Words("The connection failed.", "The network dropped it.", "It reconnects on its own when the device is reachable."),
         "TcpError::Noise" to Words("The connection was refused.", "The device did not prove it is the one paired.", "If this keeps happening, forget the device and pair again."),
         "TcpError::Timeout" to Words("The connection timed out.", "The device did not answer in time.", "Check that Ferry is open and reachable on it."),

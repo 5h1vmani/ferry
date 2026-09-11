@@ -361,6 +361,11 @@
       "why": "It holds more than 10,000 files, or is nested more than 32 folders deep.",
       "todo": "Copy a smaller folder, or open it and copy fewer files at a time."
     },
+    "Runtime::WriteTooLarge": {
+      "stopped": "The file was not saved.",
+      "why": "One write carried more than 1 MiB. Ferry writes 1 MiB at a time.",
+      "todo": "Save the file again."
+    },
     "Runtime::MountFailed": {
       "stopped": "The Finder mount did not start.",
       "why": "{detail}",
