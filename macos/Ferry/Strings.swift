@@ -393,6 +393,11 @@ enum S {
         static func fileAccessibility(name: String, size: String) -> String {
             String(format: fileAccessibilityFormat, name, size)
         }
+
+        static let copyToMacAccessibilityFormat = "Copy %@ to Mac"
+        static func copyToMacAccessibility(name: String) -> String {
+            String(format: copyToMacAccessibilityFormat, name)
+        }
     }
 
     enum settings {

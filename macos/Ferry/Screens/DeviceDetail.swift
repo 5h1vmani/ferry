@@ -229,6 +229,10 @@ private struct EntryRow: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Button(S.files.copyToMac, action: onCopyFolder)
+                    // Without this, VoiceOver reads "Copy to Mac" for every
+                    // folder row in the list, with nothing to tell them
+                    // apart when moving between buttons rather than rows.
+                    .accessibilityLabel(S.files.copyToMacAccessibility(name: entry.name))
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(S.files.folderAccessibility(name: entry.name))
