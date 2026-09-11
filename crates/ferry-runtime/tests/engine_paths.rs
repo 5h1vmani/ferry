@@ -1432,6 +1432,90 @@ fn an_interrupted_first_pass_resumes_after_a_restart() {
 }
 
 // ---------------------------------------------------------------------------
+// Item 5: a push resumes across a cut connection.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md` item 5: a push cut at three points -- early,
+/// mid-transfer, and during the final rename -- resumes on its own and
+/// rewrites at most one chunk. Proved with wire bytes, the technique
+/// `resume_sweep.rs` uses for a pull, but at three points rather than a
+/// full sweep: item 5 says the resume rule is the same code path that sweep
+/// already proves, so this only has to show a push reaches it too.
+///
+/// Two real engines, the way `pair_two_engines` sets up for a batch: a
+/// pull's own hand-built `Peer` only answers `read`, and a push needs
+/// `write`, `truncate`, `rename`, `set_mtime` and the manifest request
+/// served for real.
+#[test]
+fn a_cut_push_resumes_and_rewrites_at_most_one_chunk() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair_two_engines(&phone, &mac);
+    mac.engine.set_backoff(Duration::ZERO);
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let bytes = sample_bytes(mib(3));
+    let local_path = source.path().join("big.bin");
+    std::fs::write(&local_path, &bytes).expect("the local file should write");
+    let local_path_text = local_path.to_string_lossy().into_owned();
+
+    let timed_push = |remote_name: &str| -> u64 {
+        let before = mac.engine.wire_bytes();
+        let id = mac
+            .engine
+            .push(
+                phone_key.clone(),
+                local_path_text.clone(),
+                remote_name.to_owned(),
+            )
+            .expect("the push should be accepted");
+        let engine = Arc::clone(&mac.engine);
+        let wanted = id.clone();
+        poll_until("the push to finish", move || {
+            engine
+                .transfers()
+                .iter()
+                .any(|t| t.id == wanted && t.state == TransferState::Done)
+        });
+        mac.engine.wire_bytes() - before
+    };
+
+    let clean = timed_push("Root/clean.bin");
+    assert_eq!(
+        std::fs::read(phone.shared_root().join("clean.bin")).expect("clean.bin should land"),
+        bytes,
+        "a clean push must land every byte"
+    );
+
+    // One chunk is exactly one mebibyte: `LocalFs::manifest`, on both sides,
+    // always builds with `ChunkSize::one_mebibyte()`. The margin past that
+    // covers one retry's own hello and manifest exchange, a few hundred
+    // bytes at most for a three chunk file.
+    let bound = clean + MIB + 200_000;
+
+    for (label, n) in [
+        ("early", clean / 20),
+        ("mid", clean / 2),
+        ("late", clean - 60),
+    ] {
+        mac.engine.set_cut(n.max(1));
+        let name = format!("cut-{label}.bin");
+        let used = timed_push(&format!("Root/{name}"));
+        let landed = std::fs::read(phone.shared_root().join(&name))
+            .unwrap_or_else(|_| panic!("a cut at {label} (n={n}) should still land {name}"));
+        assert_eq!(landed, bytes, "a cut at {label} must still land every byte");
+        assert!(
+            used <= bound,
+            "a cut at {label} (n={n}) used {used} wire bytes, the bound is {bound}; \
+             more than one chunk must have been rewritten"
+        );
+    }
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 6: one engine per data folder, and no record for a device that is
 // not paired.
 // ---------------------------------------------------------------------------

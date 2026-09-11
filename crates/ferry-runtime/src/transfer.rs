@@ -87,7 +87,7 @@ const MAX_WORKERS: usize = 4;
 const CHUNK_DEADLINE: Duration = Duration::from_secs(30);
 
 /// How one attempt ended.
-enum Outcome {
+pub(crate) enum Outcome {
     /// The file is at its final name.
     Done,
     /// The link failed. Wait, then try again.
@@ -399,23 +399,30 @@ fn record_held_row(
 }
 
 /// What one attempt needs to know, copied out from under the lock.
-struct Plan {
-    device_key_hex: String,
-    peer: PublicKey,
-    source: RemotePath,
-    destination: RemotePath,
+///
+/// Shared by a pull's own attempt logic below and by `push::attempt`. For a
+/// pull, `source` is the file's path on the peer and `destination` is where
+/// it lands here, relative to the download folder. For a push, the meaning
+/// flips, per `docs/engine-contract.md` item 5: `source` is this device's
+/// local file, stored with its leading slash stripped so it fits the same
+/// `RemotePath` type, and `destination` is the file's path on the peer.
+pub(crate) struct Plan {
+    pub(crate) device_key_hex: String,
+    pub(crate) peer: PublicKey,
+    pub(crate) source: RemotePath,
+    pub(crate) destination: RemotePath,
     /// The 32 hex characters that name this transfer's own partial file
     /// during the first pass.
-    suffix: String,
+    pub(crate) suffix: String,
     /// When `pull` created this transfer. Written into every record this
     /// attempt writes.
-    started_unix_secs: i64,
+    pub(crate) started_unix_secs: i64,
     /// Which way this transfer moves the file. Written into every record
     /// this attempt writes.
-    direction: Direction,
+    pub(crate) direction: Direction,
     /// Which batch this transfer belongs to, if `pull_folder` created it.
     /// Written into every record this attempt writes.
-    batch_id: Option<String>,
+    pub(crate) batch_id: Option<String>,
 }
 
 /// Read the plan for one transfer out of the state.
@@ -436,17 +443,27 @@ fn plan_for(shared: &Arc<Shared>, id: &str) -> Option<Plan> {
 }
 
 /// One connection, one go at moving the file.
+///
+/// A pull needs the shared download folder before it dials anyone, because
+/// that is where it lands the file. A push reads its own local file through
+/// a `LocalFs` it opens fresh on that file's own parent folder
+/// (`push::open_local`), so it needs no shared folder at all.
 fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     let Some(plan) = plan_for(shared, id) else {
         return Outcome::Fatal(failed("Runtime::TransferNotFound"));
     };
-    let Some(fs) = shared.download_fs() else {
-        // `stop` takes the download folder away. That is not a fault in the
-        // transfer, so it pauses rather than fails.
-        if shared.stopping() {
-            return Outcome::Retry(failed("Runtime::NotReachable"));
+    let fs = if plan.direction == Direction::Pull {
+        match shared.download_fs() {
+            Some(fs) => Some(fs),
+            // `stop` takes the download folder away. That is not a fault in
+            // the transfer, so it pauses rather than fails.
+            None if shared.stopping() => {
+                return Outcome::Retry(failed("Runtime::NotReachable"));
+            }
+            None => return Outcome::Fatal(failed("Runtime::NotStarted")),
         }
-        return Outcome::Fatal(failed("Runtime::NotStarted"));
+    } else {
+        None
     };
 
     let (stream, socket, addr, via) = match dial(shared, &plan.device_key_hex, &plan.peer) {
@@ -493,8 +510,16 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     // exactly what this attempt itself received (docs/engine-contract.md,
     // item 13).
     let bytes_before = bytes_done_of(shared, id);
-
     let mut client = Client::new(stream);
+
+    if plan.direction == Direction::Push {
+        // A push logs its one access log entry up front, in `push::push` and
+        // `push::push_files`, through the existing `record_this`: see
+        // `docs/engine-contract.md` item 5. Nothing here logs per attempt.
+        return crate::push::attempt(shared, id, &plan, &mut client);
+    }
+
+    let fs = fs.expect("checked above: a pull always has a download folder here");
     let record = match load_or_build(shared, id, &plan, fs.as_ref(), &mut client) {
         Ok(record) => record,
         Err(outcome) => {
@@ -508,7 +533,9 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
 }
 
 /// This transfer's own `bytes_done`, right now.
-fn bytes_done_of(shared: &Arc<Shared>, id: &str) -> u64 {
+///
+/// Shared with `push.rs`, which reads it the same way `attempt` does above.
+pub(crate) fn bytes_done_of(shared: &Arc<Shared>, id: &str) -> u64 {
     lock(&shared.state)
         .transfers
         .get(id)
@@ -816,7 +843,10 @@ fn verify_and_land<S: Read + Write>(
 }
 
 /// A connection failure is worth another go. A refusal by the peer is not.
-fn classify_rpc(error: &RpcError) -> Outcome {
+///
+/// Shared with `push.rs`: the same rule decides whether a failed call during
+/// a push is worth retrying.
+pub(crate) fn classify_rpc(error: &RpcError) -> Outcome {
     match error {
         RpcError::Remote(inner) => Outcome::Fatal(from_op(*inner)),
         other => Outcome::Retry(from_rpc(other)),
@@ -932,7 +962,10 @@ fn ensure_parents(fs: &dyn FileOps, destination: &RemotePath) -> Result<(), OpEr
 }
 
 /// Writes progress down, and tells the app at most once a second.
-struct Reporter<'a> {
+///
+/// Shared with `push.rs`: a push reports its own progress the same way a
+/// pull does, through the same fields on the same `TransferRow`.
+pub(crate) struct Reporter<'a> {
     shared: &'a Arc<Shared>,
     id: String,
     device_key_hex: String,
@@ -954,7 +987,7 @@ struct Reporter<'a> {
 
 impl<'a> Reporter<'a> {
     /// Start reporting for one transfer.
-    fn new(shared: &'a Arc<Shared>, id: &str, device_key_hex: &str) -> Self {
+    pub(crate) fn new(shared: &'a Arc<Shared>, id: &str, device_key_hex: &str) -> Self {
         let now = Instant::now();
         Self {
             shared,
@@ -969,7 +1002,7 @@ impl<'a> Reporter<'a> {
     }
 
     /// Note that the transfer has reached `bytes_done` of `total`.
-    fn moved(&mut self, bytes_done: u64, total: u64) {
+    pub(crate) fn moved(&mut self, bytes_done: u64, total: u64) {
         if !self.seeded {
             self.bytes_at_last_report = bytes_done;
             self.bytes_at_speed_window_start = bytes_done;

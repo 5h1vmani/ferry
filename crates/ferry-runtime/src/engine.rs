@@ -34,6 +34,7 @@ use crate::errors::{
 use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAware};
 use crate::notify::{Change, Notify};
+use crate::push;
 use crate::record::{Record, read_record};
 use crate::state::{
     BatchRow, Candidate, DeviceLive, HeldPairing, Pairing, State, TransferRow, UsbForward,
@@ -1504,6 +1505,29 @@ impl Engine {
         Ok(batch_id)
     }
 
+    /// Send one file to a paired device.
+    ///
+    /// `docs/engine-contract.md`, item 5. `local_path` is absolute on this
+    /// device; `remote_path` is root-relative on the peer and names the
+    /// file, not its folder. Runs on its own thread, the same as `pull`, and
+    /// resumes on its own when the device becomes reachable again.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `PathError` code when `remote_path` is refused, and
+    /// `Runtime::NotPaired` when the device is not stored. A local file that
+    /// is missing, a directory, a symlink, or a special file, and a
+    /// read-only root on the peer, surface as the matching error on the
+    /// transfer row instead, once a worker attempts it. See `push.rs`.
+    pub fn push(
+        &self,
+        device_key_hex: String,
+        local_path: String,
+        remote_path: String,
+    ) -> Result<String, FerryError> {
+        push::push(&self.shared, &device_key_hex, &local_path, &remote_path)
+    }
+
     /// List every entry in one folder on a paired device.
     ///
     /// Dials the device, then pages through the server's cursor until it
@@ -1812,7 +1836,9 @@ fn open_roots(roots: &[Root]) -> Result<RootsState, FerryError> {
 }
 
 /// The last component of a path, for display.
-fn leaf_of(path: &RemotePath) -> String {
+///
+/// `pub(crate)`: `push.rs` reuses this for a push's own `file_name`.
+pub(crate) fn leaf_of(path: &RemotePath) -> String {
     path.components().last().unwrap_or(path.as_str()).to_owned()
 }
 

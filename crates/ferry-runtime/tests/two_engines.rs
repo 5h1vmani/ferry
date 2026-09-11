@@ -1302,3 +1302,699 @@ fn a_bad_config_is_refused_before_anything_starts() {
     let long_name = make("n".repeat(65), good_key).err().expect("refused");
     assert_eq!(code_of_error(&long_name), "Runtime::NameTooLong");
 }
+
+// ---------------------------------------------------------------------------
+// Item 5: push.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, item 5, the happy path: a pushed file lands on
+/// the peer under the right root, with the right bytes and the right
+/// modified time, the row shows `Direction::Push` and ends `Done`, the
+/// peer's access log shows the writes, and the sender's shows one `Write`
+/// entry for the whole file.
+#[test]
+fn a_pushed_file_lands_on_the_peer_and_the_row_and_logs_show_it() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    // The file being pushed lives outside every served root, the way a real
+    // file the person picks in a panel would.
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("holiday.bin");
+    let bytes = sample_bytes();
+    std::fs::write(&local_path, &bytes).expect("the local file should write");
+    let old_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&local_path)
+        .expect("the local file should reopen")
+        .set_modified(old_mtime)
+        .expect("the local file's modified time should be settable");
+
+    let id = mac
+        .engine
+        .push(
+            phone_key.clone(),
+            local_path.to_string_lossy().into_owned(),
+            "Root/holiday.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted_id = id.clone();
+    mac.inbox.wait_until("the push to finish", move || {
+        engine
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted_id && t.state == TransferState::Done)
+    });
+
+    let row = mac
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the finished push should still be listed");
+    assert_eq!(row.direction, Direction::Push, "a push is Direction::Push");
+    assert_eq!(row.state, TransferState::Done);
+
+    let landed_path = phone.shared_root.join("holiday.bin");
+    let landed = std::fs::read(&landed_path).expect("the file should be under the phone's root");
+    assert_eq!(landed, bytes, "every byte must match");
+
+    let landed_mtime = std::fs::metadata(&landed_path)
+        .expect("the landed file should have metadata")
+        .modified()
+        .expect("the platform should report a modified time")
+        .duration_since(UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    let wanted_mtime = old_mtime
+        .duration_since(UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_secs();
+    assert_eq!(
+        landed_mtime, wanted_mtime,
+        "the pushed file keeps the local file's modified time"
+    );
+
+    let leftovers: Vec<String> = std::fs::read_dir(&phone.shared_root)
+        .expect("the phone's shared folder should be readable")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".ferry-part"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "no partial file should be left behind, found {leftovers:?}"
+    );
+
+    // The peer's own access log shows the writes it served, as actor Peer.
+    let phone_engine = Arc::clone(&phone.engine);
+    phone
+        .inbox
+        .wait_until("the phone to record the writes it served", move || {
+            phone_engine
+                .access_log(None, 100)
+                .iter()
+                .any(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Write)
+        });
+
+    // The sender's own access log: one Write entry for the one pushed file.
+    let mac_log = mac.engine.access_log(None, 100);
+    let this_writes: Vec<_> = mac_log
+        .iter()
+        .filter(|e| e.actor == Actor::This && e.verb == AccessVerb::Write)
+        .collect();
+    assert_eq!(
+        this_writes.len(),
+        1,
+        "one Write entry for the one pushed file"
+    );
+    assert_eq!(this_writes[0].path, "Root/holiday.bin");
+    assert_eq!(this_writes[0].bytes, Some(bytes.len() as u64));
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// A push into a root the peer marked not writable fails with the same
+/// `PermissionDenied` a read-only root already refuses everything else with.
+#[test]
+fn a_push_into_a_read_only_root_fails_with_permission_denied() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    phone
+        .engine
+        .set_roots(vec![Root {
+            name: "Root".to_owned(),
+            path: phone.shared_root.to_string_lossy().into_owned(),
+            writable: false,
+        }])
+        .expect("the phone should accept its own root marked read-only");
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("holiday.bin");
+    std::fs::write(&local_path, sample_bytes()).expect("the local file should write");
+
+    let id = mac
+        .engine
+        .push(
+            phone_key,
+            local_path.to_string_lossy().into_owned(),
+            "Root/holiday.bin".to_owned(),
+        )
+        .expect("the push should be accepted; the refusal is the peer's, not the call's");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted_id = id.clone();
+    mac.inbox.wait_until("the push to fail", move || {
+        engine
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted_id && t.state == TransferState::Failed)
+    });
+
+    let row = mac
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the failed push should still be listed");
+    let error = row.error.expect("a failed row carries an error");
+    assert_eq!(code_of_error(&error), "OpError::PermissionDenied");
+    assert!(
+        !phone.shared_root.join("holiday.bin").exists(),
+        "nothing lands on a root that refused the write"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Item 13: the access log records what each side did.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, batch E, item 13, end to end: a listing and a
+/// pull each leave a `Peer` entry on the served side and a matching `This`
+/// entry on the calling side, the device filter narrows to one device, and
+/// `access_log_changed` fires on both engines.
+#[test]
+fn access_log_records_a_listing_and_a_pull_on_both_sides() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("Photos"))
+        .expect("the phone's shared folder should accept a new folder");
+    let bytes = sample_bytes();
+    std::fs::write(phone.shared_root.join("Photos/holiday.bin"), &bytes)
+        .expect("the phone's shared folder should accept a file");
+
+    let entries = mac
+        .engine
+        .list(phone_key.clone(), "Root/Photos".to_owned())
+        .expect("the folder should list");
+    assert_eq!(entries.len(), 1, "one file sits under Photos");
+
+    let id = mac
+        .engine
+        .pull(
+            phone_key.clone(),
+            "Root/Photos/holiday.bin".to_owned(),
+            "holiday.bin".to_owned(),
+        )
+        .expect("the pull should be accepted");
+    let engine = Arc::clone(&mac.engine);
+    let wanted_id = id.clone();
+    mac.inbox.wait_until("the transfer to finish", move || {
+        engine
+            .transfers()
+            .iter()
+            .any(|t| t.id == wanted_id && t.state == TransferState::Done)
+    });
+
+    // The calling side ("This"): both calls finalise their own entry at
+    // once, so nothing here needs to wait.
+    let mac_log = mac.engine.access_log(None, 100);
+    let this_list = mac_log
+        .iter()
+        .find(|e| e.actor == Actor::This && e.verb == AccessVerb::List)
+        .expect("the calling side should record its own listing");
+    assert_eq!(this_list.path, "Root/Photos");
+    assert_eq!(this_list.entries, Some(1));
+
+    let this_read = mac_log
+        .iter()
+        .find(|e| e.actor == Actor::This && e.verb == AccessVerb::Read)
+        .expect("the calling side should record its own pull");
+    assert_eq!(this_read.path, "Root/Photos/holiday.bin");
+    assert_eq!(this_read.bytes, Some(bytes.len() as u64));
+
+    assert!(
+        mac.inbox.lock().access_log_ticks > 0,
+        "access_log_changed should have fired on the calling side"
+    );
+
+    // The served side ("Peer"): the entries finalise once the served
+    // connection ends, which happens on the phone's own serving thread, so
+    // this polls instead of assuming it has already happened.
+    let phone_engine = Arc::clone(&phone.engine);
+    phone
+        .inbox
+        .wait_until("the phone to record what it served", move || {
+            let log = phone_engine.access_log(None, 100);
+            log.iter()
+                .any(|e| e.actor == Actor::Peer && e.verb == AccessVerb::List)
+                && log
+                    .iter()
+                    .any(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+        });
+    let phone_log = phone.engine.access_log(None, 100);
+    let peer_list = phone_log
+        .iter()
+        .find(|e| e.actor == Actor::Peer && e.verb == AccessVerb::List)
+        .expect("the served side should record the listing");
+    assert_eq!(peer_list.entries, Some(1));
+    let peer_read = phone_log
+        .iter()
+        .find(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+        .expect("the served side should record the read");
+    assert_eq!(peer_read.bytes, Some(bytes.len() as u64));
+
+    assert!(
+        phone.inbox.lock().access_log_ticks > 0,
+        "access_log_changed should have fired on the served side"
+    );
+
+    // The device filter: an unrelated key hex sees nothing, the real one
+    // sees what was just recorded.
+    let stranger = "ff".repeat(32);
+    assert!(mac.engine.access_log(Some(stranger), 100).is_empty());
+    assert!(!mac.engine.access_log(Some(phone_key), 100).is_empty());
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Finding E5: a folder copy logs itself once, not once per file.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, item 13, "Rolling up": a file copied as part
+/// of a folder copy logs nothing of its own on the calling side, because the
+/// folder's own entry, with its file count and byte total, already covers
+/// it. The served side knows nothing of batches, so it still logs one entry
+/// per file, exactly as an ordinary pull would.
+#[test]
+fn pull_folder_logs_the_folder_once_not_once_per_file() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("Camera")).expect("a folder for the camera roll");
+    let bytes_a = sample_bytes();
+    let bytes_b = sample_bytes();
+    std::fs::write(phone.shared_root.join("Camera/a.bin"), &bytes_a)
+        .expect("the phone's shared folder should accept a file");
+    std::fs::write(phone.shared_root.join("Camera/b.bin"), &bytes_b)
+        .expect("the phone's shared folder should accept a file");
+
+    let batch_id = mac
+        .engine
+        .pull_folder(phone_key.clone(), "Root/Camera".to_owned())
+        .expect("the folder copy should be accepted");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted_batch = batch_id.clone();
+    mac.inbox.wait_until("the batch to finish", move || {
+        engine
+            .batches()
+            .iter()
+            .any(|b| b.id == wanted_batch && b.state == TransferState::Done)
+    });
+
+    // The calling side: the folder's own Read entry is the only one, and it
+    // is not one of the two files.
+    let mac_log = mac.engine.access_log(None, 100);
+    let this_reads: Vec<_> = mac_log
+        .iter()
+        .filter(|e| e.actor == Actor::This && e.verb == AccessVerb::Read)
+        .collect();
+    assert_eq!(
+        this_reads.len(),
+        1,
+        "the folder entry is the only Read the calling side logs"
+    );
+    assert_eq!(this_reads[0].path, "Root/Camera");
+    assert_eq!(this_reads[0].files, Some(2));
+    assert_eq!(
+        this_reads[0].bytes,
+        Some((bytes_a.len() + bytes_b.len()) as u64),
+        "the folder entry's byte total covers both files"
+    );
+
+    // The served side does not know about batches: it still logs one Read
+    // per file, the phone's own serving thread finalising each once its
+    // connection ends.
+    let phone_engine = Arc::clone(&phone.engine);
+    phone
+        .inbox
+        .wait_until("the phone to record both files it served", move || {
+            phone_engine
+                .access_log(None, 100)
+                .iter()
+                .filter(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+                .count()
+                >= 2
+        });
+    let phone_log = phone.engine.access_log(None, 100);
+    let peer_reads: Vec<_> = phone_log
+        .iter()
+        .filter(|e| e.actor == Actor::Peer && e.verb == AccessVerb::Read)
+        .collect();
+    assert_eq!(
+        peer_reads.len(),
+        2,
+        "one entry per file on the served side, unlike the calling side"
+    );
+    assert!(peer_reads.iter().any(|e| e.path == "Root/Camera/a.bin"));
+    assert!(peer_reads.iter().any(|e| e.path == "Root/Camera/b.bin"));
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Item 15: roots reach an open connection without a reconnect.
+// ---------------------------------------------------------------------------
+
+/// `docs/engine-contract.md`, batch C, item 15: a root change must reach an
+/// already-connected peer on its very next operation, with no reconnect.
+/// `Engine::list` always dials fresh, so this drives one connection by hand,
+/// the same way `engine_paths.rs` does, to keep it open across the change.
+#[test]
+fn a_root_change_reaches_an_open_connection_without_a_reconnect() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    // Only pairing itself is needed here: this test drives its own raw
+    // connection rather than `mac.engine.list`.
+    let _phone_key = pair(&mac, &phone);
+
+    let connection = tcp::connect(
+        loopback_addr(&phone),
+        &static_key(&mac.key),
+        &public_key(&phone.key),
+    )
+    .expect("a paired peer should be able to connect");
+    let mut stream = connection.stream;
+    exchange_hello(&mut stream, "Vamana", CoreDeviceKind::Mac)
+        .expect("the name exchange should run");
+    let mut client = Client::new(stream);
+
+    let root_path = RemotePath::parse("").expect("the empty path is valid");
+    let (before, _) = client
+        .list(&root_path, 0)
+        .expect("the roots should list on the freshly opened connection");
+    assert_eq!(
+        before.into_iter().map(|e| e.name).collect::<Vec<_>>(),
+        vec!["Root".to_owned()],
+        "before the change, only the configured root is listed"
+    );
+
+    let renamed_root = tempfile::tempdir().expect("a temporary folder for the renamed root");
+    phone
+        .engine
+        .set_roots(vec![Root {
+            name: "Renamed".to_owned(),
+            path: renamed_root.path().to_string_lossy().into_owned(),
+            writable: true,
+        }])
+        .expect("set_roots should accept a fresh, valid root");
+
+    // The very next operation, on the very same connection: no reconnect.
+    let (after, _) = client
+        .list(&root_path, 0)
+        .expect("the roots should list again, on the same connection");
+    assert_eq!(
+        after.into_iter().map(|e| e.name).collect::<Vec<_>>(),
+        vec!["Renamed".to_owned()],
+        "the already-open connection sees the new root without reconnecting"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// docs/engine-contract.md item 16a: a manifest request answers with the
+/// same manifest `ManifestBuilder` gives over the file's own bytes, once it
+/// has travelled a real, paired connection.
+#[test]
+fn a_manifest_request_crosses_the_wire() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let _phone_key = pair(&mac, &phone);
+
+    let bytes = sample_bytes();
+    std::fs::write(phone.shared_root.join("holiday.bin"), &bytes)
+        .expect("the file should write to the shared root");
+
+    let connection = tcp::connect(
+        loopback_addr(&phone),
+        &static_key(&mac.key),
+        &public_key(&phone.key),
+    )
+    .expect("a paired peer should be able to connect");
+    let mut stream = connection.stream;
+    exchange_hello(&mut stream, "Vamana", CoreDeviceKind::Mac)
+        .expect("the name exchange should run");
+    let mut client = Client::new(stream);
+
+    let path = RemotePath::parse("Root/holiday.bin").expect("a valid path");
+    let manifest = client
+        .manifest(&path)
+        .expect("the peer should answer a manifest request");
+    let expected = manifest_from_bytes(&bytes, ChunkSize::one_mebibyte());
+    assert_eq!(
+        manifest, expected,
+        "the served manifest must match the file's own bytes"
+    );
+
+    let root_path = RemotePath::parse("Root").expect("a valid path");
+    let dir_error = client
+        .manifest(&root_path)
+        .expect_err("a directory has no manifest");
+    assert!(
+        matches!(dir_error, RpcError::Remote(OpError::IsADirectory)),
+        "expected IsADirectory, got {dir_error:?}"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// Batch B and C audit, C6: `set_roots` refuses a bad set, and the roots it
+/// already had keep serving.
+#[test]
+fn a_bad_set_roots_call_is_refused_and_the_old_roots_keep_serving() {
+    let phone = build_as("Pixel 3 XL", DeviceKind::Phone);
+    let mac = build_as("Vamana", DeviceKind::Mac);
+    let phone_key = pair(&mac, &phone);
+
+    let outer = tempfile::tempdir().expect("a temporary folder for the outer root");
+    let inner_path = outer.path().join("inner");
+    std::fs::create_dir(&inner_path).expect("a nested folder for the inner root");
+
+    let error = phone
+        .engine
+        .set_roots(vec![
+            Root {
+                name: "Outer".to_owned(),
+                path: outer.path().to_string_lossy().into_owned(),
+                writable: true,
+            },
+            Root {
+                name: "Inner".to_owned(),
+                path: inner_path.to_string_lossy().into_owned(),
+                writable: true,
+            },
+        ])
+        .expect_err("a root nested inside another root should be refused");
+    assert_eq!(
+        code_of_error(&error),
+        "RootsError::RootOverlaps",
+        "the RootsError code crosses the boundary"
+    );
+
+    let entries = mac
+        .engine
+        .list(phone_key, String::new())
+        .expect("the old roots should still serve");
+    assert_eq!(
+        entries.into_iter().map(|e| e.name).collect::<Vec<_>>(),
+        vec!["Root".to_owned()],
+        "a refused set_roots call leaves the previous roots serving"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
+/// Pair `mac` with `phone` and return the phone's key hex, as `mac` names
+/// it. Shared by tests that need two paired engines but do not otherwise
+/// exercise the pairing screens.
+fn pair(mac: &Side, phone: &Side) -> String {
+    phone.engine.set_reachable(true);
+    phone.engine.start_pairing();
+    mac.engine.start_pairing();
+
+    let phone_addr = loopback_addr(phone);
+    mac.engine.offer_candidate(phone_addr);
+
+    let found = mac
+        .inbox
+        .wait_pairing("the Mac to list a candidate", is_found);
+    let PairingState::Found { candidates, .. } = &found else {
+        panic!("expected candidates, got {found:?}");
+    };
+    let wanted = format!("wifi:{phone_addr}");
+    let chosen = candidates
+        .iter()
+        .find(|candidate| candidate.id == wanted)
+        .unwrap_or_else(|| panic!("the injected candidate {wanted} should be listed"));
+    mac.engine
+        .pick_candidate(chosen.id.clone())
+        .expect("the candidate should be pickable");
+
+    mac.inbox.wait_pairing("the Mac to show a code", is_code);
+    phone
+        .inbox
+        .wait_pairing("the phone to show a code", is_code);
+
+    mac.engine.confirm_pairing(true);
+    phone.engine.confirm_pairing(true);
+    mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
+    phone
+        .inbox
+        .wait_pairing("the phone to confirm", is_confirmed);
+
+    mac.engine.devices()[0].key_hex.clone()
+}
+
+/// The code an error carries, or a panic saying it had none.
+fn code_of_error(error: &ferry_runtime::FerryError) -> String {
+    let ferry_runtime::FerryError::Failed { code, .. } = error;
+    code.clone()
+}
+
+#[test]
+fn the_engine_refuses_what_it_should_and_says_why() {
+    let side = build("Vamana");
+
+    let missing = side
+        .engine
+        .retry("no-such-transfer".to_owned())
+        .expect_err("an unknown transfer cannot be retried");
+    assert_eq!(code_of_error(&missing), "Runtime::TransferNotFound");
+
+    let stranger = side
+        .engine
+        .forget("not a key".to_owned())
+        .expect_err("an unpaired device cannot be forgotten");
+    assert_eq!(code_of_error(&stranger), "Runtime::NotPaired");
+
+    let bad_path = side
+        .engine
+        .pull("00".repeat(32), "../escape".to_owned(), "a.bin".to_owned())
+        .expect_err("a path that climbs out of the root is refused");
+    assert_eq!(code_of_error(&bad_path), "PathError::ParentComponent");
+
+    let root_source = side
+        .engine
+        .pull("00".repeat(32), String::new(), "a.bin".to_owned())
+        .expect_err("the shared root has no single file to pull");
+    assert_eq!(code_of_error(&root_source), "PathError::Empty");
+
+    let unpaired = side
+        .engine
+        .pull("00".repeat(32), "a.bin".to_owned(), "a.bin".to_owned())
+        .expect_err("an unpaired device cannot be pulled from");
+    assert_eq!(code_of_error(&unpaired), "Runtime::NotPaired");
+
+    side.engine.stop();
+}
+
+#[test]
+fn a_reachable_engine_has_a_four_character_short_code() {
+    let phone = build("Pixel 3 XL");
+
+    phone.engine.set_reachable(true);
+    let code = phone
+        .engine
+        .short_code()
+        .expect("a reachable engine should show its own short code");
+    assert_eq!(code.chars().count(), 4);
+
+    phone.engine.set_reachable(false);
+    assert_eq!(
+        phone.engine.short_code(),
+        None,
+        "an unreachable engine shows no short code"
+    );
+
+    phone.engine.stop();
+}
+
+#[test]
+fn status_reports_reachability_listen_port_and_adb_presence() {
+    let phone = build("Pixel 3 XL");
+
+    let before = phone.engine.status();
+    assert!(!before.reachable, "reachability starts off");
+    assert_ne!(before.listen_port, 0, "a started engine has bound a port");
+    assert_eq!(
+        before.listen_port,
+        phone
+            .engine
+            .listen_addr()
+            .expect("the engine has started")
+            .port(),
+        "status reports the same port the engine bound"
+    );
+    assert_eq!(
+        before.adb_present,
+        ferry_core::adb::find_adb().is_some(),
+        "status reports whether this machine has adb, same as the engine found at start"
+    );
+
+    phone.engine.set_reachable(true);
+    assert!(
+        phone.engine.status().reachable,
+        "status follows set_reachable"
+    );
+
+    phone.engine.stop();
+}
+
+#[test]
+fn a_bad_config_is_refused_before_anything_starts() {
+    let data = tempfile::tempdir().expect("a temporary folder");
+    let shared = tempfile::tempdir().expect("a temporary folder");
+    let download = tempfile::tempdir().expect("a temporary folder");
+    let inbox = Arc::new(Inbox::default());
+    let make = |name: String, key: KeyPair| {
+        Engine::new(
+            Config {
+                data_dir: data.path().to_string_lossy().into_owned(),
+                shared_roots: vec![Root {
+                    name: "Root".to_owned(),
+                    path: shared.path().to_string_lossy().into_owned(),
+                    writable: true,
+                }],
+                download_dir: download.path().to_string_lossy().into_owned(),
+                display_name: name,
+                listen_port: 0,
+                key,
+                kind: DeviceKind::Mac,
+            },
+            Box::new(Recorder {
+                inbox: Arc::clone(&inbox),
+            }),
+        )
+    };
+
+    let short_key = KeyPair {
+        private: vec![0u8; 31],
+        public: vec![0u8; 32],
+    };
+    let bad_key = make("Vamana".to_owned(), short_key).err().expect("refused");
+    assert_eq!(code_of_error(&bad_key), "NoiseError::BadKeyLength");
+
+    let good_key = generate_key().expect("a fresh key pair");
+    let long_name = make("n".repeat(65), good_key).err().expect("refused");
+    assert_eq!(code_of_error(&long_name), "Runtime::NameTooLong");
+}

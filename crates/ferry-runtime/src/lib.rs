@@ -59,8 +59,7 @@
 //!
 //! # Not yet
 //!
-//! Push, from the Mac to the phone, is not built. The core has `pull` only.
-//! Per-peer connection caps are not built. Both are recorded in `PLAN.md`.
+//! Per-peer connection caps are not built. Recorded in `PLAN.md`.
 //!
 //! # Contract for `Engine`
 //!
@@ -131,6 +130,10 @@
 //!     /// transfer per file under a new batch. Blocks until the listing is
 //!     /// done, so the app calls it off the main thread, as it does `list`.
 //!     pub fn pull_folder(&self, device_key_hex: String, remote_path: String) -> Result<String, FerryError>;
+//!     /// Send one file to a paired device. Returns the transfer id. Builds
+//!     /// the file's manifest first, resumes like a pull, and writes through
+//!     /// `<remote_path>.ferry-part` until the whole file verifies.
+//!     pub fn push(&self, device_key_hex: String, local_path: String, remote_path: String) -> Result<String, FerryError>;
 //!     pub fn batches(&self) -> Vec<BatchInfo>;
 //!     /// Retry every `Failed` transfer in a batch.
 //!     pub fn retry_batch(&self, batch_id: String) -> Result<(), FerryError>;
@@ -227,6 +230,7 @@ mod folder;
 mod guard;
 mod held;
 mod notify;
+mod push;
 mod record;
 mod state;
 mod transfer;
@@ -390,8 +394,6 @@ pub enum TransferState {
 }
 
 /// Which way a transfer moves a file.
-///
-/// Always `Pull` until item 5 lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Direction {
     /// This device fetched the file from the peer.
