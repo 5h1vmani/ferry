@@ -31,12 +31,32 @@ use std::io::{self, Read, Write};
 use zeroize::Zeroize;
 
 use crate::limits;
+use crate::peers::DeviceKind;
+use crate::rpc::{RpcError, decode_hello_payload, encode_hello_payload};
 
-/// The Noise pattern used the first time two devices meet.
+/// The Noise pattern used the first time two devices meet by code.
 const PATTERN_PAIR: &str = "Noise_XX_25519_ChaChaPoly_BLAKE2s";
 
 /// The Noise pattern used for every connection after pairing.
 const PATTERN_CONNECT: &str = "Noise_KK_25519_ChaChaPoly_BLAKE2s";
+
+/// The Noise pattern used the first time two devices meet by QR code.
+///
+/// The initiator already knows the responder's static key, read from the QR
+/// code, so it sends its own key in message one instead of waiting for
+/// message three the way `XX` does. This is what makes the handshake safe
+/// without a commit-and-reveal code: an active attacker cannot complete it
+/// without the responder's real private key. See
+/// `docs/engine-contract.md` item 12.
+const PATTERN_QR: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
+
+/// How many bytes the QR pairing nonce is.
+///
+/// Distinct from the 32 byte commit-and-reveal nonces `XX` pairing uses.
+/// This nonce is not there to stop grinding; `IK`'s key binding already does
+/// that. It is there so a photographed QR code cannot be replayed: it is
+/// single use and dies with the offer. `docs/protocol.md` section 4.
+pub const QR_NONCE_LEN: usize = 16;
 
 /// Separates this hash from every other use of BLAKE3 in the project.
 const CODE_CONTEXT: &[u8] = b"ferry-pairing-code-v1";
@@ -187,6 +207,18 @@ pub enum NoiseError {
     /// The peer finished the handshake without offering a static key.
     #[error("the peer offered no static key")]
     MissingPeerKey,
+    /// An `IK` message one's nonce did not match the offer this side is
+    /// currently showing, or nothing is being offered at all.
+    ///
+    /// Covers both a wrong nonce, which means a stale or foreign QR code, and
+    /// no live offer, which means this side is not currently offering to
+    /// pair by QR at all. Neither tells the initiator which; both look like a
+    /// plain handshake failure from outside.
+    #[error("the initiator's nonce does not match a live offer")]
+    UnknownOffer,
+    /// An `IK` message one's hello payload did not decode.
+    #[error("the pairing hello did not decode: {0}")]
+    BadHello(#[from] RpcError),
 }
 
 /// What a completed pairing produced.
@@ -384,6 +416,134 @@ pub fn pair_as_responder(
         peer,
         code,
     })
+}
+
+/// What a completed QR pairing produced, from the responder's side.
+///
+/// Unlike [`Paired`], there is no code to show: `IK`'s key binding is what
+/// makes this handshake safe, not a number a person compares. The nonce and
+/// hello arrived in message one, decoded here, so the caller can show
+/// `Requested { name, transport }` before anyone confirms anything.
+pub struct IkAccepted {
+    /// The encrypted channel, ready to carry frames.
+    pub stream: SecureStream,
+    /// The initiator's static public key.
+    pub peer: PublicKey,
+    /// The nonce from the offer this initiator says it scanned. The caller
+    /// checks this against the offer it is currently showing; this function
+    /// only checks it against `expected_nonce`, if one was given.
+    pub nonce: [u8; QR_NONCE_LEN],
+    /// The initiator's display name, from its hello.
+    pub name: String,
+    /// The initiator's device kind, from its hello.
+    pub kind: DeviceKind,
+}
+
+impl fmt::Debug for IkAccepted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("IkAccepted")
+            .field("peer", &self.peer)
+            .field("name", &self.name)
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Accept a QR pairing handshake, as the side whose static key was in the QR
+/// code.
+///
+/// `expected_nonce` is the nonce of the offer this side is currently
+/// showing, or `None` when it is not offering to pair by QR at all. Either
+/// way, message one is read and decrypted first, so a caller cannot tell
+/// from the outside whether a wrong nonce or no offer at all caused the
+/// refusal that follows: both look like an ordinary handshake failure.
+///
+/// # Errors
+///
+/// Returns [`NoiseError::UnknownOffer`] when the initiator's nonce does not
+/// equal `expected_nonce`, including when `expected_nonce` is `None`.
+/// Returns [`NoiseError::BadHello`] when the payload after the nonce does
+/// not decode as a hello. Returns [`NoiseError::Crypto`] when the initiator
+/// does not hold the private key matching the static key it sent.
+pub fn pair_ik_as_responder(
+    mut stream: impl Read + Write + Send + 'static,
+    key: &StaticKey,
+    expected_nonce: Option<&[u8; QR_NONCE_LEN]>,
+    prologue: &[u8],
+) -> Result<IkAccepted, NoiseError> {
+    let params = PATTERN_QR.parse().map_err(|_| NoiseError::BadPattern)?;
+    let mut state = snow::Builder::new(params)
+        .local_private_key(key.private_bytes())?
+        .prologue(prologue)?
+        .build_responder()?;
+
+    let mut buf = vec![0u8; MAX_HANDSHAKE_MESSAGE];
+    let incoming = receive_handshake(&mut stream)?;
+    let n = state.read_message(&incoming, &mut buf)?;
+    if n < QR_NONCE_LEN {
+        return Err(NoiseError::BadHandshakePayload);
+    }
+    let mut nonce = [0u8; QR_NONCE_LEN];
+    nonce.copy_from_slice(&buf[..QR_NONCE_LEN]);
+    if expected_nonce != Some(&nonce) {
+        return Err(NoiseError::UnknownOffer);
+    }
+    let (name, kind) = decode_hello_payload(&buf[QR_NONCE_LEN..n])?;
+
+    let n = state.write_message(&[], &mut buf)?;
+    send_handshake(&mut stream, &buf[..n])?;
+
+    let peer = peer_key(&state)?;
+    let transport = state.into_transport_mode()?;
+    Ok(IkAccepted {
+        stream: SecureStream::new(stream, transport),
+        peer,
+        nonce,
+        name,
+        kind,
+    })
+}
+
+/// Run a QR pairing handshake, as the side that scanned the code.
+///
+/// `responder` is the static key read from the QR code, and `nonce` is the
+/// offer's nonce, both decoded from [`crate::offer`]. `my_name` and `my_kind`
+/// travel in message one, encoded the same way [`crate::rpc::exchange_hello`]
+/// encodes them, so the responder can show who is asking before anyone
+/// confirms anything, without a second hello.
+///
+/// # Errors
+///
+/// Returns [`NoiseError::Crypto`] when the responder does not hold the
+/// private key matching `responder`, which is what makes an attacker unable
+/// to complete this handshake without it.
+pub fn pair_ik_as_initiator(
+    mut stream: impl Read + Write + Send + 'static,
+    key: &StaticKey,
+    responder: &PublicKey,
+    nonce: &[u8; QR_NONCE_LEN],
+    my_name: &str,
+    my_kind: DeviceKind,
+    prologue: &[u8],
+) -> Result<SecureStream, NoiseError> {
+    let params = PATTERN_QR.parse().map_err(|_| NoiseError::BadPattern)?;
+    let mut state = snow::Builder::new(params)
+        .local_private_key(key.private_bytes())?
+        .remote_public_key(responder.as_bytes())?
+        .prologue(prologue)?
+        .build_initiator()?;
+
+    let mut buf = vec![0u8; MAX_HANDSHAKE_MESSAGE];
+    let mut payload = Vec::with_capacity(QR_NONCE_LEN + 4 + my_name.len() + 1);
+    payload.extend_from_slice(nonce);
+    payload.extend_from_slice(&encode_hello_payload(my_name, my_kind)?);
+    let n = state.write_message(&payload, &mut buf)?;
+    send_handshake(&mut stream, &buf[..n])?;
+
+    let incoming = receive_handshake(&mut stream)?;
+    state.read_message(&incoming, &mut buf)?;
+    let transport = state.into_transport_mode()?;
+    Ok(SecureStream::new(stream, transport))
 }
 
 /// Connect to a device that has already been paired, as the initiator.
@@ -658,11 +818,13 @@ impl Write for SecureStream {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_HANDSHAKE_MESSAGE, NoiseError, PATTERN_PAIR, Paired, PublicKey, StaticKey, commitment,
-        connect_as_initiator, connect_as_responder, pair_as_initiator, pair_as_responder,
-        random_nonce, read_kk_message_one, receive_handshake, send_handshake,
+        IkAccepted, MAX_HANDSHAKE_MESSAGE, NoiseError, PATTERN_PAIR, Paired, PublicKey,
+        QR_NONCE_LEN, SecureStream, StaticKey, commitment, connect_as_initiator,
+        connect_as_responder, pair_as_initiator, pair_as_responder, pair_ik_as_initiator,
+        pair_ik_as_responder, random_nonce, read_kk_message_one, receive_handshake, send_handshake,
     };
     use crate::frame::{Frame, FrameKind, read_frame, write_frame};
+    use crate::peers::DeviceKind;
     use crate::transport::{Endpoint, loopback};
     use std::io::{self, Read, Write};
     use std::sync::{Arc, Mutex};
@@ -932,6 +1094,116 @@ mod tests {
         match responder.join().unwrap() {
             Err(NoiseError::CommitmentMismatch) => {}
             other => panic!("expected a commitment mismatch, got {other:?}"),
+        }
+    }
+
+    struct IkPairResult {
+        initiator_stream: SecureStream,
+        initiator_key: PublicKey,
+        accepted: IkAccepted,
+    }
+
+    fn ik_over_loopback(nonce: [u8; QR_NONCE_LEN]) -> Result<IkPairResult, NoiseError> {
+        let (a, b) = loopback();
+        let key_responder = StaticKey::generate().unwrap();
+        let public_responder = key_responder.public();
+        let responder = std::thread::spawn(move || {
+            pair_ik_as_responder(b, &key_responder, Some(&nonce), PROLOGUE)
+        });
+        let key_initiator = StaticKey::generate().unwrap();
+        let initiator_stream = pair_ik_as_initiator(
+            a,
+            &key_initiator,
+            &public_responder,
+            &nonce,
+            "Pixel 3 XL",
+            DeviceKind::Phone,
+            PROLOGUE,
+        )?;
+        let accepted = responder.join().unwrap()?;
+        Ok(IkPairResult {
+            initiator_stream,
+            initiator_key: key_initiator.public(),
+            accepted,
+        })
+    }
+
+    #[test]
+    fn an_ik_pairing_round_trips_the_nonce_and_hello() {
+        let nonce = random_nonce().unwrap()[..QR_NONCE_LEN].try_into().unwrap();
+        let mut result = ik_over_loopback(nonce).unwrap();
+
+        assert_eq!(result.accepted.peer, result.initiator_key);
+        assert_eq!(result.accepted.nonce, nonce);
+        assert_eq!(result.accepted.name, "Pixel 3 XL");
+        assert_eq!(result.accepted.kind, DeviceKind::Phone);
+
+        // The channel works both ways once the handshake is done.
+        result
+            .initiator_stream
+            .write_all(b"hello from the phone")
+            .unwrap();
+        let mut buf = [0u8; 20];
+        result.accepted.stream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"hello from the phone");
+    }
+
+    #[test]
+    fn a_wrong_nonce_is_refused() {
+        let (a, b) = loopback();
+        let key_responder = StaticKey::generate().unwrap();
+        let public_responder = key_responder.public();
+        let offered: [u8; QR_NONCE_LEN] =
+            random_nonce().unwrap()[..QR_NONCE_LEN].try_into().unwrap();
+        let responder = std::thread::spawn(move || {
+            pair_ik_as_responder(b, &key_responder, Some(&offered), PROLOGUE)
+        });
+
+        // The initiator scanned a stale or foreign code: a different nonce
+        // than the one this side is actually offering.
+        let scanned: [u8; QR_NONCE_LEN] =
+            random_nonce().unwrap()[..QR_NONCE_LEN].try_into().unwrap();
+        let key_initiator = StaticKey::generate().unwrap();
+        let _ = pair_ik_as_initiator(
+            a,
+            &key_initiator,
+            &public_responder,
+            &scanned,
+            "Pixel 3 XL",
+            DeviceKind::Phone,
+            PROLOGUE,
+        );
+
+        match responder.join().unwrap() {
+            Err(NoiseError::UnknownOffer) => {}
+            other => panic!("expected an unknown offer refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_responder_that_is_not_offering_refuses() {
+        let (a, b) = loopback();
+        let key_responder = StaticKey::generate().unwrap();
+        let public_responder = key_responder.public();
+        // `None`: nothing is being offered right now.
+        let responder =
+            std::thread::spawn(move || pair_ik_as_responder(b, &key_responder, None, PROLOGUE));
+
+        let nonce: [u8; QR_NONCE_LEN] = random_nonce().unwrap()[..QR_NONCE_LEN].try_into().unwrap();
+        let key_initiator = StaticKey::generate().unwrap();
+        let _ = pair_ik_as_initiator(
+            a,
+            &key_initiator,
+            &public_responder,
+            &nonce,
+            "Pixel 3 XL",
+            DeviceKind::Phone,
+            PROLOGUE,
+        );
+
+        match responder.join().unwrap() {
+            Err(NoiseError::UnknownOffer) => {}
+            other => panic!("expected an unknown offer refusal, got {other:?}"),
         }
     }
 

@@ -190,16 +190,13 @@ pub fn exchange_hello(
     my_name: &str,
     my_kind: DeviceKind,
 ) -> Result<(String, DeviceKind), RpcError> {
-    validate_name(my_name)?;
-    let mut encoder = Encoder::new();
-    encoder.text(my_name);
-    encoder.u8(my_kind.to_byte());
+    let payload = encode_hello_payload(my_name, my_kind)?;
     write_frame(
         stream,
         &Frame {
             kind: FrameKind::Hello,
             request_id: 0,
-            payload: encoder.finish(),
+            payload,
         },
     )?;
 
@@ -207,8 +204,38 @@ pub fn exchange_hello(
     if frame.kind != FrameKind::Hello || frame.request_id != 0 {
         return Err(RpcError::UnexpectedFrameKind(frame.kind));
     }
+    decode_hello_payload(&frame.payload)
+}
 
-    let mut decoder = Decoder::new(&frame.payload);
+/// Encode a display name and a device kind the same way [`exchange_hello`]
+/// puts them in a hello frame's payload: a length-prefixed piece of text,
+/// then one byte for the kind.
+///
+/// `crate::noise`'s `IK` pairing handshake uses this directly, so the
+/// initiator's hello can travel inside the handshake's first message instead
+/// of needing a second hello once the channel opens. See
+/// `docs/engine-contract.md` item 12.
+///
+/// # Errors
+///
+/// Returns [`RpcError::BadName`] under the same rule [`validate_name`]
+/// checks.
+pub(crate) fn encode_hello_payload(name: &str, kind: DeviceKind) -> Result<Vec<u8>, RpcError> {
+    validate_name(name)?;
+    let mut encoder = Encoder::new();
+    encoder.text(name);
+    encoder.u8(kind.to_byte());
+    Ok(encoder.finish())
+}
+
+/// Decode what [`encode_hello_payload`] built.
+///
+/// # Errors
+///
+/// Returns [`RpcError::Wire`] when the bytes do not decode, and
+/// [`RpcError::BadName`] when the name they carry fails validation.
+pub(crate) fn decode_hello_payload(bytes: &[u8]) -> Result<(String, DeviceKind), RpcError> {
+    let mut decoder = Decoder::new(bytes);
     let name = decoder.text(MAX_NAME_LEN)?.to_string();
     let kind = DeviceKind::from_byte(decoder.u8()?)?;
     decoder.finish()?;

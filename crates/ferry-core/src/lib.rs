@@ -34,6 +34,7 @@ pub mod localfs;
 #[cfg(any(test, feature = "testing"))]
 pub mod memfs;
 pub mod noise;
+pub mod offer;
 pub mod ops;
 pub mod path;
 pub mod peers;

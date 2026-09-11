@@ -106,6 +106,11 @@
       "why": "The other device sent a malformed handshake.",
       "todo": "Try again. If it repeats, update Ferry on both devices."
     },
+    "NoiseError::BadHello": {
+      "stopped": "Pairing stopped.",
+      "why": "The scanning device sent a malformed name.",
+      "todo": "Try again. If it repeats, update Ferry on both devices."
+    },
     "NoiseError::BadKeyLength": {
       "stopped": "The stored key is unusable.",
       "why": "It is not the size Ferry expects.",
@@ -140,6 +145,11 @@
       "stopped": "Pairing stopped.",
       "why": "The other device sent no key.",
       "todo": "Try again."
+    },
+    "NoiseError::UnknownOffer": {
+      "stopped": "The scan was refused.",
+      "why": "The code is stale, or this Mac is not showing one to scan right now.",
+      "todo": "Show the QR code again on the Mac, then scan it within two minutes."
     },
     "OpError::AlreadyExists": {
       "stopped": "The folder was not created.",
@@ -190,6 +200,26 @@
       "stopped": "The item was skipped.",
       "why": "It is not a regular file or a folder.",
       "todo": "Nothing to do. Ferry serves files and folders only."
+    },
+    "PairingError::AlreadyPaired": {
+      "stopped": "The scan was refused.",
+      "why": "This device already holds a key for that Mac.",
+      "todo": "Nothing to do. The two devices are already paired."
+    },
+    "PairingError::CameraRefused": {
+      "stopped": "The scan was refused.",
+      "why": "The camera permission was refused.",
+      "todo": "Turn on the camera permission for Ferry, or pair by code instead."
+    },
+    "PairingError::OfferExpired": {
+      "stopped": "The scan was refused.",
+      "why": "The QR code is more than two minutes old.",
+      "todo": "Show the QR code again on the Mac, then scan it within two minutes."
+    },
+    "PairingError::OfferNotFerry": {
+      "stopped": "The scan was refused.",
+      "why": "The scanned code is not a Ferry pairing code.",
+      "todo": "Scan the QR code shown on the Mac's pairing screen."
     },
     "PathError::Absolute": {
       "stopped": "The path was refused.",
