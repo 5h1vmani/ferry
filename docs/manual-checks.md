@@ -160,6 +160,27 @@ phone yet. Build both apps as in task 3, pair, and then check each part.
 2. On the phone, open a file the Mac shares. The Mac's log should gain a
    "read" line for it within a second.
 
+### Part E: Finder
+
+Added for the I1 fix pass. The bridge in `crates/ferry-runtime/src/dav/`
+turns the phone's shared folders into a volume Finder can mount, per
+`docs/engine-contract.md`, item 6.
+
+1. With the phone reachable, wait a few seconds. A new volume should
+   appear in Finder, named after the phone.
+2. Open the volume. Finder should list the phone's shared roots, the same
+   folders the phone screen on the Mac already shows.
+3. Open a folder and click into it. It should list files and folders the
+   same way any other Finder window does.
+4. Open a photo. It should preview in Finder the normal way, such as with
+   Quick Look.
+5. On the phone's device screen on the Mac, check the access log. It
+   should show a "list" line for the folder from step 3, from opening it
+   in Finder.
+6. Eject the volume in Finder. It should disappear. Wait for the phone to
+   go unreachable and reachable again, such as by turning Wi-Fi off and
+   back on. The volume should come back at the same place.
+
 ### What to send back
 
 For each part, one line: worked, or what you saw instead. Paste the exact
