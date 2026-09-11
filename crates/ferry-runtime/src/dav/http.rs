@@ -10,9 +10,28 @@
 //! known dates rather than trusting the arithmetic on sight.
 
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Read, Write};
 
 use crate::state::now_unix_secs;
+
+/// The per-request head budget: the request line plus every header line,
+/// read through a [`Read::take`] wrapper so a peer that never sends a
+/// newline cannot grow either buffer past this many bytes. A stranger on
+/// loopback needs no password to reach this far, so the bound applies
+/// before `respond` ever looks at `Authorization`.
+const MAX_HEAD_LEN: u64 = 64 * 1024;
+
+/// How many header lines one request may send. Checked separately from
+/// [`MAX_HEAD_LEN`] because a request could otherwise stay under the byte
+/// budget with thousands of one-byte header lines.
+const MAX_HEADERS: usize = 64;
+
+/// The largest `Content-Length` this bridge will allocate for, checked
+/// before the allocation is made and before auth is checked. Well past
+/// anything I1 browsing sends (a `PROPFIND` body and a sidecar `PUT` are
+/// both small); `server.rs` and `probes.rs` apply their own, tighter bound
+/// to a sidecar's actual bytes once the body is in hand.
+pub(crate) const MAX_BODY_LEN: u64 = 256 * 1024;
 
 /// One parsed request line, its headers, and its body.
 ///
@@ -33,17 +52,43 @@ impl Request {
     }
 }
 
-/// Reads one request. Returns `Ok(None)` when the connection closed before
-/// a request line arrived, which is the ordinary end of a connection
-/// between requests, not a fault.
-pub(crate) fn read_request(reader: &mut impl BufRead) -> io::Result<Option<Request>> {
+/// What [`read_request`] found on the wire.
+pub(crate) enum ReadOutcome {
+    /// A full request, within every bound below.
+    Request(Request),
+    /// The connection closed before a request line arrived. The ordinary
+    /// end of a connection between requests, not a fault.
+    Closed,
+    /// The request line or the headers ran past [`MAX_HEAD_LEN`], or there
+    /// were more than [`MAX_HEADERS`] of them. The caller answers 431 and
+    /// closes the connection: with the head only partly read, there is no
+    /// safe place left to resume parsing the next request from.
+    HeadTooLarge,
+    /// `Content-Length` claimed more than [`MAX_BODY_LEN`]. The caller
+    /// answers 413, without this function having allocated a buffer for
+    /// it.
+    BodyTooLarge,
+}
+
+/// Reads one request, refusing to grow a buffer past the bounds
+/// `docs/engine-contract.md`, item 6's threat model requires: every
+/// process on this Mac can reach this loopback port, and only the
+/// per-start password tells them apart from Finder, so nothing before
+/// that password check may cost unbounded memory.
+pub(crate) fn read_request(reader: &mut impl BufRead) -> io::Result<ReadOutcome> {
+    let mut limited = Read::take(reader, MAX_HEAD_LEN);
+
     let mut request_line = String::new();
-    if reader.read_line(&mut request_line)? == 0 {
-        return Ok(None);
+    let read = limited.read_line(&mut request_line)?;
+    if read == 0 {
+        return Ok(ReadOutcome::Closed);
+    }
+    if !request_line.ends_with('\n') {
+        return Ok(ReadOutcome::HeadTooLarge);
     }
     let request_line = request_line.trim_end();
     if request_line.is_empty() {
-        return Ok(None);
+        return Ok(ReadOutcome::Closed);
     }
 
     let mut parts = request_line.split_whitespace();
@@ -53,30 +98,47 @@ pub(crate) fn read_request(reader: &mut impl BufRead) -> io::Result<Option<Reque
     let mut headers = HashMap::new();
     loop {
         let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
+        let read = limited.read_line(&mut line)?;
+        if read == 0 {
             // A connection that closes mid-headers has sent no request
             // this side can answer.
-            return Ok(None);
+            return Ok(ReadOutcome::Closed);
+        }
+        if !line.ends_with('\n') {
+            return Ok(ReadOutcome::HeadTooLarge);
         }
         let line = line.trim_end();
         if line.is_empty() {
             break;
+        }
+        if headers.len() >= MAX_HEADERS {
+            return Ok(ReadOutcome::HeadTooLarge);
         }
         if let Some((key, value)) = line.split_once(':') {
             headers.insert(key.trim().to_ascii_lowercase(), value.trim().to_owned());
         }
     }
 
-    let body_len: usize = headers
+    // The head budget only covers the request line and headers; a body is
+    // bounded by `Content-Length` itself, checked here before a single
+    // byte of it is allocated. `into_inner` hands back the same reader
+    // `limited` borrowed, so reading the body is not itself capped at
+    // `MAX_HEAD_LEN`.
+    let reader = limited.into_inner();
+    let body_len: u64 = headers
         .get("content-length")
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
+    if body_len > MAX_BODY_LEN {
+        return Ok(ReadOutcome::BodyTooLarge);
+    }
+    let body_len = usize::try_from(body_len).unwrap_or(usize::MAX);
     let mut body = vec![0u8; body_len];
     if body_len > 0 {
         reader.read_exact(&mut body)?;
     }
 
-    Ok(Some(Request {
+    Ok(ReadOutcome::Request(Request {
         method,
         target,
         headers,
@@ -299,7 +361,10 @@ pub(crate) fn iso8601(unix_secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64_decode, constant_time_eq, iso8601, parse_range, percent_decode, rfc1123};
+    use super::{
+        base64_decode, constant_time_eq, iso8601, parse_range, percent_decode, read_request,
+        rfc1123,
+    };
 
     #[test]
     fn base64_decodes_a_basic_auth_pair() {
@@ -358,5 +423,42 @@ mod tests {
     #[test]
     fn range_refuses_a_backwards_span() {
         assert_eq!(parse_range("bytes=500-100", 1000), None);
+    }
+
+    /// B3: `server.rs::accept_loop` sets a read timeout on every accepted
+    /// stream, so a connection that sends nothing is closed rather than
+    /// held forever. This proves the half `read_request` is responsible
+    /// for: once a read times out, it gives up and returns promptly
+    /// instead of blocking again or looping, using a short timeout this
+    /// test sets itself rather than waiting out the real 30 second one.
+    #[test]
+    fn read_request_gives_up_once_the_socket_times_out() {
+        use std::io::BufReader;
+        use std::net::{TcpListener, TcpStream};
+        use std::time::{Duration, Instant};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener");
+        let addr = listener.local_addr().expect("a bound address");
+        // Held for the life of the test and never written to: the silent
+        // peer `read_request` is refusing to wait forever on.
+        let _silent_peer = TcpStream::connect(addr).expect("a silent connection");
+
+        let (accepted, _) = listener.accept().expect("the silent connection to accept");
+        accepted
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .expect("a short read timeout should set");
+        let mut reader = BufReader::new(accepted);
+
+        let started = Instant::now();
+        let result = read_request(&mut reader);
+        assert!(
+            result.is_err(),
+            "a read that times out must surface as an error, not a request"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "took {:?} to give up on a silent connection",
+            started.elapsed()
+        );
     }
 }

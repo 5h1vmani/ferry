@@ -238,6 +238,17 @@ impl TestClient {
         self.read_response(method == "HEAD")
     }
 
+    /// Writes `head` exactly as given, with no computed `Content-Length`
+    /// and no body of its own. `request` cannot express a header that
+    /// lies about the body size, or one line far past any legitimate
+    /// header, since it always writes a `Content-Length` matching a real
+    /// body it also sends.
+    fn write_raw_head(&mut self, head: &str) {
+        self.write_half
+            .write_all(head.as_bytes())
+            .expect("a hand-built request head should write");
+    }
+
     fn read_response(&mut self, no_body: bool) -> Response {
         let mut status_line = String::new();
         self.reader
@@ -408,6 +419,28 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     );
     assert_eq!(response.status, 401);
     assert!(response.header("www-authenticate").is_some());
+
+    // B1: a `Content-Length` past the allocation bound is refused before
+    // a single byte of the (never sent) body is read, so this answers at
+    // once rather than waiting on bytes that never arrive.
+    let mut oversized_body = TestClient::connect(addr);
+    let credentials = base64_encode(format!("{}:{}", auth.0, auth.1).as_bytes());
+    oversized_body.write_raw_head(&format!(
+        "GET /Root/Notes.txt HTTP/1.1\r\nHost: {host}\r\nAuthorization: Basic {credentials}\r\nContent-Length: 10000000\r\n\r\n"
+    ));
+    let response = oversized_body.read_response(false);
+    assert_eq!(response.status, 413);
+
+    // B2: a single header line far past the 64 KiB head budget is
+    // refused, rather than grown without bound.
+    let mut long_header = TestClient::connect(addr);
+    let mut head = format!("GET /Root/Notes.txt HTTP/1.1\r\nHost: {host}\r\n");
+    head.push_str("X-Filler: ");
+    head.push_str(&"a".repeat(100 * 1024));
+    head.push_str("\r\n\r\n");
+    long_header.write_raw_head(&head);
+    let response = long_header.read_response(false);
+    assert_eq!(response.status, 431);
 
     // PROPFIND depth 1 of the root shows the peer's one root, "Root".
     let response = client.request(
@@ -737,4 +770,79 @@ fn set_mount_path_is_read_back_through_device_info() {
     assert_eq!(mac.engine.devices()[0].mount_path, None);
 
     mac.engine.stop();
+}
+
+#[test]
+fn the_thirty_third_idle_connection_is_closed_at_once() {
+    // B3: this bridge serves this many connections at once; one more is
+    // refused at accept, before its socket is ever read from.
+    const MAX_LIVE_CONNECTIONS: usize = 32;
+
+    let mac_key = generate_key().expect("a fresh key pair");
+    let phone_key = generate_key().expect("a fresh key pair");
+    let mac = build_side(
+        "Vamana",
+        DeviceKind::Mac,
+        mac_key.clone(),
+        &[],
+        &phone_key,
+        "Pixel 3 XL",
+        DeviceKind::Phone,
+    );
+    let phone = build_side(
+        "Pixel 3 XL",
+        DeviceKind::Phone,
+        phone_key.clone(),
+        &[("Notes.txt", b"hi")],
+        &mac_key,
+        "Vamana",
+        DeviceKind::Mac,
+    );
+    phone.engine.set_reachable(true);
+    let phone_key_hex = mac
+        .engine
+        .devices()
+        .first()
+        .expect("paired")
+        .key_hex
+        .clone();
+    mac.engine.offer_candidate(loopback_addr(&phone));
+    mac.engine
+        .list(phone_key_hex.clone(), String::new())
+        .expect("listing should succeed");
+
+    let endpoint = mac
+        .engine
+        .mount_start(phone_key_hex)
+        .expect("mount_start");
+    let addr: SocketAddr = format!("127.0.0.1:{}", port_of(&endpoint.url))
+        .parse()
+        .expect("a loopback address");
+
+    // 32 plain connections, sending nothing, hold every slot:
+    // `accept_loop` is one thread accepting strictly in order, so all 32
+    // are fully reserved before it ever looks at a 33rd.
+    let mut idle = Vec::with_capacity(MAX_LIVE_CONNECTIONS);
+    for _ in 0..MAX_LIVE_CONNECTIONS {
+        idle.push(TcpStream::connect(addr).expect("the bridge should accept up to its cap"));
+    }
+    // A generous margin for the accept loop's own thread to actually
+    // reserve each slot and dispatch its connection thread; ordering
+    // alone already guarantees it happens before the 33rd is looked at.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let mut refused =
+        TcpStream::connect(addr).expect("the 33rd connection should still complete its handshake");
+    refused
+        .set_read_timeout(Some(PATIENCE))
+        .expect("a read timeout should set");
+    let mut buf = [0u8; 1];
+    let read = refused
+        .read(&mut buf)
+        .expect("a closed socket should read as a clean EOF, not an error");
+    assert_eq!(read, 0, "the 33rd live connection should be closed at once");
+
+    drop(idle);
+    mac.engine.stop();
+    phone.engine.stop();
 }

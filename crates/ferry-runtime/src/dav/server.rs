@@ -10,7 +10,8 @@ use std::io::{self, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Duration;
 
 use ferry_core::noise::SecureStream;
 use ferry_core::ops::{Entry, FileKind, OpError};
@@ -26,6 +27,41 @@ use super::pool::Pool;
 use super::probes::{self, SidecarStore};
 use super::{http, xml};
 
+/// How many connections one bridge serves at once. A 33rd is refused at
+/// accept, before its socket is even read from. Mirrors
+/// `MAX_PENDING_HANDSHAKES` in `ferry_core::tcp`.
+const MAX_LIVE_CONNECTIONS: u32 = 32;
+
+/// How long a connection may sit with nothing read, or a write may block,
+/// before this bridge gives up on it. `docs/engine-contract.md`, item 6,
+/// sets no number of its own; this exists only so a connection that never
+/// sends a byte, or a peer that stops reading, cannot hold a thread
+/// forever.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Reserves one live-connection slot, and gives it back when dropped.
+/// Mirrors `PendingSlot` in `ferry_core::tcp`: a slot can only be created
+/// while one is free, and dropping it is the only way to free one again,
+/// so the count can never be missed or double counted.
+struct ConnectionSlot(Arc<AtomicU32>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Reserves one of [`MAX_LIVE_CONNECTIONS`] slots, or `None` when the
+/// bridge is already at that many.
+fn reserve_connection_slot(connections: &Arc<AtomicU32>) -> Option<ConnectionSlot> {
+    connections
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            (current < MAX_LIVE_CONNECTIONS).then_some(current + 1)
+        })
+        .ok()?;
+    Some(ConnectionSlot(Arc::clone(connections)))
+}
+
 /// One device's bridge state, shared by every connection thread serving
 /// it.
 pub(crate) struct Bridge {
@@ -36,6 +72,9 @@ pub(crate) struct Bridge {
     pool: Pool,
     cache: Cache,
     locks: LockTable,
+    /// Live connections right now, checked at accept against
+    /// [`MAX_LIVE_CONNECTIONS`] (B3).
+    connections: Arc<AtomicU32>,
 }
 
 impl Bridge {
@@ -51,6 +90,7 @@ impl Bridge {
             sidecars: SidecarStore::new(sidecar_dir),
             cache: Cache::new(),
             locks: LockTable::new(),
+            connections: Arc::new(AtomicU32::new(0)),
             user,
             password,
             port,
@@ -79,18 +119,40 @@ pub(crate) fn accept_loop(
             drop(stream);
             continue;
         }
+        // B3: a stranger on loopback needs no password to reach this far,
+        // so the live-connection cap is checked, and the timeouts are set,
+        // before this connection's first byte is ever read.
+        let Some(slot) = reserve_connection_slot(&bridge.connections) else {
+            drop(stream);
+            continue;
+        };
+        if stream.set_read_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+            || stream.set_write_timeout(Some(CONNECTION_TIMEOUT)).is_err()
+        {
+            drop(stream);
+            continue;
+        }
         let shared = Arc::clone(shared);
         let bridge = Arc::clone(bridge);
         // A connection thread is not joined, the same known limitation
         // `crate::lib` documents for every other transport here: it ends
         // when its peer (Finder, or a test client) closes its side.
-        drop(std::thread::spawn(move || {
+        //
+        // `Builder::spawn` rather than the panicking `thread::spawn`: when
+        // the OS refuses a new thread, `stream` (moved into the closure
+        // below) is simply dropped along with it, closing the socket, and
+        // the accept loop keeps running instead of taking the whole
+        // bridge down with it.
+        let spawned = std::thread::Builder::new().spawn(move || {
+            let _slot = slot;
             handle_connection(&shared, &bridge, &stream);
-        }));
+        });
+        drop(spawned);
     }
 }
 
-/// Serves requests on one connection until it closes or a write fails.
+/// Serves requests on one connection until it closes, a write fails, or a
+/// request breaks a bound `respond` cannot recover from.
 fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
     let Ok(read_half) = stream.try_clone() else {
@@ -98,11 +160,31 @@ fn handle_connection(shared: &Arc<Shared>, bridge: &Arc<Bridge>, stream: &TcpStr
     };
     let mut reader = BufReader::new(read_half);
     loop {
-        let Ok(Some(request)) = http::read_request(&mut reader) else {
+        let Ok(outcome) = http::read_request(&mut reader) else {
             return;
         };
         let Ok(mut out) = stream.try_clone() else {
             return;
+        };
+        let request = match outcome {
+            http::ReadOutcome::Request(request) => request,
+            http::ReadOutcome::Closed => return,
+            // B2: the head ran past its budget, or carried too many
+            // headers. There is no safe place left to resume parsing the
+            // next request from, so this answers once and closes.
+            http::ReadOutcome::HeadTooLarge => {
+                let _ = no_body(&mut out, "431 Request Header Fields Too Large");
+                return;
+            }
+            // B1: `Content-Length` claimed more than this bridge will
+            // allocate for, checked before a single byte of the body was
+            // read. Closing rather than continuing: the peer's declared
+            // body is still sitting unread on the wire, and would be
+            // misread as the start of the next request.
+            http::ReadOutcome::BodyTooLarge => {
+                let _ = no_body(&mut out, "413 Payload Too Large");
+                return;
+            }
         };
         if respond(shared, bridge, &request, &mut out).is_err() {
             return;
