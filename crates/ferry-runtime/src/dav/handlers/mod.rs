@@ -19,3 +19,7 @@ mod write;
 pub(crate) use write::{
     copy_verb, delete_verb, map_write_error, mkcol_verb, move_verb, put_file, put_sidecar,
 };
+
+mod locks;
+
+pub(crate) use locks::{lock_verb, unlock_verb};
