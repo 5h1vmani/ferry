@@ -156,6 +156,8 @@ impl Engine {
             held: Mutex::new(held),
             auto_copy_running: Mutex::new(std::collections::HashSet::new()),
             browsing: AtomicBool::new(false),
+            last_probe: Mutex::new(HashMap::new()),
+            probes: AtomicU64::new(0),
         });
 
         load_saved_transfers(&shared);
@@ -515,6 +517,23 @@ impl Engine {
     #[must_use]
     pub fn accepted_connections(&self) -> u64 {
         self.shared.accepted.load(Ordering::SeqCst)
+    }
+
+    /// How many reachability probes this engine has started.
+    ///
+    /// `docs/engine-contract.md`, item 3. The item 3 test needs it to prove
+    /// that two discovery events inside `PROBE_MIN_INTERVAL_SECS` start one
+    /// probe, not two. A probe leaves no transfer and no access log entry
+    /// of its own, and it reuses a pooled connection when there is one, so
+    /// the peer's accepted connection count cannot tell a second probe from
+    /// no second probe. It counts up and never down, and is raised before
+    /// the probe's thread is spawned, so the test reads it straight after
+    /// the call that makes the discovery event. It is not exported to the
+    /// apps.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn probes(&self) -> u64 {
+        self.shared.probes.load(Ordering::SeqCst)
     }
 
     /// The address this engine's listener is bound to, once it has started.

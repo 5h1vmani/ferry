@@ -15,6 +15,7 @@
 // - `pairing.rs`: both pairing methods, end to end.
 // - `serving.rs`: serving one paired peer on an open connection.
 // - `discovery_loop.rs`: browsing mDNS and building candidates.
+// - `probe.rs`: the short dial a discovered address starts.
 // - `loops.rs`: the background loops a started engine runs.
 // - `../networks.rs`: `apply_presence`, beside the rule it applies.
 
@@ -73,6 +74,8 @@ pub(crate) use discovery_loop::{
     add_candidate, browse_loop, last_four, remember_address, wifi_candidate,
 };
 
+mod probe;
+
 mod loops;
 
 pub(crate) use loops::{
@@ -109,6 +112,14 @@ const BROWSE_TICK: Duration = Duration::from_millis(400);
 
 /// How many addresses discovery keeps to try later.
 const MAX_DISCOVERED: usize = 16;
+
+/// How long one paired device is left alone after a reachability probe
+/// starts, in seconds, before another discovery event may probe it again.
+///
+/// `docs/engine-contract.md`, item 3. An advert that flaps can produce many
+/// discovery events in a row, and without this each one would start its own
+/// dial. See `engine/probe.rs`.
+const PROBE_MIN_INTERVAL_SECS: u64 = 5;
 
 /// How many candidates the pairing screen holds at once.
 ///

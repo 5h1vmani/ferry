@@ -10,7 +10,7 @@ use crate::notify::Change;
 use crate::state::{Candidate, lock};
 use crate::{PairingCandidate, Transport};
 
-use super::{BROWSE_TICK, MAX_CANDIDATES, MAX_DISCOVERED, Shared, notify};
+use super::{BROWSE_TICK, MAX_CANDIDATES, MAX_DISCOVERED, Shared, notify, probe};
 
 /// Watch mDNS for the whole session, while browsing is allowed.
 ///
@@ -66,12 +66,27 @@ pub(crate) fn browse_loop(shared: &Arc<Shared>) {
     }
 }
 
-/// Keep an address worth dialing later, newest first.
+/// Keep an address worth dialing later, newest first, and probe every
+/// paired device when it is an address this engine did not already hold as
+/// its newest.
+///
+/// `docs/engine-contract.md`, item 3. This is the one place both discovery
+/// paths meet: the browse loop's own `on_discovered`, and the injected
+/// address `Engine::offer_candidate` takes. An advert that repeats the one
+/// address this engine already holds at the front of its list changes
+/// nothing and starts no probe. See `engine/probe.rs` for the rest.
 pub(crate) fn remember_address(shared: &Arc<Shared>, addr: SocketAddr) {
-    let mut state = lock(&shared.state);
-    state.discovered.retain(|known| *known != addr);
-    state.discovered.insert(0, addr);
-    state.discovered.truncate(MAX_DISCOVERED);
+    let found_something_new = {
+        let mut state = lock(&shared.state);
+        let already_newest = state.discovered.first() == Some(&addr);
+        state.discovered.retain(|known| *known != addr);
+        state.discovered.insert(0, addr);
+        state.discovered.truncate(MAX_DISCOVERED);
+        !already_newest
+    };
+    if found_something_new {
+        probe::on_address_found(shared);
+    }
 }
 
 /// Record an address discovery found, and offer it while pairing.

@@ -225,14 +225,21 @@ fn one_pending_connection_past_the_per_address_cap_is_refused() {
 /// Before the fix, `register_serving` pushed to `live.serving` with no
 /// cap at all, so a ninth connection from the same paired key would have
 /// been accepted exactly like the first.
+///
+/// The friend is a seeded key, not a second running engine. A running
+/// engine browses mDNS, and item 3's reachability probe turns a discovery
+/// event into one pooled connection to each paired device, which would
+/// take one of the eight serving slots this test counts. Seeding the key
+/// pairs it as far as this cap is concerned and leaves nothing running to
+/// dial in.
 #[test]
 fn a_ninth_serving_connection_from_one_peer_is_refused() {
-    let target = build("Target");
-    let friend = build("Friend");
-    pair_by_code(&target, &friend);
+    let friend_keys = [generate_key().expect("a fresh key pair")];
+    let target = build_with_peers("Target", &friend_keys);
+    target.engine.set_reachable(true);
 
     let addr = loopback_addr(&target);
-    let friend_key = static_key(&friend.key);
+    let friend_key = static_key(&friend_keys[0]);
     let target_public = public_key(&target.key);
 
     // Each of the first `MAX_SERVING_PER_PEER` connections, reconnecting as

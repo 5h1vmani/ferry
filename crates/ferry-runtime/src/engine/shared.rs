@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ferry_core::adb::Adb;
 use ferry_core::chunk::ChunkSize;
@@ -182,6 +182,20 @@ pub(crate) struct Shared {
     /// rule: it reads it on every pass, and drops its `Browser` while the
     /// flag is false, because a browse query is a sound on the network.
     pub(crate) browsing: AtomicBool,
+    // ---- Item 3: the reachability probe. See `engine/probe.rs`. ----
+    /// When a reachability probe last started for each paired device.
+    ///
+    /// `docs/engine-contract.md`, item 3: one device is probed at most once
+    /// every `PROBE_MIN_INTERVAL_SECS` seconds, so an advert that flaps
+    /// cannot turn one discovery event after another into a dial each.
+    pub(crate) last_probe: Mutex<HashMap<String, Instant>>,
+    /// How many reachability probes this engine has started.
+    ///
+    /// Counts up and never down, and is raised before the probe's thread is
+    /// spawned, so a caller that has just returned from a discovery event
+    /// can see exactly how many probes that event started. Only a test
+    /// reads it, through [`Engine::probes`].
+    pub(crate) probes: AtomicU64,
     /// Held by whichever thread is applying the presence rule.
     ///
     /// [`apply_presence`] takes this before it reads the state, and holds it

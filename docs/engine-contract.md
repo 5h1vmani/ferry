@@ -141,6 +141,24 @@ when `reachable_via` is `Wifi` now. Discovery alone proves nothing,
 because a found address is anonymous until a handshake succeeds. `Usb`
 first. `reachable_via`, when it is `Some`, is always in the list.
 
+**The probe.** Discovery proves nothing on its own, so this device makes
+the handshake that does. A probe starts when discovery gives the engine an
+address it did not already hold as the newest one it knows, whether that
+address came from the browse loop or from `offer_candidate`. An advert
+that repeats the address already at the front of the list starts nothing.
+One probe covers one paired device, and every paired device is probed on
+that event, because the mDNS instance name is random and the address
+cannot say which device it belongs to. A device is probed at most once
+every `PROBE_MIN_INTERVAL_SECS = 5` seconds, so an advert that flaps
+cannot become a dial storm. A probe is one hello and one pooled
+connection: it borrows through the device pool's `take_dialing`, which
+dials, calls `mark_reachable`, and exchanges the hello, and it gives the
+connection straight back to the pool idle, so the next real call reuses it
+instead of dialling again. It lists nothing and transfers nothing. The
+engine is symmetric, so both sides do this: the phone reaches out to the
+Mac the same way the Mac reaches out to the phone. Test:
+`crates/ferry-runtime/tests/item_3_probe.rs`.
+
 ## Batch C: the wire
 
 ### 15. Several named shared roots: built
