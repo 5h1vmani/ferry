@@ -505,10 +505,9 @@ impl DirLock {
                     held: AtomicBool::new(true),
                 })
             }
-            Err(std::fs::TryLockError::WouldBlock) => Err(bad_config(&format!(
-                "Another Ferry is using this folder, or a crash left {} behind.",
-                path.display()
-            ))),
+            Err(std::fs::TryLockError::WouldBlock) => Err(bad_config(
+                "Another copy of Ferry is running. Quit it and try again.",
+            )),
             Err(std::fs::TryLockError::Error(_)) => {
                 Err(bad_config("The lock file could not be locked."))
             }
