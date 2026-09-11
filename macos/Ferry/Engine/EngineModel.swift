@@ -5,9 +5,16 @@
 // time may use a data directory: the second is refused. See the crate
 // documentation for ferry-runtime.
 //
-// Views never read an engine type. This model publishes snapshots from
-// Model/Snapshot.swift, built by Engine/EngineAdapter.swift. That keeps the
-// engine gaps in docs/engine-contract.md inside one file.
+// A view mostly does not read an engine type: this model publishes
+// snapshots from Model/Snapshot.swift, built by Engine/EngineAdapter.swift,
+// which keeps the engine gaps in docs/engine-contract.md inside one file.
+// Four exceptions stand: DeviceDetail reads `Entry` for the folder it is
+// browsing, live, rather than a cached snapshot of it; TransportBadge reads
+// `DeviceInfo` in one initialiser that builds its own state from it;
+// ThreePartError reads `FerryError`, because it is the words for one; and a
+// snapshot may hold an engine enum directly, such as `DeviceKind` or
+// `TransferState`, when the engine's own cases are already exactly what a
+// view needs, with nothing to decide and so nothing to map.
 //
 // Which thread runs what:
 //

@@ -7,10 +7,10 @@
 // Two reasons this layer exists rather than views reading DeviceInfo and
 // TransferInfo directly.
 //
-// The first is that fifteen facts the screens state are not in the engine
-// yet (docs/engine-contract.md). Each one has a field here and a marked default
-// in the adapter, so the app builds and renders today, and closing a gap is
-// a change in one file with no view touched.
+// The first is that three items in docs/engine-contract.md have no field in
+// the engine yet: 6, 12, and 14. Each one has a field here and a marked
+// default in the adapter, so the app builds and renders today, and closing a
+// gap is a change in one file with no view touched.
 //
 // The second is that a snapshot holds what a view needs in the form the
 // view needs it. A device's badge state, a log's day grouping, and a
