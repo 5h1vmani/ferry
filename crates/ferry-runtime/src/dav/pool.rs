@@ -45,8 +45,23 @@ const WAIT_FOR_SLOT: Duration = Duration::from_secs(2);
 
 type PeerClient = Client<StopAware<SecureStream>>;
 
+/// One pooled connection and the id its raw socket is registered under, so
+/// `stop` can close it (`docs/engine-contract.md` item 16c). Dropping it
+/// removes the registration.
+struct Pooled {
+    client: PeerClient,
+    id: u64,
+    shared: Arc<Shared>,
+}
+
+impl Drop for Pooled {
+    fn drop(&mut self) {
+        self.shared.unregister_socket(self.id);
+    }
+}
+
 struct Inner {
-    idle: Vec<PeerClient>,
+    idle: Vec<Pooled>,
     outstanding: usize,
 }
 
@@ -112,7 +127,7 @@ impl Pool {
 
     /// Dials the device fresh. See the module documentation for why this
     /// checks known reachability first rather than always dialing.
-    fn dial(&self, shared: &Arc<Shared>) -> Result<PeerClient, FerryError> {
+    fn dial(&self, shared: &Arc<Shared>) -> Result<Pooled, FerryError> {
         let key = key_from_hex(&self.device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
         let reachable = lock_mutex(&shared.state)
             .live
@@ -121,17 +136,26 @@ impl Pool {
         if !reachable {
             return Err(failed("Runtime::NotReachable"));
         }
-        let (stream, addr, via) = crate::transfer::dial(shared, &self.device_key_hex, &key)?;
+        let (stream, socket, addr, via) =
+            crate::transfer::dial(shared, &self.device_key_hex, &key)?;
         mark_reachable(shared, &self.device_key_hex, addr, via);
+        let id = shared.next_connection_id();
+        shared.register_socket(id, socket);
         let mut stream = StopAware::new(stream, Arc::clone(&shared.stopping));
-        exchange_hello(&mut stream, &shared.display_name, shared.kind)
-            .map_err(|error| from_rpc(&error))?;
-        Ok(Client::new(stream))
+        if let Err(error) = exchange_hello(&mut stream, &shared.display_name, shared.kind) {
+            shared.unregister_socket(id);
+            return Err(from_rpc(&error));
+        }
+        Ok(Pooled {
+            client: Client::new(stream),
+            id,
+            shared: Arc::clone(shared),
+        })
     }
 
     /// Takes back a borrowed connection. `None` means it was found broken
     /// and is dropped rather than reused.
-    fn give_back(&self, client: Option<PeerClient>) {
+    fn give_back(&self, client: Option<Pooled>) {
         let mut inner = self
             .inner
             .lock()
@@ -150,12 +174,12 @@ impl Pool {
 /// of handed to the next request.
 pub(crate) struct Borrowed<'a> {
     pool: &'a Pool,
-    client: Option<PeerClient>,
+    client: Option<Pooled>,
     healthy: bool,
 }
 
 impl<'a> Borrowed<'a> {
-    fn new(pool: &'a Pool, client: PeerClient) -> Self {
+    fn new(pool: &'a Pool, client: Pooled) -> Self {
         Self {
             pool,
             client: Some(client),
@@ -164,9 +188,11 @@ impl<'a> Borrowed<'a> {
     }
 
     pub(crate) fn client(&mut self) -> &mut PeerClient {
-        self.client
+        &mut self
+            .client
             .as_mut()
             .expect("taken exactly once, given back on drop")
+            .client
     }
 
     /// Marks this connection as broken, so it is not returned to the pool.
