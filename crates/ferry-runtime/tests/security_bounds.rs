@@ -174,34 +174,44 @@ fn a_silent_connection_is_dropped_at_the_first_byte_deadline_and_pairing_still_w
     assert_eq!(real_peer.engine.devices().len(), 1, "the peer paired");
 }
 
-/// A third pending connection from one source address is refused while the
-/// first two are still held, per
-/// `ferry_core::limits::MAX_PENDING_HANDSHAKES_PER_ADDR`.
+/// One pending connection past `ferry_core::limits::MAX_PENDING_HANDSHAKES_PER_ADDR`
+/// is refused while that many from the same source address are still held.
 ///
-/// Before the fix, only the overall `MAX_PENDING_HANDSHAKES` cap of eight
-/// existed, so three connections from one address were all accepted and
-/// this test's third connection would not have closed at once.
+/// Before the fix, only the overall `MAX_PENDING_HANDSHAKES` cap existed,
+/// so every connection from one address was accepted and this test's last
+/// connection would not have closed at once.
+///
+/// The count is read from the constant rather than written here, so raising
+/// the cap does not leave this test proving something smaller than the cap
+/// it is named for.
 #[test]
-fn a_third_pending_connection_from_one_address_is_refused() {
+fn one_pending_connection_past_the_per_address_cap_is_refused() {
     let target = build("Target");
     target.engine.set_reachable(true);
     let addr = loopback_addr(&target);
 
-    // Neither sends a byte, so each sits waiting on the first-byte deadline,
-    // holding its pending slot for up to two seconds: plenty of time to
-    // check the third below well inside that window.
-    let _first = TcpStream::connect(addr).expect("the first connection is accepted");
-    let _second = TcpStream::connect(addr).expect("the second connection is accepted");
+    // None of these sends a byte, so each sits waiting on the first-byte
+    // deadline, holding its pending slot for up to two seconds: plenty of
+    // time to check the one below well inside that window.
+    let held: Vec<TcpStream> = (0..ferry_core::limits::MAX_PENDING_HANDSHAKES_PER_ADDR)
+        .map(|n| {
+            TcpStream::connect(addr)
+                .unwrap_or_else(|error| panic!("connection {n} should be accepted: {error}"))
+        })
+        .collect();
 
-    let mut third = TcpStream::connect(addr).expect("the accept itself is never refused");
-    third
+    let mut one_too_many = TcpStream::connect(addr).expect("the accept itself is never refused");
+    one_too_many
         .set_read_timeout(Some(Duration::from_millis(500)))
         .expect("a read timeout can be set");
     let mut buf = [0u8; 1];
-    match third.read(&mut buf) {
+    match one_too_many.read(&mut buf) {
         Ok(0) => {}
-        other => panic!("expected the third connection to be refused at once, got {other:?}"),
+        other => panic!(
+            "expected the connection past the per-address cap to be refused at once, got {other:?}"
+        ),
     }
+    drop(held);
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +392,7 @@ fn silent_connections_to_the_bridge_do_not_stop_an_authenticated_one() {
 /// stopped a sixty-fifth from being accepted and served too.
 ///
 /// Held past their own handshake rather than during it: `net.accept`'s own
-/// `MAX_PENDING_HANDSHAKES`, eight overall, would refuse a ninth connection
+/// `MAX_PENDING_HANDSHAKES`, thirty-two overall, would refuse a connection
 /// still mid-handshake long before this cap's own sixty-four could ever be
 /// reached, on this or any other test that tried to hold that many
 /// connections still negotiating at once. Each of the sixty-four below

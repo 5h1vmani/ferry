@@ -15,8 +15,8 @@
 //!   however many reads or writes that takes. A plain socket timeout only
 //!   bounds one read call, not a loop of them, so a private `DeadlineStream`
 //!   enforces this instead.
-//! - `MAX_PENDING_HANDSHAKES = 8`. A counter of accepted connections that have
-//!   not finished a handshake. The ninth is closed at once.
+//! - `MAX_PENDING_HANDSHAKES = 32`. A counter of accepted connections that
+//!   have not finished a handshake. The thirty-third is closed at once.
 //!
 //! Audit `docs/audits/fable-security.md`, findings 1 and 4, add two more:
 //!
@@ -24,12 +24,12 @@
 //!   the version exchange starts: a connection that has not sent one byte
 //!   within two seconds of being accepted is dropped, instead of holding its
 //!   pending slot for the whole ten second [`HANDSHAKE_TIMEOUT_SECS`].
-//! - `MAX_PENDING_HANDSHAKES_PER_ADDR = 2`. `Listener` also counts pending
+//! - `MAX_PENDING_HANDSHAKES_PER_ADDR = 16`. `Listener` also counts pending
 //!   handshakes by the connecting `IpAddr`, so one address opening
 //!   connections and sending nothing cannot use up every slot
 //!   `MAX_PENDING_HANDSHAKES` allows and starve every other address queued
-//!   behind it. The overall cap is unchanged and still applies on top of
-//!   this one.
+//!   behind it. The overall cap still applies on top of this one, and is
+//!   kept above it at thirty-two.
 //!
 //! Either refusal drops the socket at once and reports nothing: a peer that
 //! cannot even get a pending slot learns nothing more by being told so.
@@ -1190,13 +1190,13 @@ mod tests {
     }
 
     #[test]
-    fn the_ninth_pending_handshake_is_refused() {
+    fn one_pending_handshake_past_the_overall_cap_is_refused() {
         // Every client below connects from this one process, so they all
         // share one source address. The per-address cap this audit's fix
-        // adds would refuse the third of them long before the ninth, so it
-        // is raised out of the way here. `ferry-runtime`'s
-        // `tests/security_bounds.rs` is what tests the per-address cap
-        // itself, over a real accept loop.
+        // adds is the smaller of the two, so it would refuse a client long
+        // before the overall cap could, and it is raised out of the way
+        // here. `ferry-runtime`'s `tests/security_bounds.rs` is what tests
+        // the per-address cap itself, over a real accept loop.
         let listener = Listener::bind(local_any())
             .unwrap()
             .with_max_pending_per_addr(limits::MAX_PENDING_HANDSHAKES);
@@ -1224,13 +1224,13 @@ mod tests {
             pending.push(listener.accept().unwrap());
         }
 
-        // A ninth client reaches the TCP-level accept but never negotiates.
-        // The limit is checked before the listener would block waiting for
-        // it, so this does not hang.
-        let ninth = TcpStream::connect(addr).unwrap();
+        // One more client reaches the TCP-level accept but never
+        // negotiates. The limit is checked before the listener would block
+        // waiting for it, so this does not hang.
+        let one_too_many = TcpStream::connect(addr).unwrap();
         assert!(matches!(listener.accept(), Err(TcpError::TooManyPending)));
 
-        drop(ninth);
+        drop(one_too_many);
         // Dropping the held `Pending` values frees their slots and closes
         // their sockets, which lets each client thread's blocked read end.
         drop(pending);

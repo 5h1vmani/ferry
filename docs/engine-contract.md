@@ -454,11 +454,18 @@ every slot `MAX_PENDING_HANDSHAKES` allows.
   `tcp.rs`, waits for one byte, without consuming it, before it starts the
   version exchange the ten second deadline bounds. No byte in two seconds
   drops the connection the same way a handshake timeout does.
-- `MAX_PENDING_HANDSHAKES_PER_ADDR = 2`. `Listener` counts pending
-  handshakes by the connecting `IpAddr` as well as overall, and refuses a
-  third one from the same address while the overall cap still applies on
-  top. Both refusals drop the socket at once and report nothing, the same
-  as the existing overall refusal does.
+- `MAX_PENDING_HANDSHAKES_PER_ADDR = 16`, with `MAX_PENDING_HANDSHAKES =
+  32` above it. `Listener` counts pending handshakes by the connecting
+  `IpAddr` as well as overall, and refuses a seventeenth one from the same
+  address while the overall cap still applies on top. Both refusals drop
+  the socket at once and report nothing, the same as the existing overall
+  refusal does. The per-address cap was two at first, which was below what
+  one honest peer opens in a second: a Mac dials its phone from one address
+  with four transfer workers, the four connections of its bridge pool, and
+  an automatic copy run, so the third of those was refused while it was
+  still handshaking and the person saw it as the Wi-Fi dropping. The
+  overall cap has to stay above the per-address one, or the per-address one
+  could never be reached.
 - `PairingBusy` is now shown. `hold_pairing`'s refusal, when a stranger's
   connection already holds the code slot a real device's connection
   wanted, used to be silently dropped. `accept_pairing` and
@@ -468,8 +475,10 @@ every slot `MAX_PENDING_HANDSHAKES` allows.
 
 Test: `crates/ferry-runtime/tests/security_bounds.rs`. A connection that
 sends nothing is dropped inside the first-byte deadline, and a real
-device still pairs afterward; a third pending connection from one source
-address is refused while the first two are still held.
+device still pairs afterward; one pending connection past
+`MAX_PENDING_HANDSHAKES_PER_ADDR` from one source address is refused while
+that many are still held. The test reads the count from the constant, so
+raising the cap does not leave it proving something smaller.
 
 **16e. A cap on serving connections per peer, `docs/audits/fable-security.md`
 finding 5.** A paired key has already proven itself, so nothing capped

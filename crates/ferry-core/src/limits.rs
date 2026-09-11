@@ -98,7 +98,12 @@ pub const QR_ADDRESS_CONNECT_TIMEOUT_SECS: u64 = 3;
 /// finishing none of them. `tcp` counts a connection as pending from the
 /// moment it is accepted until its handshake ends, and refuses the next one
 /// once this many are already pending.
-pub const MAX_PENDING_HANDSHAKES: u32 = 8;
+///
+/// This has to stay above [`MAX_PENDING_HANDSHAKES_PER_ADDR`], or the
+/// per-address cap could never be reached and one address would still be
+/// able to fill every slot. Thirty-two is twice that cap, so two busy
+/// addresses can each hold their full share at the same time.
+pub const MAX_PENDING_HANDSHAKES: u32 = 32;
 
 /// How long a newly accepted connection may go before its first byte
 /// arrives, in seconds, before `tcp` drops it.
@@ -119,7 +124,14 @@ pub const FIRST_BYTE_TIMEOUT_SECS: u64 = 2;
 /// pending slot by itself, and every other address's connection then queues
 /// behind them. `tcp` counts this by the connecting `IpAddr`, alongside
 /// [`MAX_PENDING_HANDSHAKES`], which still applies on top of this one.
-pub const MAX_PENDING_HANDSHAKES_PER_ADDR: u32 = 2;
+///
+/// Sixteen, not two. Two was below what one honest peer opens in a second.
+/// A Mac dials its phone from one address with four transfer workers, the
+/// four connections of its bridge pool, and an automatic copy run, so the
+/// third of those was refused while it was still handshaking and the person
+/// saw it as the Wi-Fi dropping. Sixteen leaves room for every connection
+/// one paired device legitimately opens at once and still refuses a flood.
+pub const MAX_PENDING_HANDSHAKES_PER_ADDR: u32 = 16;
 
 /// The largest number of serving connections one paired peer may hold open
 /// at once.
