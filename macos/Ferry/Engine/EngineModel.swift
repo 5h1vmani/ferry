@@ -439,6 +439,15 @@ final class EngineModel: ObservableObject {
         // prompt has a reason a person is already acting on. Idempotent,
         // so calling it on every pairing start is safe.
         networkName?.requestAuthorization()
+        // startPairingWith refuses a second call while pairing already
+        // runs and reports the same state again, which left "Use a
+        // pairing code instead" dead once the QR offer was under way.
+        // Cancelling first only when there is something to cancel keeps
+        // the first, ordinary call unchanged. Matches the phone's fix,
+        // ec25f31.
+        if pairingState != .idle {
+            engine?.cancelPairing()
+        }
         pairingMethod = method
         engine?.startPairingWith(method: method == .scan ? .qr : .code)
         refreshPairing()
