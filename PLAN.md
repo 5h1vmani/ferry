@@ -403,11 +403,11 @@ Done, 10 September 2026:
 
 - `crates/ferry-core`: every protocol piece, the real filesystem, TCP with
   its limits, discovery, the peer store, the adb tunnel, and the hello
-  exchange. Audited once, six findings fixed. See `docs/audit-1.md`.
+  exchange. Audited once, six findings fixed. See `docs/audits/audit-1.md`.
 - `crates/ferry-runtime`: the Engine both apps link, behind `UniFFI`. Two
   engines pair and move a file in one process in under a second. Builds as a
   shared library for Android. Audited once, fourteen findings fixed. See
-  `docs/audit-2.md`.
+  `docs/audits/audit-2.md`.
 - Both apps are wired to the engine and build. The Mac links the runtime as
   a static library and keeps its key in the Keychain. The phone packages the
   runtime as a shared library, keeps its key in private storage, runs a

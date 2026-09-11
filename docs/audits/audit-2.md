@@ -3,7 +3,7 @@
 Date: 10 September 2026.
 Scope: the whole of `crates/ferry-runtime`. It is the engine both apps link,
 and it was written that day. The core it sits on was audited in
-`docs/audit-1.md`.
+`docs/audits/audit-1.md`.
 
 Method: an adversarial review with a stated threat model, asked for concrete
 failures only. The auditor reproduced thirteen of the fourteen findings by
