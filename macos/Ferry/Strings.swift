@@ -381,6 +381,7 @@ enum S {
         static let root = "/"
         static let goUp = "Go up"
         static let copyToMac = "Copy to Mac"
+        static let copyToPhone = "Copy to phone"
         static let emptyFolder = "This folder is empty."
         static let reading = "Reading the folder."
 

@@ -57,7 +57,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::Arc;
 
-use ferry_core::chunk::Manifest;
+use ferry_core::chunk::{ChunkSize, Manifest};
 use ferry_core::limits;
 use ferry_core::localfs::LocalFs;
 use ferry_core::ops::{FileKind, OpError};
@@ -164,6 +164,9 @@ pub(crate) fn push_files(
     remote_folder: &str,
 ) -> Result<String, FerryError> {
     let folder = RemotePath::parse(remote_folder).map_err(from_path)?;
+    if folder.is_root() {
+        return Err(from_path(PathError::Empty));
+    }
     let key = key_from_hex(device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
     {
         let state = lock(&shared.state);
@@ -193,41 +196,16 @@ pub(crate) fn push_files(
 
     let started_unix_secs = now_unix_secs();
     let chunk_size = *lock(&shared.chunk_size);
-    let mut rows = Vec::with_capacity(local_paths.len());
-    let mut total_bytes: u64 = 0;
-    for local_path in local_paths {
-        let leaf = local_leaf_name(local_path);
-        let destination =
-            RemotePath::parse(&format!("{}/{leaf}", folder.as_str())).map_err(from_path)?;
-        let source = store_local_path(local_path)?;
-        total_bytes = total_bytes.saturating_add(local_file_size(local_path));
-        let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
-        let id = format!("{device_key_hex}-{session}");
-        rows.push(TransferRow {
-            id,
-            device_key_hex: device_key_hex.to_owned(),
-            file_name: leaf,
-            source,
-            destination,
-            bytes_total: 0,
-            bytes_done: 0,
-            state: TransferState::Queued,
-            transport: None,
-            error: None,
-            source_size: None,
-            source_mtime: None,
-            running: false,
-            attempt_after: None,
-            backoff: BACKOFF_MIN,
-            started_unix_secs,
-            ended_unix_secs: None,
-            direction: Direction::Push,
-            speed_bytes_per_sec: None,
-            // Filled in below, once the batch id exists.
-            batch_id: None,
-            chunk_size,
-        });
-    }
+    let mut rows = rows_for_files(
+        local_paths,
+        device_key_hex,
+        &folder,
+        started_unix_secs,
+        chunk_size,
+    )?;
+    let total_bytes: u64 = local_paths
+        .iter()
+        .fold(0, |total, path| total.saturating_add(local_file_size(path)));
 
     // docs/engine-contract.md item 5: a file pushed as part of `push_files`
     // logs nothing of its own; the batch logs one Write entry for the
@@ -273,6 +251,52 @@ pub(crate) fn push_files(
         transfer::spawn(shared, id);
     }
     Ok(batch_id)
+}
+
+/// Build one `TransferRow`, still without a batch id, for each file
+/// `push_files` was given. Mirrors `rows_for_folder` in `engine.rs`: every
+/// row is built before anything touches state, so a failure part way
+/// through leaves nothing behind.
+fn rows_for_files(
+    local_paths: &[String],
+    device_key_hex: &str,
+    folder: &RemotePath,
+    started_unix_secs: i64,
+    chunk_size: ChunkSize,
+) -> Result<Vec<TransferRow>, FerryError> {
+    let mut rows = Vec::with_capacity(local_paths.len());
+    for local_path in local_paths {
+        let leaf = local_leaf_name(local_path);
+        let destination =
+            RemotePath::parse(&format!("{}/{leaf}", folder.as_str())).map_err(from_path)?;
+        let source = store_local_path(local_path)?;
+        let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
+        rows.push(TransferRow {
+            id: format!("{device_key_hex}-{session}"),
+            device_key_hex: device_key_hex.to_owned(),
+            file_name: leaf,
+            source,
+            destination,
+            bytes_total: 0,
+            bytes_done: 0,
+            state: TransferState::Queued,
+            transport: None,
+            error: None,
+            source_size: None,
+            source_mtime: None,
+            running: false,
+            attempt_after: None,
+            backoff: BACKOFF_MIN,
+            started_unix_secs,
+            ended_unix_secs: None,
+            direction: Direction::Push,
+            speed_bytes_per_sec: None,
+            // Filled in by the caller, once the batch id exists.
+            batch_id: None,
+            chunk_size,
+        });
+    }
+    Ok(rows)
 }
 
 // ---------------------------------------------------------------------------

@@ -487,7 +487,7 @@ still records a run. One way, additive, never deletes, never writes back.
 Running state is derived: a batch with `Origin::Automatic` for that
 device that is not Done or Failed.
 
-### 5. Push: open
+### 5. Push: built
 
 ```rust
 /// One file. `local_path` is absolute on this device. `remote_path` is

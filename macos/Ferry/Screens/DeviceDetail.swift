@@ -16,6 +16,7 @@
 // into a list of destinations, which is a bigger change than adding a
 // section — so a seventh has to earn it.
 
+import AppKit
 import SwiftUI
 
 struct DeviceDetail: View {
@@ -137,7 +138,32 @@ struct DeviceDetail: View {
                 .foregroundStyle(FerryColor.textSecondary)
                 .lineLimit(1)
                 .truncationMode(.head)
+
+            Spacer()
+
+            // Disabled at the top level, the same as "Go up": the roots
+            // themselves are not one folder to push into.
+            Button(S.files.copyToPhone, action: chooseFilesToPush)
+                .disabled(folders.isEmpty)
+                .accessibilityLabel(S.files.copyToPhone)
         }
+    }
+
+    /// Opens the file panel for one or more local files, then starts pushing
+    /// them into the folder this section is showing. `docs/engine-contract.md`
+    /// item 5.
+    private func chooseFilesToPush() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = S.files.copyToPhone
+        guard panel.runModal() == .OK else { return }
+        model.pushFiles(
+            deviceKeyHex: device.keyHex,
+            localPaths: panel.urls.map(\.path),
+            remoteFolder: remotePath
+        )
     }
 
     @ViewBuilder
