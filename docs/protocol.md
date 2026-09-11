@@ -186,9 +186,13 @@ minutes and for one scan: the Mac accepts an `IK` handshake only while it is
 still showing the offer, and only for the one nonce in it, so a stale or
 reused code is refused once message one is decrypted, not before.
 
-The Mac still asks a person to confirm, the same as the code method: it
-shows the phone's name from the hello, and a person accepts or refuses. The
-phone asks nothing of its own; scanning the code was its answer.
+Both sides ask a person to confirm, the same as the code method. The Mac
+shows the phone's name from the hello, and a person accepts or refuses.
+The phone shows the Mac's name from the hello and asks the same question.
+Each side stores the other only after its own confirm. A phone that scanned
+a stranger's code therefore sees the stranger's name before it trusts
+anything. This changed on 11 September 2026; before, the scan was the
+phone's only answer.
 
 The scan method's protection is the two minute window and the single-use
 nonce, not a value a person compares: the name shown on the Mac is only a
