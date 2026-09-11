@@ -35,6 +35,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState != null) {
+            cameFromFirstRun = savedInstanceState.getBoolean(KEY_CAME_FROM_FIRST_RUN)
+            notificationPromptShown = savedInstanceState.getBoolean(KEY_NOTIFICATION_PROMPT_SHOWN)
+            cameraPromptShown = savedInstanceState.getBoolean(KEY_CAMERA_PROMPT_SHOWN)
+            startServiceAfterPrompt = savedInstanceState.getBoolean(KEY_START_SERVICE_AFTER_PROMPT)
+        }
         notificationPrompt = registerForActivityResult(
             ActivityResultContracts.RequestPermission(),
         ) {
@@ -93,6 +99,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_CAME_FROM_FIRST_RUN, cameFromFirstRun)
+        outState.putBoolean(KEY_NOTIFICATION_PROMPT_SHOWN, notificationPromptShown)
+        outState.putBoolean(KEY_CAMERA_PROMPT_SHOWN, cameraPromptShown)
+        outState.putBoolean(KEY_START_SERVICE_AFTER_PROMPT, startServiceAfterPrompt)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         // The engine lives as long as the process, and dropping it does not
@@ -137,5 +151,15 @@ class MainActivity : ComponentActivity() {
             return
         }
         ReachableService.turnOn(this)
+    }
+
+    private companion object {
+        // Keys for the four flags saved across a recreation, so a system
+        // prompt or a system screen in front does not lose a decision this
+        // activity already made this run.
+        const val KEY_CAME_FROM_FIRST_RUN = "cameFromFirstRun"
+        const val KEY_NOTIFICATION_PROMPT_SHOWN = "notificationPromptShown"
+        const val KEY_CAMERA_PROMPT_SHOWN = "cameraPromptShown"
+        const val KEY_START_SERVICE_AFTER_PROMPT = "startServiceAfterPrompt"
     }
 }
