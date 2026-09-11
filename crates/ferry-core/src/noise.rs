@@ -240,6 +240,18 @@ impl fmt::Debug for Paired {
     }
 }
 
+/// Compares two QR pairing nonces without branching on where they first
+/// differ, so a timing measurement cannot help a stranger guess the
+/// offer's nonce one byte at a time. XOR-folds every byte together rather
+/// than comparing byte by byte with an early exit.
+fn constant_time_eq(a: &[u8; QR_NONCE_LEN], b: &[u8; QR_NONCE_LEN]) -> bool {
+    let mut differs: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        differs |= x ^ y;
+    }
+    differs == 0
+}
+
 fn random_nonce() -> Result<[u8; 32], NoiseError> {
     let mut out = [0u8; 32];
     getrandom::fill(&mut out)
@@ -485,7 +497,8 @@ pub fn pair_ik_as_responder(
     }
     let mut nonce = [0u8; QR_NONCE_LEN];
     nonce.copy_from_slice(&buf[..QR_NONCE_LEN]);
-    if expected_nonce != Some(&nonce) {
+    let matches = expected_nonce.is_some_and(|expected| constant_time_eq(expected, &nonce));
+    if !matches {
         return Err(NoiseError::UnknownOffer);
     }
     let (name, kind) = decode_hello_payload(&buf[QR_NONCE_LEN..n])?;
@@ -829,7 +842,34 @@ mod tests {
     use std::io::{self, Read, Write};
     use std::sync::{Arc, Mutex};
 
-    const PROLOGUE: &[u8] = b"FERRY\x00\x02FERRY\x00\x02";
+    /// A valid Noise prologue for these low level tests: the same 16 bytes
+    /// `version::negotiate` builds for two sides that both send `MAGIC`,
+    /// `VERSION_MAX`, and the `Connect` mode byte (`0`). Built from those
+    /// real constants, rather than typed out by hand, so a future version
+    /// bump cannot leave this silently stale the way a hand written
+    /// literal already once did.
+    const PROLOGUE: &[u8; 16] = &{
+        let mut bytes = [0u8; 16];
+        let mut i = 0;
+        while i < crate::version::MAGIC.len() {
+            bytes[i] = crate::version::MAGIC[i];
+            bytes[8 + i] = crate::version::MAGIC[i];
+            i += 1;
+        }
+        let version_bytes = crate::version::VERSION_MAX.to_be_bytes();
+        bytes[5] = version_bytes[0];
+        bytes[6] = version_bytes[1];
+        // Byte 7 (and byte 15) is the mode: `Mode::Connect`'s byte value,
+        // 0, left as the array's own default. Every test below runs a
+        // handshake pattern already agreed on, not pairing by code, so
+        // this is the filler value `version::negotiate` itself sends for
+        // a responder with nothing of its own to request.
+        bytes[7] = 0;
+        bytes[13] = version_bytes[0];
+        bytes[14] = version_bytes[1];
+        bytes[15] = 0;
+        bytes
+    };
 
     fn pair_over_loopback() -> (Paired, Paired) {
         let (a, b) = loopback();
