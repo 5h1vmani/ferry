@@ -1519,6 +1519,107 @@ fn a_cut_push_resumes_and_rewrites_at_most_one_chunk() {
 }
 
 // ---------------------------------------------------------------------------
+// H1: a push that never verifies must fail, not retry forever.
+// ---------------------------------------------------------------------------
+
+/// A peer that answers every write, truncate, rename, and set-mtime with
+/// success, but stores nothing: its manifest always reports the file as
+/// present and empty, whatever was "written" to it. Stands in for a peer
+/// that acknowledges everything and keeps none of it.
+struct AcksButStoresNothingFs;
+
+impl FileOps for AcksButStoresNothingFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn write(&self, _path: &RemotePath, _offset: u64, bytes: &[u8]) -> Result<u32, OpError> {
+        Ok(u32::try_from(bytes.len()).unwrap_or(u32::MAX))
+    }
+
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Ok(())
+    }
+
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+        // Always answers as if the file exists and is empty, no matter what
+        // was written to it: this peer keeps nothing.
+        Ok(manifest_from_bytes(&[], ChunkSize::one_mebibyte()))
+    }
+}
+
+/// H1: `push.rs`'s `send` used to retry forever when a chunk it sent from
+/// offset 0 never verified, because a peer like this always answers the
+/// final manifest check with something that differs. Every attempt starts
+/// from offset 0 again, since this peer's manifest never shows anything
+/// landed, so the first attempt must already be fatal.
+#[test]
+fn a_push_to_a_peer_that_stores_nothing_fails_within_a_bounded_number_of_attempts() {
+    let mac = build("Vamana");
+    let peer = start_peer_with(&mac.key, Arc::new(AcksButStoresNothingFs));
+    pair_with_peer(&mac, &peer);
+    mac.engine.set_backoff(Duration::from_millis(10));
+
+    let source = tempfile::tempdir().expect("a folder for the file being pushed");
+    let local_path = source.path().join("a.bin");
+    std::fs::write(&local_path, sample_bytes(1024)).expect("the local file should write");
+
+    let id = mac
+        .engine
+        .push(
+            key_hex(&peer.key),
+            local_path.to_string_lossy().into_owned(),
+            "Root/a.bin".to_owned(),
+        )
+        .expect("the push should be accepted");
+
+    wait_transfer(
+        &mac,
+        &id,
+        "the push to fail rather than retry forever",
+        |t| t.state == TransferState::Failed,
+    );
+
+    let info = mac
+        .engine
+        .transfers()
+        .into_iter()
+        .find(|t| t.id == id)
+        .expect("the failed transfer is still listed");
+    assert_eq!(
+        code_of_error(&info.error.expect("a failed transfer carries an error")),
+        "TransferError::ChunkFailedVerification"
+    );
+
+    mac.engine.stop();
+    peer.close();
+}
+
+// ---------------------------------------------------------------------------
 // Finding 6: one engine per data folder, and no record for a device that is
 // not paired.
 // ---------------------------------------------------------------------------

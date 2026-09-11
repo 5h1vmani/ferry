@@ -505,7 +505,13 @@ fn send<S: Read + Write>(
         .map_err(|error| classify_rpc(&error))?;
 
     // Ask once more. A matching manifest means the peer now holds the whole
-    // file; anything else is worth another attempt.
+    // file; anything else is worth another attempt, unless this attempt
+    // already sent every chunk from offset 0: a rewrite that started from a
+    // resume point may retry once from 0, but a rewrite that already
+    // started from 0 and still does not verify will never verify, however
+    // many more times it is tried. H1: this is what stops a peer that
+    // acknowledges every write and stores nothing from retrying forever.
+    let sent_from_zero = start == 0;
     match client.manifest(&partial) {
         Ok(remote) if remote == *manifest => {
             client
@@ -517,14 +523,24 @@ fn send<S: Read + Write>(
                 .map_err(|error| classify_rpc(&error))?;
             Ok(())
         }
-        Ok(remote) => Err(Outcome::Retry(from_transfer(
-            &TransferError::ChunkFailedVerification {
+        Ok(remote) => {
+            let error = TransferError::ChunkFailedVerification {
                 index: first_mismatch(manifest, &remote),
-            },
-        ))),
-        Err(RpcError::Remote(OpError::NotFound)) => Err(Outcome::Retry(from_transfer(
-            &TransferError::ChunkFailedVerification { index: 0 },
-        ))),
+            };
+            Err(if sent_from_zero {
+                Outcome::Fatal(from_transfer(&error))
+            } else {
+                Outcome::Retry(from_transfer(&error))
+            })
+        }
+        Err(RpcError::Remote(OpError::NotFound)) => {
+            let error = TransferError::ChunkFailedVerification { index: 0 };
+            Err(if sent_from_zero {
+                Outcome::Fatal(from_transfer(&error))
+            } else {
+                Outcome::Retry(from_transfer(&error))
+            })
+        }
         Err(error) => Err(classify_rpc(&error)),
     }
 }
