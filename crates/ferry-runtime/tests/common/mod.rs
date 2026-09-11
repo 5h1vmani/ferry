@@ -6,10 +6,16 @@
 //! files share one client instead of copying it. Every item here moved
 //! from `tests/dav.rs` unchanged apart from its visibility.
 //!
+//! `engines.rs` beside this file holds the two-engine harness that five
+//! test files used to copy: the listener, the inbox, one `Side` per
+//! engine, and the code-method pairing helper.
+//!
 //! Each test binary that says `mod common;` compiles this whole file, so a
 //! binary that uses only part of it would otherwise warn about the rest.
 
 #![allow(dead_code)]
+
+pub(crate) mod engines;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};

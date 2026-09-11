@@ -25,9 +25,15 @@
 //! mDNS, because a test machine may sit on a network that refuses multicast.
 //! Both are in `docs/manual-checks.md`.
 
+mod common;
+
+use common::engines::{
+    Inbox, Recorder, build, build_as, code_of_error, is_code, is_confirmed, is_found,
+    loopback_addr, pair,
+};
+
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Aliased: `ferry_runtime::DeviceKind`, used unaliased below, is the
@@ -42,185 +48,12 @@ use ferry_core::peers::DeviceKind as CoreDeviceKind;
 use ferry_core::rpc::{Client, RpcError, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
-    AccessVerb, Actor, Config, DeviceKind, Direction, Engine, EngineListener, KeyPair, Origin,
-    PairingMethod, PairingState, Root, TransferState, Transport, generate_key,
+    AccessVerb, Actor, Config, DeviceKind, Direction, Engine, KeyPair, Origin, PairingMethod,
+    PairingState, Root, TransferState, Transport, generate_key,
 };
-
-/// How long any wait may take before the test gives up.
-const PATIENCE: Duration = Duration::from_secs(30);
 
 /// How big the file the Mac pulls is.
 const FILE_BYTES: usize = 300 * 1024;
-
-/// What one engine has told the app so far.
-#[derive(Default)]
-struct Notes {
-    /// Every pairing state, in the order it arrived.
-    pairings: Vec<PairingState>,
-    /// How many times anything changed. It only has to move.
-    ticks: u64,
-    /// How many times `access_log_changed` fired, counted apart from
-    /// `ticks` so a test can tell that call apart from the others.
-    access_log_ticks: u64,
-}
-
-/// Collects callbacks and lets the test wait for one.
-#[derive(Default)]
-struct Inbox {
-    notes: Mutex<Notes>,
-    ready: Condvar,
-}
-
-impl Inbox {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Notes> {
-        self.notes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn tick(&self) {
-        self.lock().ticks += 1;
-        self.ready.notify_all();
-    }
-
-    fn access_log_tick(&self) {
-        self.lock().access_log_ticks += 1;
-        self.ready.notify_all();
-    }
-
-    fn pairing(&self, state: PairingState) {
-        let mut notes = self.lock();
-        notes.pairings.push(state);
-        notes.ticks += 1;
-        drop(notes);
-        self.ready.notify_all();
-    }
-
-    /// Wait until a pairing state that `want` accepts has arrived.
-    fn wait_pairing(&self, what: &str, want: impl Fn(&PairingState) -> bool) -> PairingState {
-        let deadline = Instant::now() + PATIENCE;
-        let mut notes = self.lock();
-        loop {
-            if let Some(found) = notes.pairings.iter().find(|state| want(state)) {
-                return found.clone();
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "waited {PATIENCE:?} for {what}");
-            let (next, _) = self
-                .ready
-                .wait_timeout(notes, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            notes = next;
-        }
-    }
-
-    /// Wait until `check` is true, rechecking on every callback.
-    fn wait_until(&self, what: &str, check: impl Fn() -> bool) {
-        let deadline = Instant::now() + PATIENCE;
-        let mut notes = self.lock();
-        loop {
-            if check() {
-                return;
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "waited {PATIENCE:?} for {what}");
-            let (next, _) = self
-                .ready
-                .wait_timeout(notes, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            notes = next;
-        }
-    }
-}
-
-/// The listener one engine is given.
-struct Recorder {
-    inbox: Arc<Inbox>,
-}
-
-impl EngineListener for Recorder {
-    fn devices_changed(&self) {
-        self.inbox.tick();
-    }
-
-    fn transfers_changed(&self) {
-        self.inbox.tick();
-    }
-
-    fn pairing_changed(&self, state: PairingState) {
-        self.inbox.pairing(state);
-    }
-
-    fn access_log_changed(&self) {
-        self.inbox.access_log_tick();
-    }
-}
-
-/// One engine, its inbox, and the folders it owns.
-struct Side {
-    engine: Arc<Engine>,
-    inbox: Arc<Inbox>,
-    key: KeyPair,
-    /// The one root this side serves, named `"Root"`.
-    shared_root: PathBuf,
-    /// Where a pull lands. Never the same folder as `shared_root`.
-    download_root: PathBuf,
-    /// Held so the folders live as long as the engine does.
-    _data: tempfile::TempDir,
-    _shared: tempfile::TempDir,
-    _download: tempfile::TempDir,
-}
-
-/// Build and start one engine, of the given device kind, on fresh folders.
-fn build_as(name: &str, kind: DeviceKind) -> Side {
-    let data = tempfile::tempdir().expect("a temporary folder for engine files");
-    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
-    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
-    let key: KeyPair = generate_key().expect("a fresh key pair");
-    let inbox = Arc::new(Inbox::default());
-    let config = Config {
-        data_dir: data.path().to_string_lossy().into_owned(),
-        shared_roots: vec![Root {
-            name: "Root".to_owned(),
-            path: shared.path().to_string_lossy().into_owned(),
-            writable: true,
-        }],
-        download_dir: download.path().to_string_lossy().into_owned(),
-        display_name: name.to_owned(),
-        listen_port: 0,
-        key: key.clone(),
-        kind,
-    };
-    let engine = Engine::new(
-        config,
-        Box::new(Recorder {
-            inbox: Arc::clone(&inbox),
-        }),
-    )
-    .expect("the engine should build from a good config");
-    engine.start().expect("the engine should start");
-    Side {
-        engine,
-        inbox,
-        key,
-        shared_root: shared.path().to_path_buf(),
-        download_root: download.path().to_path_buf(),
-        _data: data,
-        _shared: shared,
-        _download: download,
-    }
-}
-
-/// Build and start one engine on fresh folders, as a Mac.
-fn build(name: &str) -> Side {
-    build_as(name, DeviceKind::Mac)
-}
-
-/// The address another engine in this process can dial.
-fn loopback_addr(side: &Side) -> SocketAddr {
-    let bound = side.engine.listen_addr().expect("a bound listener");
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bound.port())
-}
 
 /// A `Side`'s key, as `ferry-core` names it. For a raw connection built by
 /// hand, bypassing `Engine::list`, so a test can issue more than one
@@ -265,18 +98,6 @@ fn assert_expires_about_two_minutes_out(expires_unix_secs: i64) {
 
 fn is_waiting(state: &PairingState) -> bool {
     matches!(state, PairingState::Waiting { .. })
-}
-
-fn is_code(state: &PairingState) -> bool {
-    matches!(state, PairingState::Code { .. })
-}
-
-fn is_confirmed(state: &PairingState) -> bool {
-    matches!(state, PairingState::Confirmed { .. })
-}
-
-fn is_found(state: &PairingState) -> bool {
-    matches!(state, PairingState::Found { .. })
 }
 
 /// Bytes that are easy to check and hard to get right by accident.
@@ -1270,53 +1091,6 @@ fn a_bad_set_roots_call_is_refused_and_the_old_roots_keep_serving() {
 
     mac.engine.stop();
     phone.engine.stop();
-}
-
-/// Pair `mac` with `phone` and return the phone's key hex, as `mac` names
-/// it. Shared by tests that need two paired engines but do not otherwise
-/// exercise the pairing screens.
-fn pair(mac: &Side, phone: &Side) -> String {
-    phone.engine.set_reachable(true);
-    phone.engine.start_pairing_with(PairingMethod::Code);
-    mac.engine.start_pairing_with(PairingMethod::Code);
-
-    let phone_addr = loopback_addr(phone);
-    mac.engine.offer_candidate(phone_addr);
-
-    let found = mac
-        .inbox
-        .wait_pairing("the Mac to list a candidate", is_found);
-    let PairingState::Found { candidates, .. } = &found else {
-        panic!("expected candidates, got {found:?}");
-    };
-    let wanted = format!("wifi:{phone_addr}");
-    let chosen = candidates
-        .iter()
-        .find(|candidate| candidate.id == wanted)
-        .unwrap_or_else(|| panic!("the injected candidate {wanted} should be listed"));
-    mac.engine
-        .pick_candidate(chosen.id.clone())
-        .expect("the candidate should be pickable");
-
-    mac.inbox.wait_pairing("the Mac to show a code", is_code);
-    phone
-        .inbox
-        .wait_pairing("the phone to show a code", is_code);
-
-    mac.engine.confirm_pairing(true);
-    phone.engine.confirm_pairing(true);
-    mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
-    phone
-        .inbox
-        .wait_pairing("the phone to confirm", is_confirmed);
-
-    mac.engine.devices()[0].key_hex.clone()
-}
-
-/// The code an error carries, or a panic saying it had none.
-fn code_of_error(error: &ferry_runtime::FerryError) -> String {
-    let ferry_runtime::FerryError::Failed { code, .. } = error;
-    code.clone()
 }
 
 #[test]

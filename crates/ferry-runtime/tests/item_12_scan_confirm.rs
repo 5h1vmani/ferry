@@ -14,133 +14,14 @@
 //! The harness here is copied from the QR section of `two_engines.rs`, per
 //! `docs/agent-runs.md` rule 3: one test file per item.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+mod common;
+
+use common::engines::{Side, build_as, is_confirmed, loopback_addr};
+
+use std::net::SocketAddr;
 
 use ferry_core::offer::Offer;
-use ferry_runtime::{
-    Config, DeviceKind, Engine, EngineListener, KeyPair, PairingMethod, PairingState, Root,
-    Transport, generate_key,
-};
-
-/// How long any wait may take before the test gives up.
-const PATIENCE: Duration = Duration::from_secs(30);
-
-/// What one engine has told the app so far.
-#[derive(Default)]
-struct Notes {
-    /// Every pairing state, in the order it arrived.
-    pairings: Vec<PairingState>,
-}
-
-/// Collects callbacks and lets the test wait for one.
-#[derive(Default)]
-struct Inbox {
-    notes: Mutex<Notes>,
-    ready: Condvar,
-}
-
-impl Inbox {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Notes> {
-        self.notes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn pairing(&self, state: PairingState) {
-        self.lock().pairings.push(state);
-        self.ready.notify_all();
-    }
-
-    /// Wait until a pairing state that `want` accepts has arrived.
-    fn wait_pairing(&self, what: &str, want: impl Fn(&PairingState) -> bool) -> PairingState {
-        let deadline = Instant::now() + PATIENCE;
-        let mut notes = self.lock();
-        loop {
-            if let Some(found) = notes.pairings.iter().find(|state| want(state)) {
-                return found.clone();
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "waited {PATIENCE:?} for {what}");
-            let (next, _) = self
-                .ready
-                .wait_timeout(notes, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            notes = next;
-        }
-    }
-}
-
-/// The listener one engine is given.
-struct Recorder {
-    inbox: Arc<Inbox>,
-}
-
-impl EngineListener for Recorder {
-    fn devices_changed(&self) {}
-
-    fn transfers_changed(&self) {}
-
-    fn pairing_changed(&self, state: PairingState) {
-        self.inbox.pairing(state);
-    }
-
-    fn access_log_changed(&self) {}
-}
-
-/// One engine, its inbox, and the folders it owns.
-struct Side {
-    engine: Arc<Engine>,
-    inbox: Arc<Inbox>,
-    /// Held so the folders live as long as the engine does.
-    _data: tempfile::TempDir,
-    _shared: tempfile::TempDir,
-    _download: tempfile::TempDir,
-}
-
-/// Build and start one engine, of the given device kind, on fresh folders.
-fn build_as(name: &str, kind: DeviceKind) -> Side {
-    let data = tempfile::tempdir().expect("a temporary folder for engine files");
-    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
-    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
-    let key: KeyPair = generate_key().expect("a fresh key pair");
-    let inbox = Arc::new(Inbox::default());
-    let config = Config {
-        data_dir: data.path().to_string_lossy().into_owned(),
-        shared_roots: vec![Root {
-            name: "Root".to_owned(),
-            path: shared.path().to_string_lossy().into_owned(),
-            writable: true,
-        }],
-        download_dir: download.path().to_string_lossy().into_owned(),
-        display_name: name.to_owned(),
-        listen_port: 0,
-        key,
-        kind,
-    };
-    let engine = Engine::new(
-        config,
-        Box::new(Recorder {
-            inbox: Arc::clone(&inbox),
-        }),
-    )
-    .expect("the engine should build from a good config");
-    engine.start().expect("the engine should start");
-    Side {
-        engine,
-        inbox,
-        _data: data,
-        _shared: shared,
-        _download: download,
-    }
-}
-
-/// The address another engine in this process can dial.
-fn loopback_addr(side: &Side) -> SocketAddr {
-    let bound = side.engine.listen_addr().expect("a bound listener");
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bound.port())
-}
+use ferry_runtime::{DeviceKind, PairingMethod, PairingState, Transport};
 
 fn is_offering(state: &PairingState) -> bool {
     matches!(state, PairingState::Offering { .. })
@@ -148,10 +29,6 @@ fn is_offering(state: &PairingState) -> bool {
 
 fn is_requested(state: &PairingState) -> bool {
     matches!(state, PairingState::Requested { .. })
-}
-
-fn is_confirmed(state: &PairingState) -> bool {
-    matches!(state, PairingState::Confirmed { .. })
 }
 
 fn is_idle(state: &PairingState) -> bool {
