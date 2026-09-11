@@ -970,6 +970,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "sends packets to a private address off this machine and waits the full timeout; run on demand"]
     fn connect_to_a_non_routable_address_times_out_within_the_handshake_timeout() {
         // F3: `connect` used to reach for a plain `TcpStream::connect`,
         // whose own timeout is however long the OS takes to decide nothing
@@ -992,6 +993,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "sends packets to a private address off this machine and waits the full timeout; run on demand"]
     fn pair_to_a_non_routable_address_times_out_within_the_handshake_timeout() {
         // F3: as the test above, for `pair`'s own connect step.
         let unroutable = SocketAddr::from(([10, 255, 255, 1], 9));
