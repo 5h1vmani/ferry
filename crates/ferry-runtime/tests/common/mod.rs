@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod engines;
+pub(crate) mod paths;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
