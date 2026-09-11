@@ -559,6 +559,10 @@ fn map_rpc_error(error: &RpcError) -> (&'static str, bool) {
         // device going away, which is what it is from Finder's side.
         RpcError::Remote(OpError::PermissionDenied) => ("503 Service Unavailable", true),
         RpcError::Remote(_) => ("500 Internal Server Error", false),
-        _ => ("502 Bad Gateway", true),
+        // Anything that is not an answer from the peer is the connection
+        // itself failing: the peer stopped and closed the socket
+        // (`docs/engine-contract.md` item 16c), the cable went, or the
+        // stream broke. From Finder's side the device went away.
+        _ => ("503 Service Unavailable", true),
     }
 }
