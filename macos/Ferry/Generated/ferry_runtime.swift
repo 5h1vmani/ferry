@@ -1914,6 +1914,16 @@ public struct AutoCopy: Equatable, Hashable {
      * `Some` exactly when `last_run_unix_secs` is.
      */
     public var lastRunFiles: UInt32?
+    /**
+     * Whether a run is moving files right now.
+     *
+     * Derived, not stored: true while a batch with `Origin::Automatic` for
+     * this device is not `Done` or `Failed`. A run that finds nothing new
+     * records a run and makes no batch, so `running` is only ever true
+     * while files are actually moving, never for the run's own listing and
+     * skip-check.
+     */
+    public var running: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1936,13 +1946,23 @@ public struct AutoCopy: Equatable, Hashable {
         /**
          * How many files the last run copied, zero when it found nothing new.
          * `Some` exactly when `last_run_unix_secs` is.
-         */lastRunFiles: UInt32?) {
+         */lastRunFiles: UInt32?, 
+        /**
+         * Whether a run is moving files right now.
+         *
+         * Derived, not stored: true while a batch with `Origin::Automatic` for
+         * this device is not `Done` or `Failed`. A run that finds nothing new
+         * records a run and makes no batch, so `running` is only ever true
+         * while files are actually moving, never for the run's own listing and
+         * skip-check.
+         */running: Bool) {
         self.deviceKeyHex = deviceKeyHex
         self.enabled = enabled
         self.source = source
         self.destination = destination
         self.lastRunUnixSecs = lastRunUnixSecs
         self.lastRunFiles = lastRunFiles
+        self.running = running
     }
 
     
@@ -1966,7 +1986,8 @@ public struct FfiConverterTypeAutoCopy: FfiConverterRustBuffer {
                 source: FfiConverterString.read(from: &buf), 
                 destination: FfiConverterString.read(from: &buf), 
                 lastRunUnixSecs: FfiConverterOptionInt64.read(from: &buf), 
-                lastRunFiles: FfiConverterOptionUInt32.read(from: &buf)
+                lastRunFiles: FfiConverterOptionUInt32.read(from: &buf), 
+                running: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -1977,6 +1998,7 @@ public struct FfiConverterTypeAutoCopy: FfiConverterRustBuffer {
         FfiConverterString.write(value.destination, into: &buf)
         FfiConverterOptionInt64.write(value.lastRunUnixSecs, into: &buf)
         FfiConverterOptionUInt32.write(value.lastRunFiles, into: &buf)
+        FfiConverterBool.write(value.running, into: &buf)
     }
 }
 

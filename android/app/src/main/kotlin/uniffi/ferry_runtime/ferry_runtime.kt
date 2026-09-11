@@ -3024,6 +3024,17 @@ data class AutoCopy (
      * `Some` exactly when `last_run_unix_secs` is.
      */
     var `lastRunFiles`: kotlin.UInt?
+    , 
+    /**
+     * Whether a run is moving files right now.
+     *
+     * Derived, not stored: true while a batch with `Origin::Automatic` for
+     * this device is not `Done` or `Failed`. A run that finds nothing new
+     * records a run and makes no batch, so `running` is only ever true
+     * while files are actually moving, never for the run's own listing and
+     * skip-check.
+     */
+    var `running`: kotlin.Boolean
     
 ){
     
@@ -3046,6 +3057,7 @@ public object FfiConverterTypeAutoCopy: FfiConverterRustBuffer<AutoCopy> {
             FfiConverterString.read(buf),
             FfiConverterOptionalLong.read(buf),
             FfiConverterOptionalUInt.read(buf),
+            FfiConverterBoolean.read(buf),
         )
     }
 
@@ -3055,7 +3067,8 @@ public object FfiConverterTypeAutoCopy: FfiConverterRustBuffer<AutoCopy> {
             FfiConverterString.allocationSize(value.`source`) +
             FfiConverterString.allocationSize(value.`destination`) +
             FfiConverterOptionalLong.allocationSize(value.`lastRunUnixSecs`) +
-            FfiConverterOptionalUInt.allocationSize(value.`lastRunFiles`)
+            FfiConverterOptionalUInt.allocationSize(value.`lastRunFiles`) +
+            FfiConverterBoolean.allocationSize(value.`running`)
     )
 
     override fun write(value: AutoCopy, buf: ByteBuffer) {
@@ -3065,6 +3078,7 @@ public object FfiConverterTypeAutoCopy: FfiConverterRustBuffer<AutoCopy> {
             FfiConverterString.write(value.`destination`, buf)
             FfiConverterOptionalLong.write(value.`lastRunUnixSecs`, buf)
             FfiConverterOptionalUInt.write(value.`lastRunFiles`, buf)
+            FfiConverterBoolean.write(value.`running`, buf)
     }
 }
 
