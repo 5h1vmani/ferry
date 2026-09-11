@@ -451,6 +451,15 @@ state what each is and decides. Nothing from that run has been used on
 real devices; `docs/manual-checks.md` task 4 lists what a person checks.
 What is left of phase 2 is items 4, 7 and 9 below.
 
+Built on 11 September 2026, in the third run of that day, each audited
+and the findings fixed: phase 2 items 4, 7 and 9. The phone also took its
+designed screens in this run, closing phase 2 item 8, and a lifecycle
+audit of the new phone code found fifteen findings, every one fixed.
+`docs/engine-contract.md` items 17, 18 and 19 state what each is and
+decides. Nothing from that run has been used on real devices;
+`docs/manual-checks.md` tasks 4, 5 and 6 list what a person checks. Phase
+2 is complete.
+
 Phase 2, in order:
 
 1. The runtime limits: a manifest request so the first pass of a pull
@@ -497,14 +506,12 @@ Phase 2, in order:
    mount on the same layer, so it comes after the mount and reuses its
    decisions. Job 8 in `docs/jobs.md`. One to two weeks.
 
-Phase 3, optional, in no order:
+Phase 3, optional, in no order. QR code pairing was on this list; it is
+built. `docs/engine-contract.md` item 12 states it.
 
 - A per-peer root subset. Share only DCIM to one Mac and everything to
   another. Least privilege on the existing root check. Days. No daily value
   with one Mac, which is why it is optional.
-- QR code pairing. Show the Mac's key and address as a QR and scan it with
-  the phone camera. It is a second pairing mode beside the six digits, not a
-  change to it, and it adds the camera permission. Days.
 - The File Provider extension, Android Open Accessory, and the hotspot
   fallback, as section 6 lists them. Whole-file deduplication is covered by
   phase 2 item 2 and is dropped from this list.
