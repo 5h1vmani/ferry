@@ -3,8 +3,8 @@
 //!
 //! `docs/engine-contract.md`, item 6, and ADR 0008. I1: browsing.
 //! `OPTIONS`, `PROPFIND` at depth 0 and 1, `GET`, `HEAD`, `LOCK`, `UNLOCK`,
-//! and a `PUT` of a sidecar name. I2 begins here with `PUT` of a real
-//! file, and its delta on save.
+//! and a `PUT` of a sidecar name. I2: `PUT` of a real file and its delta
+//! on save, `MKCOL`, `DELETE`, `MOVE`, and `COPY`.
 //!
 //! One [`MountRegistry`] lives in [`crate::engine::Shared`], one entry per
 //! device that has ever had [`MountRegistry::start`] called for it. Each
@@ -27,11 +27,14 @@
 //! - `cache.rs`: the two second depth 1 listing cache.
 //! - `pool.rs`: a small pool of the engine's own [`ferry_core::rpc::Client`]
 //!   connections to the peer, four at most.
-//! - `put.rs`: item I2's landing rule for `PUT` of a real file, reusing
-//!   item 5's push rule.
+//! - `put.rs`: item I2's landing rule for `PUT` of a real file and for
+//!   `COPY`, reusing item 5's push rule.
+//! - `delete.rs`: item I2's recursive `DELETE` plan, over `folder.rs`'s
+//!   bounds.
 //! - `server.rs`: the accept loop, the connection loop, and the verbs.
 
 mod cache;
+mod delete;
 mod http;
 mod lock;
 mod pool;

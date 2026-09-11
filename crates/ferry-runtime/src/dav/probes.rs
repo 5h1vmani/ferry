@@ -133,6 +133,31 @@ impl SidecarStore {
         std::fs::write(disk_path, bytes).map_err(|_| SidecarWriteError::Io)
     }
 
+    /// Removes the sidecar for `path`. Returns whether one was there.
+    /// `docs/engine-contract.md`, item 6, I2: a `DELETE` of a sidecar
+    /// touches only this store, never the peer.
+    pub(crate) fn delete(&self, path: &str) -> bool {
+        let Some(disk_path) = self.disk_path(path) else {
+            return false;
+        };
+        std::fs::remove_file(disk_path).is_ok()
+    }
+
+    /// Moves the sidecar at `from` to `to`. Returns whether one was there
+    /// to move. `docs/engine-contract.md`, item 6, I2: a `MOVE` of a
+    /// sidecar touches only this store, never the peer.
+    pub(crate) fn rename(&self, from: &str, to: &str) -> bool {
+        let (Some(from_path), Some(to_path)) = (self.disk_path(from), self.disk_path(to)) else {
+            return false;
+        };
+        if let Some(parent) = to_path.parent()
+            && std::fs::create_dir_all(parent).is_err()
+        {
+            return false;
+        }
+        std::fs::rename(from_path, to_path).is_ok()
+    }
+
     /// Counts every file under this store's base folder, recursively.
     /// Nothing here tracks the count between calls; a store this small
     /// (bounded at [`MAX_SIDECARS`]) is cheap enough to walk fresh each
@@ -170,6 +195,37 @@ fn modified_time(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::{MAX_SIDECAR_LEN, SidecarStore, SidecarWriteError, is_probe_name, last_segment};
+
+    /// A store under a fresh temporary directory, removed when it drops.
+    struct TempStore {
+        dir: std::path::PathBuf,
+        store: SidecarStore,
+    }
+
+    impl TempStore {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir()
+                .join(format!("ferry-dav-sidecar-{label}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            Self {
+                store: SidecarStore::new(dir.clone()),
+                dir,
+            }
+        }
+    }
+
+    impl std::ops::Deref for TempStore {
+        type Target = SidecarStore;
+        fn deref(&self) -> &SidecarStore {
+            &self.store
+        }
+    }
+
+    impl Drop for TempStore {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
 
     #[test]
     fn matches_every_name_item_6_lists() {
@@ -239,5 +295,34 @@ mod tests {
             "a refused body must not land on disk"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_removes_a_sidecar_and_reports_it_was_there() {
+        let store = TempStore::new("delete");
+        store.write("DCIM/.DS_Store", b"hello").unwrap();
+        assert!(store.delete("DCIM/.DS_Store"));
+        assert!(store.read("DCIM/.DS_Store").is_none());
+    }
+
+    #[test]
+    fn delete_of_a_name_never_written_reports_it_was_not_there() {
+        let store = TempStore::new("delete-missing");
+        assert!(!store.delete("DCIM/.DS_Store"));
+    }
+
+    #[test]
+    fn rename_moves_a_sidecar_to_its_new_name() {
+        let store = TempStore::new("rename");
+        store.write("DCIM/.DS_Store", b"hello").unwrap();
+        assert!(store.rename("DCIM/.DS_Store", "Camera/.DS_Store"));
+        assert!(store.read("DCIM/.DS_Store").is_none());
+        assert_eq!(store.read("Camera/.DS_Store").unwrap().bytes, b"hello");
+    }
+
+    #[test]
+    fn rename_of_a_name_never_written_reports_it_was_not_there() {
+        let store = TempStore::new("rename-missing");
+        assert!(!store.rename("DCIM/.DS_Store", "Camera/.DS_Store"));
     }
 }

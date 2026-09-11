@@ -2,10 +2,8 @@
 //!
 //! `docs/engine-contract.md`, item 6. I1: `OPTIONS`; `PROPFIND` at depth 0
 //! and 1; `GET` and `HEAD`, with one `Range`; `LOCK` and `UNLOCK`; and a
-//! `PUT` of a sidecar name. I2 begins here with `PUT` of a real file: a
-//! spool file staged on this Mac, then landed on the peer with the push
-//! rule (item 5) for a new destination, or with only the chunks that
-//! differ, in place, for one that already exists.
+//! `PUT` of a sidecar name. I2: `PUT` of a real file and its delta on
+//! save, `MKCOL`, `DELETE`, `MOVE`, and `COPY`.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -23,9 +21,11 @@ use ferry_core::rpc::{Client, RpcError};
 
 use crate::access::AccessVerb;
 use crate::engine::{Shared, record_this};
+use crate::folder::RemoteLister;
 use crate::guard::StopAware;
 
 use super::cache::Cache;
+use super::delete;
 use super::lock::{LockError, LockTable};
 use super::pool::{self, Pool};
 use super::probes::{self, SidecarStore, SidecarWriteError};
@@ -280,6 +280,10 @@ fn respond(
         "GET" | "HEAD" if is_probe => get_probe(bridge, target, &request.method, out),
         "PROPFIND" => propfind(shared, bridge, target, &request, out),
         "GET" | "HEAD" => get_file(shared, bridge, target, &request.method, &request, out),
+        "MKCOL" => mkcol_verb(shared, bridge, target, &request, out),
+        "DELETE" => delete_verb(shared, bridge, target, &request, out),
+        "MOVE" => move_verb(shared, bridge, target, &request, out),
+        "COPY" => copy_verb(shared, bridge, target, &request, out),
         _ => method_not_allowed(out),
     }
     .map(|()| true)
@@ -336,7 +340,7 @@ fn authorized(bridge: &Bridge, header: Option<&str>) -> bool {
 /// The methods this bridge answers at all, I1 and I2 together. Shared by
 /// `OPTIONS` and by a 405's `Allow` header (N3).
 const ALLOWED_METHODS: &str =
-    "OPTIONS, GET, HEAD, PUT, PROPFIND, LOCK, UNLOCK";
+    "OPTIONS, GET, HEAD, PUT, PROPFIND, MKCOL, DELETE, MOVE, COPY, LOCK, UNLOCK";
 
 fn options(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
@@ -509,6 +513,330 @@ fn map_write_error(error: &RpcError) -> (&'static str, bool) {
         _ => ("503 Service Unavailable", true),
     }
 }
+
+/// `MKCOL` is `mkdir`. `docs/engine-contract.md`, item 6.
+fn mkcol_verb(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    target: &str,
+    request: &http::Request,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let Ok(path) = RemotePath::parse(target) else {
+        return no_body(out, "404 Not Found");
+    };
+    if path.is_root() {
+        return no_body(out, "404 Not Found");
+    }
+    let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        return unavailable(out);
+    };
+    match borrowed.client().mkdir(&path) {
+        Ok(()) => {
+            bridge.cache.invalidate(parent_of(target));
+            record_this(
+                shared,
+                &bridge.device_key_hex,
+                AccessVerb::Mkdir,
+                path.as_str(),
+                None,
+                None,
+                None,
+            );
+            http::write_head(out, "201 Created", &[("Content-Length", "0".to_owned())])
+        }
+        // RFC 4918 9.3.1: a missing parent is 409, not `map_write_error`'s
+        // ordinary 404 for `NotFound`, since here it names a missing
+        // ancestor rather than the target itself. An existing target
+        // still falls through to `map_write_error`, which already answers
+        // `AlreadyExists` with 405.
+        Err(RpcError::Remote(OpError::NotFound)) => no_body(out, "409 Conflict"),
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            no_body(out, status)
+        }
+    }
+}
+/// `DELETE`: a file is `delete`; a folder is walked with `folder.rs`'s
+/// bounds and deleted leaves first, then folders deepest first, per
+/// `delete::plan`. The wire stays non-recursive: one `delete` call per
+/// file or folder removed. A sidecar name never reaches the peer.
+fn delete_verb(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    target: &str,
+    request: &http::Request,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    if probes::is_probe_name(probes::last_segment(target)) {
+        return if bridge.sidecars.delete(target) {
+            no_body(out, "204 No Content")
+        } else {
+            no_body(out, "404 Not Found")
+        };
+    }
+    let Ok(path) = RemotePath::parse(target) else {
+        return no_body(out, "404 Not Found");
+    };
+    if path.is_root() {
+        return no_body(out, "403 Forbidden");
+    }
+
+    let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        return unavailable(out);
+    };
+    let entry = match borrowed.client().stat(&path) {
+        Ok(entry) => entry,
+        Err(RpcError::Remote(OpError::NotFound)) => return no_body(out, "404 Not Found"),
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            return no_body(out, status);
+        }
+    };
+
+    if entry.kind == FileKind::File {
+        return match borrowed.client().delete(&path) {
+            Ok(()) => {
+                bridge.cache.invalidate(parent_of(target));
+                record_this(
+                    shared,
+                    &bridge.device_key_hex,
+                    AccessVerb::Delete,
+                    path.as_str(),
+                    None,
+                    None,
+                    None,
+                );
+                no_body(out, "204 No Content")
+            }
+            Err(error) => {
+                let (status, unhealthy) = map_write_error(&error);
+                if unhealthy {
+                    borrowed.mark_unhealthy();
+                }
+                no_body(out, status)
+            }
+        };
+    }
+
+    let lister = RemoteLister::new(borrowed.client());
+    let plan_result = delete::plan(&lister, &path);
+    let stuck_connection = lister.take_failure();
+    drop(lister);
+    let plan = match plan_result {
+        Ok(plan) => plan,
+        Err(delete::PlanError::TooLarge) => return no_body(out, "507 Insufficient Storage"),
+        Err(delete::PlanError::Op(op)) => {
+            let error = stuck_connection.unwrap_or(RpcError::Remote(op));
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            return no_body(out, status);
+        }
+    };
+
+    let file_count = plan.file_count();
+    for leaf in plan.files.iter().chain(plan.dirs.iter()) {
+        if let Err(error) = borrowed.client().delete(leaf) {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            return no_body(out, status);
+        }
+    }
+    bridge.cache.invalidate(parent_of(target));
+    for dir in &plan.dirs {
+        bridge.cache.invalidate(dir.as_str());
+    }
+    record_this(
+        shared,
+        &bridge.device_key_hex,
+        AccessVerb::Delete,
+        path.as_str(),
+        None,
+        None,
+        Some(file_count),
+    );
+    no_body(out, "204 No Content")
+}
+/// `MOVE` is `rename` within one root. `Overwrite: F` is honoured with
+/// 412; across roots the peer's own refusal answers 502
+/// (`map_write_error`). The destination is read from the `Destination`
+/// header, with the same `Host` check and percent decoding the primary
+/// target gets. A sidecar name never reaches the peer.
+fn move_verb(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    from_target: &str,
+    request: &http::Request,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let expected_host = format!("127.0.0.1:{}", bridge.port);
+    let Some(destination) = http::destination_path(request.header("destination"), &expected_host)
+    else {
+        return no_body(out, "400 Bad Request");
+    };
+    let destination = destination.trim_matches('/');
+
+    if probes::is_probe_name(probes::last_segment(from_target)) {
+        return if bridge.sidecars.rename(from_target, destination) {
+            no_body(out, "204 No Content")
+        } else {
+            no_body(out, "404 Not Found")
+        };
+    }
+
+    let Ok(from_path) = RemotePath::parse(from_target) else {
+        return no_body(out, "404 Not Found");
+    };
+    let Ok(to_path) = RemotePath::parse(destination) else {
+        return no_body(out, "400 Bad Request");
+    };
+    let overwrite_forbidden = request.header("overwrite") == Some("F");
+
+    let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        return unavailable(out);
+    };
+    if overwrite_forbidden {
+        match borrowed.client().stat(&to_path) {
+            Ok(_) => return no_body(out, "412 Precondition Failed"),
+            Err(RpcError::Remote(OpError::NotFound)) => {}
+            Err(error) => {
+                let (status, unhealthy) = map_write_error(&error);
+                if unhealthy {
+                    borrowed.mark_unhealthy();
+                }
+                return no_body(out, status);
+            }
+        }
+    }
+    match borrowed.client().rename(&from_path, &to_path) {
+        Ok(()) => {
+            bridge.cache.invalidate(parent_of(from_target));
+            bridge.cache.invalidate(parent_of(destination));
+            record_this(
+                shared,
+                &bridge.device_key_hex,
+                AccessVerb::Rename,
+                to_path.as_str(),
+                None,
+                None,
+                None,
+            );
+            no_body(out, "204 No Content")
+        }
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            no_body(out, status)
+        }
+    }
+}
+/// `COPY` of a file reads it from the peer into a fresh spool file, then
+/// pushes it back under the new name through [`put::land_new`], item 5's
+/// landing rule. `COPY` of a folder is 403.
+fn copy_verb(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    source_target: &str,
+    request: &http::Request,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let Ok(source_path) = RemotePath::parse(source_target) else {
+        return no_body(out, "404 Not Found");
+    };
+    let expected_host = format!("127.0.0.1:{}", bridge.port);
+    let Some(destination) = http::destination_path(request.header("destination"), &expected_host)
+    else {
+        return no_body(out, "400 Bad Request");
+    };
+    let destination = destination.trim_matches('/');
+    let Ok(dest_path) = RemotePath::parse(destination) else {
+        return no_body(out, "400 Bad Request");
+    };
+
+    let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        return unavailable(out);
+    };
+    let entry = match borrowed.client().stat(&source_path) {
+        Ok(entry) => entry,
+        Err(RpcError::Remote(OpError::NotFound)) => return no_body(out, "404 Not Found"),
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            return no_body(out, status);
+        }
+    };
+    if entry.kind == FileKind::Directory {
+        return no_body(out, "403 Forbidden");
+    }
+
+    let Some(spool_path) = put::new_spool_path(shared, &bridge.device_key_hex) else {
+        return no_body(out, "500 Internal Server Error");
+    };
+    let landing = copy_landing(
+        &mut borrowed,
+        &source_path,
+        &dest_path,
+        &spool_path,
+        entry.size,
+    );
+    let _ = std::fs::remove_file(&spool_path);
+
+    match landing {
+        Ok(()) => {
+            bridge.cache.invalidate(parent_of(destination));
+            record_this(
+                shared,
+                &bridge.device_key_hex,
+                AccessVerb::Read,
+                source_path.as_str(),
+                Some(entry.size),
+                None,
+                None,
+            );
+            record_this(
+                shared,
+                &bridge.device_key_hex,
+                AccessVerb::Write,
+                dest_path.as_str(),
+                Some(entry.size),
+                None,
+                None,
+            );
+            http::write_head(out, "201 Created", &[("Content-Length", "0".to_owned())])
+        }
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            no_body(out, status)
+        }
+    }
+}
+
+/// Reads `source` into `spool_path`, then lands it at `destination` as a
+/// new file. One function so `copy_verb` never holds two overlapping
+/// mutable borrows of `borrowed`'s connection at once.
+fn copy_landing(
+    borrowed: &mut pool::Borrowed<'_>,
+    source: &RemotePath,
+    destination: &RemotePath,
+    spool_path: &std::path::Path,
+    size: u64,
 
 /// `PUT` of a real file. `docs/engine-contract.md`, item 6, I2: the body
 /// is spooled to disk in pieces as it arrives, never held whole in

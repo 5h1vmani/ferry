@@ -314,6 +314,23 @@ pub(crate) fn etag(size: u64, modified_unix_secs: i64) -> String {
     format!("\"{size}-{modified_unix_secs}\"")
 }
 
+/// Reads a `Destination` header the way `docs/engine-contract.md`, item 6,
+/// asks for `MOVE` and `COPY`: "the same `Host` check and percent
+/// decoding" the primary request target already gets. `value` is the
+/// whole header, an absolute URI such as
+/// `"http://127.0.0.1:<port>/Root/New%20Name.txt"`. Returns the decoded,
+/// root relative path, or `None` when the header is missing or names a
+/// host other than `expected_host`.
+pub(crate) fn destination_path(value: Option<&str>, expected_host: &str) -> Option<String> {
+    let value = value?;
+    let after_scheme = value.split_once("://").map_or(value, |(_, rest)| rest);
+    let (host, path) = after_scheme.split_once('/').unwrap_or((after_scheme, ""));
+    if host != expected_host {
+        return None;
+    }
+    Some(percent_decode(path))
+}
+
 /// Decodes standard base64, ignoring `=` padding. `None` on any byte
 /// outside the alphabet, which an `Authorization` header never sends when
 /// it means Basic auth honestly.
@@ -458,8 +475,8 @@ pub(crate) fn iso8601(unix_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        RangeOutcome, base64_decode, constant_time_eq, iso8601, parse_range,
-        percent_decode, read_head, rfc1123,
+        RangeOutcome, base64_decode, constant_time_eq, destination_path, iso8601,
+        parse_range, percent_decode, read_head, rfc1123,
     };
 
     /// Asserts a [`RangeOutcome::Satisfiable`] and returns its span, so a
@@ -507,6 +524,30 @@ mod tests {
         assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso8601(946_684_800), "2000-01-01T00:00:00Z");
         assert_eq!(iso8601(1_757_419_200), "2025-09-09T12:00:00Z");
+    }
+
+    #[test]
+    fn destination_path_reads_a_matching_host() {
+        assert_eq!(
+            destination_path(
+                Some("http://127.0.0.1:9999/Root/New%20Name.txt"),
+                "127.0.0.1:9999"
+            ),
+            Some("Root/New Name.txt".to_owned())
+        );
+    }
+
+    #[test]
+    fn destination_path_refuses_a_different_host() {
+        assert_eq!(
+            destination_path(Some("http://example.com/Root/a.txt"), "127.0.0.1:9999"),
+            None
+        );
+    }
+
+    #[test]
+    fn destination_path_refuses_a_missing_header() {
+        assert_eq!(destination_path(None, "127.0.0.1:9999"), None);
     }
 
     #[test]
