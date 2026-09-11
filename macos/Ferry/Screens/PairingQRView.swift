@@ -99,13 +99,21 @@ struct PairingQRView: View {
 /// digits prove.
 struct PairingRequestView: View {
     let name: String
+    let kind: DeviceKind
     let transport: Transport
     let onPair: () -> Void
     let onRefuse: () -> Void
 
+    private var icon: String {
+        switch kind {
+        case .phone: return FerryIcon.devicePhone
+        case .mac: return FerryIcon.deviceMac
+        }
+    }
+
     var body: some View {
         VStack(spacing: FerrySpace.s3) {
-            Image(systemName: FerryIcon.devicePhone)
+            Image(systemName: icon)
                 .font(.system(size: 32))
                 .foregroundStyle(FerryColor.accent)
 
@@ -144,7 +152,7 @@ struct PairingRequestView: View {
 }
 
 #Preview("Requested") {
-    PairingRequestView(name: "Pixel 3 XL", transport: .usb, onPair: {}, onRefuse: {})
+    PairingRequestView(name: "Pixel 3 XL", kind: .phone, transport: .usb, onPair: {}, onRefuse: {})
         .padding(FerrySpace.s6)
         .frame(width: 460)
 }

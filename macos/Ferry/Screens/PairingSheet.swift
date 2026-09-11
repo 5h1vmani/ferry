@@ -78,9 +78,10 @@ struct PairingSheet: View {
                 onCancel: cancel
             )
 
-        case let .requested(name, transport):
+        case let .requested(name, kind, transport):
             PairingRequestView(
                 name: name,
+                kind: kind,
                 transport: transport,
                 onPair: { model.confirmPairing(accept: true) },
                 onRefuse: { model.confirmPairing(accept: false) }

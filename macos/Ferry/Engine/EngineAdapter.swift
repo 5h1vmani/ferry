@@ -320,8 +320,8 @@ enum EngineAdapter {
         case let .offering(offer):
             return .offering(offerSnapshot(offer))
 
-        case let .requested(name, transport):
-            return .requested(name: name, transport: transport)
+        case let .requested(name, kind, transport):
+            return .requested(name: name, kind: kind, transport: transport)
 
         case let .code(code, _):
             return .code(digits: FerryFormat.pairingCode(code))

@@ -286,7 +286,7 @@ enum PairingScreen: Equatable {
     case offering(PairingOfferSnapshot)
     /// Scan method: a phone scanned it and is asking. One named question,
     /// two answers, no digits.
-    case requested(name: String, transport: Transport)
+    case requested(name: String, kind: DeviceKind, transport: Transport)
     /// Code method: looking for a phone.
     case waiting
     /// Code method: candidates to pick from.
