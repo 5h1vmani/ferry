@@ -25,11 +25,12 @@ use crate::engine::{Shared, record_this};
 use crate::folder::RemoteLister;
 use crate::guard::StopAware;
 
+use crate::pool::{self, Pool};
+
 use super::cache::Cache;
 use super::delete;
 use super::heads::{self, HeadCache, Prefetch};
 use super::lock::{LockError, LockTable, UnlockOutcome};
-use super::pool::{self, Pool};
 use super::probes::{self, SidecarStore, SidecarWriteError};
 use super::put;
 use super::{http, xml};
@@ -81,7 +82,9 @@ pub(crate) struct Bridge {
     password: String,
     port: u16,
     sidecars: SidecarStore,
-    pool: Pool,
+    /// This device's pool, owned by [`Shared`] and shared with
+    /// [`crate::Engine::list`]. `docs/engine-contract.md`, item 19.
+    pool: Arc<Pool>,
     cache: Cache,
     /// Item 17: the first bytes of each recently listed image.
     heads: HeadCache,
@@ -101,9 +104,10 @@ impl Bridge {
         password: String,
         port: u16,
         sidecar_dir: PathBuf,
+        pool: Arc<Pool>,
     ) -> Self {
         Self {
-            pool: Pool::new(device_key_hex.clone()),
+            pool,
             sidecars: SidecarStore::new(sidecar_dir),
             cache: Cache::new(),
             heads: HeadCache::new(),

@@ -256,6 +256,7 @@ mod guard;
 mod held;
 mod networks;
 mod notify;
+mod pool;
 mod push;
 mod record;
 mod state;

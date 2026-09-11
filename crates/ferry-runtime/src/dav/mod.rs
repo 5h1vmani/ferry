@@ -28,8 +28,8 @@
 //! - `cache.rs`: the two second depth 1 listing cache.
 //! - `heads.rs`: item 17's head cache, and the queue the prefetch thread
 //!   reads listings from.
-//! - `pool.rs`: a small pool of the engine's own [`ferry_core::rpc::Client`]
-//!   connections to the peer, four at most.
+//! - The connection pool the bridge borrows from lives in `crate::pool`,
+//!   shared with `list` and the remote operations of item 19.
 //! - `put.rs`: item I2's landing rule for `PUT` of a real file and for
 //!   `COPY`, reusing item 5's push rule.
 //! - `delete.rs`: item I2's recursive `DELETE` plan, over `folder.rs`'s
@@ -41,7 +41,6 @@ mod delete;
 mod heads;
 mod http;
 mod lock;
-mod pool;
 mod probes;
 mod put;
 mod server;
@@ -159,6 +158,9 @@ impl MountRegistry {
             password,
             port,
             shared.data_dir.join("dav_sidecars").join(device_key_hex),
+            // Item 19: the engine's pool for this device, not one of the
+            // bridge's own, so `Engine::list` and this bridge share it.
+            shared.pool_for(device_key_hex),
         ));
 
         let shared_for_thread = Arc::clone(shared);

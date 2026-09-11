@@ -40,6 +40,7 @@ use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAware};
 use crate::networks;
 use crate::notify::{Change, Notify};
+use crate::pool::Pool;
 use crate::push;
 use crate::record::{Record, read_record};
 use crate::state::{
@@ -322,6 +323,19 @@ pub(crate) struct Shared {
     pub(crate) next_connection: AtomicU64,
     /// Every device's `WebDAV` bridge. `docs/engine-contract.md`, item 6.
     pub(crate) mounts: dav::MountRegistry,
+    /// How many connections this engine has accepted and begun to serve.
+    ///
+    /// Counts up and never down. Only a test reads it, through
+    /// [`Engine::accepted_connections`], and it reads a difference across
+    /// the calls it makes rather than an absolute count.
+    pub(crate) accepted: AtomicU64,
+    /// One connection pool per device key, made on first use by
+    /// [`Shared::pool_for`] and dropped by `forget` and by `stop`.
+    ///
+    /// `docs/engine-contract.md`, item 19: the bridge and [`Engine::list`]
+    /// borrow from the same four connections to a device, so a Finder
+    /// request and a file picker listing never open a socket each.
+    pub(crate) pools: Mutex<HashMap<String, Arc<Pool>>>,
     /// A clone of every open transfer connection's raw socket, keyed by a
     /// connection id from the same counter as `next_connection`.
     ///
@@ -392,6 +406,19 @@ impl Shared {
         }
         joins.retain(|h| !h.is_finished());
         joins.push(handle);
+    }
+
+    /// This device's connection pool, made on first use.
+    ///
+    /// `docs/engine-contract.md`, item 19. Every caller gets the same pool
+    /// for the same key, so four connections is the count across the whole
+    /// engine, not per bridge.
+    pub(crate) fn pool_for(&self, device_key_hex: &str) -> Arc<Pool> {
+        Arc::clone(
+            lock(&self.pools)
+                .entry(device_key_hex.to_owned())
+                .or_insert_with(|| Arc::new(Pool::new(device_key_hex.to_owned()))),
+        )
     }
 
     /// The download folder, if `start` has opened it.
@@ -778,6 +805,8 @@ impl Engine {
             access_log: Arc::new(Mutex::new(None)),
             next_connection: AtomicU64::new(0),
             mounts: dav::MountRegistry::new(),
+            accepted: AtomicU64::new(0),
+            pools: Mutex::new(HashMap::new()),
             sockets: Mutex::new(HashMap::new()),
             download_dir: Mutex::new(PathBuf::from(&config.download_dir)),
             auto_copy: Mutex::new(auto_copy),
@@ -963,6 +992,10 @@ impl Engine {
 
         // `stop` stops every bridge. `docs/engine-contract.md`, item 6.
         self.shared.mounts.stop_all();
+        // `stop` drops every pool. `docs/engine-contract.md`, item 19. Each
+        // idle connection's `Pooled` unregisters its own socket as it
+        // drops; the shutdown above already ended every one of them.
+        lock(&self.shared.pools).clear();
         self.remove_forwards();
         *lock(&self.shared.net) = None;
         // Every joined thread has finished, so this is the last moment a
@@ -1236,8 +1269,10 @@ impl Engine {
             return Err(failed("Runtime::NotPaired"));
         }
         // `forget` stops the device's bridge. `docs/engine-contract.md`,
-        // item 6.
+        // item 6, and drops its pool, item 19. The bridge is stopped first,
+        // so no request can make the pool again after it is dropped.
         self.shared.mounts.stop(&key_hex);
+        drop(lock(&self.shared.pools).remove(&key_hex));
         save_peers(&self.shared, |store| {
             drop(store.remove(&key));
             Ok(())
@@ -1757,10 +1792,14 @@ impl Engine {
 
     /// List every entry in one folder on a paired device.
     ///
-    /// Dials the device, then pages through the server's cursor until it
-    /// reports no more entries, and returns them in the order the server
-    /// sent them. This blocks for one round trip per page, so the app must
-    /// call it off the main thread.
+    /// Borrows one of the device's four pooled connections, then pages
+    /// through the server's cursor until it reports no more entries, and
+    /// returns them in the order the server sent them. This blocks for one
+    /// round trip per page, so the app must call it off the main thread.
+    ///
+    /// `docs/engine-contract.md`, item 19: the pool is the engine's, shared
+    /// with the `WebDAV` bridge, so two listings in a row reuse one
+    /// connection rather than dialling twice.
     ///
     /// # Errors
     ///
@@ -1790,26 +1829,15 @@ impl Engine {
             }
         }
 
-        let (stream, socket, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
-        mark_reachable(&self.shared, &device_key_hex, addr, via);
-        // docs/engine-contract.md item 16c: registered for the life of this
-        // call, so `stop` can close it if the listing hangs.
-        let connection_id = self.shared.next_connection_id();
-        let _socket = SocketRegistration::new(&self.shared, connection_id, socket);
+        let pool = self.shared.pool_for(&device_key_hex);
+        let mut borrowed = pool.take_dialing(&self.shared)?;
 
-        let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
-        exchange_hello(&mut stream, &self.shared.display_name, self.shared.kind)
-            .map_err(|error| from_rpc(&error))?;
-
-        let mut client = Client::new(stream);
         let mut entries = Vec::new();
         let mut cursor = 0u64;
         let mut pages = 0usize;
         let mut entries_seen = 0usize;
         loop {
-            let (page, next_cursor) = client
-                .list(&path, cursor)
-                .map_err(|error| from_rpc(&error))?;
+            let (page, next_cursor) = borrowed.call(|client| client.list(&path, cursor))?;
             pages += 1;
             entries_seen += page.len();
             entries.extend(page.into_iter().map(entry_from_core));
@@ -1939,6 +1967,18 @@ impl Engine {
     #[must_use]
     pub fn transfer_workers(&self) -> u32 {
         u32::try_from(lock(&self.shared.state).workers).unwrap_or(u32::MAX)
+    }
+
+    /// How many connections this engine has accepted and begun to serve.
+    ///
+    /// The item 19 test needs it to prove that two listings in a row reuse
+    /// one pooled connection instead of dialling twice. It counts up and
+    /// never down, so the test reads it before and after. It is not
+    /// exported to the apps.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn accepted_connections(&self) -> u64 {
+        self.shared.accepted.load(Ordering::SeqCst)
     }
 
     /// The address this engine's listener is bound to, once it has started.
@@ -2374,6 +2414,7 @@ fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
             drop(pending);
             continue;
         }
+        shared.accepted.fetch_add(1, Ordering::SeqCst);
         let shared = Arc::clone(shared);
         // A serving thread is not joined. See the crate documentation.
         drop(std::thread::spawn(move || handle_inbound(&shared, pending)));

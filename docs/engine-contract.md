@@ -876,6 +876,15 @@ constants keep their values: four connections, and a thirty second wait
 for a slot. The doc comment in `pool.rs` that says two seconds is wrong
 and is corrected.
 
+The pool gains one entry point beside `take`, because the bridge and an
+engine call want different answers for a device that is not currently
+marked reachable. `take` keeps item 6's rule and refuses at once, with no
+dial, so Finder never beachballs. `take_dialing` dials anyway, and every
+engine call below uses it, as `Engine::list` does. Without it no engine
+call could reach a device that had not already been reached, because a
+dial through the pool is what calls `mark_reachable` in the first place.
+Both share the same four connections.
+
 ```rust
 /// One entry. Refuses a path that names no file with the code the
 /// wire reports, as `list` does today.
