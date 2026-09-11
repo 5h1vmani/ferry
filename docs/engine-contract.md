@@ -859,7 +859,7 @@ between two engines recording the network both set. The welcome decision
 as a pure function with a loopback and a non-loopback address. No test
 sends a packet off this machine.
 
-### 19. The Mac in the phone's file picker, job 8: open
+### 19. The Mac in the phone's file picker, job 8: engine built, phone open
 
 PLAN phase 2 item 9. The phone's `DocumentsProvider` maps onto the file
 operations layer almost one to one, so the Mac's shared folders appear
