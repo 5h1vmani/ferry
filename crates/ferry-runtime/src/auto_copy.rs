@@ -389,6 +389,17 @@ fn maybe_spawn_run(shared: &Arc<Shared>, device_key_hex: &str) {
         // not lost: whatever it would have found is still there next time.
         return;
     }
+    // G7: stopping may have begun in the moment since the check above.
+    // Checked again here, right before spawning, so a shutdown racing this
+    // call is not also handed a fresh dial to a peer it is about to tear
+    // the connection down for. `keep`, below, is the authoritative close
+    // of this race for whatever gap remains between this check and the
+    // thread actually starting; this one just avoids the pointless work
+    // when the answer is already known.
+    if shared.stopping() {
+        lock(&shared.auto_copy_running).remove(device_key_hex);
+        return;
+    }
     let shared_for_thread = Arc::clone(shared);
     let key = device_key_hex.to_owned();
     shared.keep(std::thread::spawn(move || run(&shared_for_thread, &key)));

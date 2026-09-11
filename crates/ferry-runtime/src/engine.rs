@@ -367,8 +367,20 @@ impl Shared {
 
     /// Keep a thread so `stop` can join it, and drop handles that already
     /// finished.
+    ///
+    /// G7: `stop` sets `stopping` and then takes every handle `joins` holds
+    /// under this same lock, once. A handle whose thread was spawned just
+    /// before that but reaches this call just after it would otherwise be
+    /// added to an empty `joins` nobody will ever look at again, so `stop`
+    /// returns without ever waiting for it. Refusing it here instead, once
+    /// `stopping` is already set, closes that race: the thread is left to
+    /// notice `stopping` and end on its own, the same as any other thread
+    /// `stop` cannot join (`lib.rs`, "a serving thread cannot be woken").
     pub(crate) fn keep(&self, handle: JoinHandle<()>) {
         let mut joins = lock(&self.joins);
+        if self.stopping() {
+            return;
+        }
         joins.retain(|h| !h.is_finished());
         joins.push(handle);
     }
