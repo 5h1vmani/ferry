@@ -30,6 +30,13 @@ import kotlinx.coroutines.launch
 // the same words about the same fact, which is why those words live in
 // strings.xml and not in either of them.
 //
+// The off state is a state of this service, not its absence. docs-v2/ia.md,
+// Presence, both platforms, promises a notification with "Not advertising"
+// and a "Start advertising" action, so a person who tapped Stop from the
+// shade — or turned the switch off inside the app — has a way back without
+// opening Ferry. The service ends only when the engine cannot start, or the
+// process itself dies; toggling advertising off never stops it.
+//
 // The service type is dataSync. Android 15 and later limit a dataSync
 // foreground service to six hours in a day, after which the system stops
 // it. The Pixel 3 XL this build targets runs Android 12, which has no such
@@ -43,22 +50,39 @@ class ReachableService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var watchJob: Job? = null
 
+    // True while the phone advertises. False in the off state, which this
+    // service holds rather than ending.
+    private var advertising = false
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP_ADVERTISING) {
-            stopSelf()
-            return START_NOT_STICKY
+            advertising = false
+            FerryEngine.setReachable(false)
+            createChannel()
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+            running = true
+            return START_STICKY
         }
-        // A restarted service has no activity to call start() for it. If
-        // the engine cannot start, most likely because all files access is
-        // not granted, this must stop rather than post a notification that
-        // says the phone advertises when it does not.
+        // Every other action, including none (an ordinary start) and
+        // ACTION_START_ADVERTISING (the off notification's own action),
+        // starts or resumes advertising. A restarted service has no
+        // activity to call start() for it. If the engine cannot start,
+        // most likely because all files access is not granted, this must
+        // stop rather than post a notification that says the phone
+        // advertises when it does not. Once started, a repeat call is a
+        // no-op that returns true.
         if (!FerryEngine.start()) {
             stopSelf()
             return START_NOT_STICKY
         }
         createChannel()
+        advertising = true
         startForeground(
             NOTIFICATION_ID,
             buildNotification(),
@@ -116,8 +140,9 @@ class ReachableService : Service() {
 
     // While this service runs the phone is advertising, so the notification
     // states that and offers the one action that changes it. The off state
-    // has no notification to show: Android only keeps one while the service
-    // is alive, and a service that is not advertising has nothing to serve.
+    // states that instead, with the action that reverses it, so both ends
+    // of the switch are reachable from the shade. docs-v2/ia.md, Presence,
+    // both platforms.
     //
     // The device is named rather than called "your phone", because a person
     // reading this may have two.
@@ -132,6 +157,27 @@ class ReachableService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
+        if (!advertising) {
+            val start = PendingIntent.getService(
+                this,
+                2,
+                Intent(this, ReachableService::class.java).setAction(ACTION_START_ADVERTISING),
+                PendingIntent.FLAG_IMMUTABLE,
+            )
+            return Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle(getString(R.string.notification_not_advertising, Build.MODEL))
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setOngoing(true)
+                .setContentIntent(open)
+                .addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                        getString(R.string.presence_start),
+                        start,
+                    ).build(),
+                )
+                .build()
+        }
         val stop = PendingIntent.getService(
             this,
             1,
@@ -160,9 +206,10 @@ class ReachableService : Service() {
         private const val CHANNEL_ID = "reachable"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP_ADVERTISING = "app.ferry.action.STOP_ADVERTISING"
+        private const val ACTION_START_ADVERTISING = "app.ferry.action.START_ADVERTISING"
 
-        // True while the service runs. MainActivity reads it to decide
-        // whether the engine may be stopped.
+        // True while the service runs, in either state. MainActivity reads
+        // it to decide whether the engine may be stopped.
         @Volatile
         var running: Boolean = false
             private set
@@ -171,8 +218,14 @@ class ReachableService : Service() {
             context.startForegroundService(Intent(context, ReachableService::class.java))
         }
 
+        // Sent whether the tap came from the app's own switch or the
+        // notification's own action: both mean the same thing, off. This
+        // does not stop the service — the off state is a state of it, not
+        // its absence — so the notification stays, with a way back.
         fun turnOff(context: Context) {
-            context.stopService(Intent(context, ReachableService::class.java))
+            context.startService(
+                Intent(context, ReachableService::class.java).setAction(ACTION_STOP_ADVERTISING),
+            )
         }
     }
 }

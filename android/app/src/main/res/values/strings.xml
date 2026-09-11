@@ -236,6 +236,10 @@
          called "your phone", because a person may have two. -->
     <string name="notification_channel_reachable">Reachable</string>
     <string name="notification_advertising">%1$s is reachable over Wi-Fi.</string>
+    <!-- The off state of the same notification: a state of the service,
+         not its absence, so a person who tapped Stop from the shade has a
+         way back. -->
+    <string name="notification_not_advertising">Not advertising. %1$s cannot be found on Wi-Fi.</string>
 
     <!-- Settings screen, docs-v2/ia.md, Settings, the phone.
 
