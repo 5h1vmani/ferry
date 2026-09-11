@@ -388,14 +388,15 @@ fn record_held_row(
         return;
     };
     let mut held = lock(&shared.held);
-    held.record(crate::held::HeldRow {
+    // G1: `record` appends this one row to disk itself, so there is no
+    // separate whole-file save to call here any more.
+    drop(held.record(crate::held::HeldRow {
         device_key_hex: device_key_hex.to_owned(),
         source_path: source_path.to_owned(),
         size,
         mtime,
         root: *transfer.manifest.root().as_bytes(),
-    });
-    drop(held.save());
+    }));
 }
 
 /// What one attempt needs to know, copied out from under the lock.

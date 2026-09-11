@@ -7,11 +7,19 @@
 //! never removed by anything in this crate: not a later pull, not the person
 //! deleting the file afterwards, not a device being forgotten.
 //!
-//! Stored the way `ferry-core`'s `PeerStore` stores the paired device list:
-//! a version byte, a bounded count, and the bytes go to a temporary name and
-//! are renamed over the real one, so a crash mid write never leaves a short
-//! file behind. The pattern is written again here rather than shared, the
-//! same choice `record.rs` documents for its own copy of it.
+//! Stored the way `access.rs` stores one day's file: a version byte,
+//! written once, then each row appended as its own length-prefixed frame.
+//! [`HeldStore::record`] appends one frame per completed pull rather than
+//! rewriting and syncing the whole file, so a busy pull batch costs one
+//! small write per file, not one full rewrite each. A frame cut short by a
+//! crash mid append is dropped the next time the file is loaded, the same
+//! torn tail handling `access.rs` gives a day file.
+//!
+//! Past [`MAX_ROWS`] rows, `record` rebuilds the file compact: the oldest
+//! rows are dropped and what remains is written out fresh, to a temporary
+//! name that is then renamed over the real one, the pattern `record.rs` and
+//! `ferry-core`'s `PeerStore` use for their own whole-file rewrites. This
+//! only happens once every `MAX_ROWS` rows, not on every completed pull.
 //!
 //! Unlike the paired device list, a corrupt or missing index is not an
 //! engine startup failure. It is a cache of what this device already holds,
@@ -31,16 +39,31 @@ use crate::FerryError;
 use crate::errors::failed;
 
 /// The newest format this build writes, and the only one it reads.
-const FORMAT_VERSION: u8 = 1;
+///
+/// Bumped from the version this file used before G1: that format held one
+/// count-prefixed blob of every row, rewritten whole on every save. This
+/// format holds a version byte followed by independently framed rows, an
+/// incompatible shape, so an old file is refused by [`HeldStore::load`]
+/// exactly like any other format this build does not know, rather than
+/// misread as the new shape.
+const FORMAT_VERSION: u8 = 2;
 
-/// The most rows the index keeps. Past this, the oldest row is dropped. This
-/// is why the rows live in a `VecDeque`, oldest first, rather than a set:
-/// eviction has to know which row arrived first.
+/// The most rows the index keeps. Past this, [`HeldStore::record`] rebuilds
+/// the file with the oldest rows dropped. This is why the rows live in a
+/// `VecDeque`, oldest first, rather than a set: eviction has to know which
+/// row arrived first.
 const MAX_ROWS: usize = 100_000;
 
 /// The most bytes a device key, in hex, may take. A public key is always 64
 /// hex characters, so this only ever bounds a corrupt or hostile file.
 const MAX_DEVICE_KEY_LEN: usize = 64;
+
+/// A generous bound on one row's encoded frame: well over 64 bytes of
+/// device key hex, [`limits::MAX_PATH_LEN`] bytes of path, a size, a
+/// modified time, a root hash, and the two length prefixes those take. Only
+/// bounds how much a corrupt or hostile file can make one read allocate,
+/// the same role `access.rs`'s `MAX_ENTRY_FRAME_BYTES` plays there.
+const MAX_ROW_FRAME_BYTES: usize = 2048;
 
 /// One file this device has pulled to completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,41 +87,80 @@ pub(crate) struct HeldStore {
     /// Oldest first, so [`HeldStore::record`] knows which row to drop once
     /// [`MAX_ROWS`] is passed.
     rows: VecDeque<HeldRow>,
+    /// How many times [`HeldStore::record`] has rebuilt the whole file.
+    /// Test only: proves a batch of completed pulls appends instead of
+    /// rewriting.
+    #[cfg(test)]
+    rewrites: usize,
 }
 
 impl HeldStore {
     /// Load the index from `path`.
     ///
-    /// A missing file, or one that fails to decode, comes back as an empty
-    /// index. See the module documentation for why that is not an error.
+    /// A missing file, or one whose version this build does not know,
+    /// comes back as an empty index. See the module documentation for why
+    /// that is not an error. A file in the right format but cut short by a
+    /// crash mid append is repaired in place: cut back to its last whole
+    /// row, so the next [`HeldStore::record`] appends right after it
+    /// instead of after an unreadable frame.
     pub(crate) fn load(path: &Path) -> Self {
-        let rows = fs::read(path)
-            .ok()
-            .and_then(|bytes| decode_rows(&bytes))
-            .unwrap_or_default();
+        let rows = match fs::read(path) {
+            Ok(bytes) if bytes.first() == Some(&FORMAT_VERSION) => {
+                let (rows, good_len) = decode_rows(&bytes);
+                if good_len < bytes.len() {
+                    repair_torn_tail(path, good_len);
+                }
+                rows
+            }
+            _ => VecDeque::new(),
+        };
         Self {
             path: path.to_path_buf(),
             rows,
+            #[cfg(test)]
+            rewrites: 0,
         }
     }
 
-    /// Write the index out, replacing whatever was there before.
+    /// Rebuild the file to hold exactly the rows this store has in memory,
+    /// replacing whatever was there before. Used to rebuild it compact once
+    /// [`MAX_ROWS`] is passed; also used directly by tests.
     ///
     /// # Errors
     ///
     /// Returns `TransferError::Local` when local storage refuses the write,
     /// and `TransferError::NoRandomness` when the temporary name cannot be
     /// made.
-    pub(crate) fn save(&self) -> Result<(), FerryError> {
+    pub(crate) fn save(&mut self) -> Result<(), FerryError> {
+        #[cfg(test)]
+        {
+            self.rewrites += 1;
+        }
         write_private_file(&self.path, &encode_rows(&self.rows))
     }
 
-    /// Add a row, dropping the oldest once the index is over [`MAX_ROWS`].
-    pub(crate) fn record(&mut self, row: HeldRow) {
+    /// Add a row, appending it to the file as one framed write rather than
+    /// rewriting the whole thing. Once the index passes [`MAX_ROWS`] rows,
+    /// the file is rebuilt compact instead, with the oldest rows dropped;
+    /// that is the only time this rewrites rather than appends.
+    ///
+    /// Best effort: a failed write here, like a failed [`HeldStore::save`],
+    /// costs one file copied again, never a wrong answer. See the module
+    /// documentation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransferError::Local` when local storage refuses the
+    /// append or the rebuild.
+    pub(crate) fn record(&mut self, row: HeldRow) -> Result<(), FerryError> {
         self.rows.push_back(row);
-        while self.rows.len() > MAX_ROWS {
+        if self.rows.len() > MAX_ROWS {
             self.rows.pop_front();
+            return self.save();
         }
+        // `push_back` just above always leaves the new row last.
+        let row = self.rows.back().expect("a row was just pushed");
+        append_row(&self.path, row)
     }
 
     /// True when a row names this exact device, path, size and modified
@@ -132,51 +194,107 @@ impl HeldStore {
     }
 }
 
-// Read the stored rows. A wrong version byte or an over-large count is
-// caught before anything else is read, so a corrupted or hostile file
-// cannot make this allocate more than the limit allows.
-fn decode_rows(bytes: &[u8]) -> Option<VecDeque<HeldRow>> {
+// Decode every whole row in a file's bytes, alongside how many leading
+// bytes those whole rows take up. `bytes` is assumed to already start with
+// [`FORMAT_VERSION`]; `HeldStore::load` checks that before calling this.
+//
+// A frame whose declared length runs past the end of `bytes`, or whose
+// content does not decode cleanly, stops the read where it is rather than
+// failing the whole load: this file is only ever appended to or rebuilt
+// whole, so that can only be a crash mid append. Every row before it is
+// still whole and is still returned. Mirrors `access.rs`'s
+// `decode_day_file`.
+fn decode_rows(bytes: &[u8]) -> (VecDeque<HeldRow>, usize) {
+    let mut d = Decoder::new(&bytes[1..]);
+    let mut rows = VecDeque::new();
+    let mut good_len = 1; // the version byte
+    loop {
+        let before = d.remaining();
+        if before == 0 {
+            break;
+        }
+        let Ok(frame) = d.bytes(MAX_ROW_FRAME_BYTES) else {
+            break;
+        };
+        let Some(row) = decode_row(frame) else {
+            break;
+        };
+        rows.push_back(row);
+        good_len += before - d.remaining();
+    }
+    (rows, good_len)
+}
+
+fn decode_row(bytes: &[u8]) -> Option<HeldRow> {
     let mut d = Decoder::new(bytes);
-    let version = d.u8().ok()?;
-    if version != FORMAT_VERSION {
-        return None;
-    }
-    let count = d.u32().ok()?;
-    if count as usize > MAX_ROWS {
-        return None;
-    }
-    let mut rows = VecDeque::with_capacity(usize::try_from(count).ok()?);
-    for _ in 0..count {
-        let device_key_hex = d.text(MAX_DEVICE_KEY_LEN).ok()?.to_owned();
-        let source_path = d.text(limits::MAX_PATH_LEN).ok()?.to_owned();
-        let size = d.u64().ok()?;
-        let mtime = decode_i64(d.u64().ok()?);
-        let root = d.fixed::<32>().ok()?;
-        rows.push_back(HeldRow {
-            device_key_hex,
-            source_path,
-            size,
-            mtime,
-            root,
-        });
-    }
+    let device_key_hex = d.text(MAX_DEVICE_KEY_LEN).ok()?.to_owned();
+    let source_path = d.text(limits::MAX_PATH_LEN).ok()?.to_owned();
+    let size = d.u64().ok()?;
+    let mtime = decode_i64(d.u64().ok()?);
+    let root = d.fixed::<32>().ok()?;
     d.finish().ok()?;
-    Some(rows)
+    Some(HeldRow {
+        device_key_hex,
+        source_path,
+        size,
+        mtime,
+        root,
+    })
+}
+
+fn encode_row(row: &HeldRow) -> Vec<u8> {
+    let mut e = Encoder::new();
+    e.text(&row.device_key_hex);
+    e.text(&row.source_path);
+    e.u64(row.size);
+    e.u64(encode_i64(row.mtime));
+    e.fixed(&row.root);
+    e.finish()
 }
 
 fn encode_rows(rows: &VecDeque<HeldRow>) -> Vec<u8> {
     let mut e = Encoder::new();
     e.u8(FORMAT_VERSION);
-    let count = u32::try_from(rows.len()).unwrap_or(u32::MAX);
-    e.u32(count);
     for row in rows {
-        e.text(&row.device_key_hex);
-        e.text(&row.source_path);
-        e.u64(row.size);
-        e.u64(encode_i64(row.mtime));
-        e.fixed(&row.root);
+        e.bytes(&encode_row(row));
     }
     e.finish()
+}
+
+// Append one row to `path` as a single framed write: a four byte big
+// endian length, then `encode_row`'s bytes, with the version byte written
+// first only if the file is new or empty. Mirrors `access.rs`'s
+// `AccessLog::append`.
+fn append_row(path: &Path, row: &HeldRow) -> Result<(), FerryError> {
+    let needs_header = fs::metadata(path)
+        .map(|meta| meta.len() == 0)
+        .unwrap_or(true);
+    let mut frame = Encoder::new();
+    if needs_header {
+        frame.u8(FORMAT_VERSION);
+    }
+    frame.bytes(&encode_row(row));
+    (|| -> std::io::Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)?;
+        file.write_all(&frame.finish())
+    })()
+    .map_err(|_| failed("TransferError::Local"))
+}
+
+// Cut `path` back to its first `good_len` bytes. Called only when `load`
+// finds a row's frame that runs past the end of the file: since this file
+// is only ever appended to or rebuilt whole by `HeldStore` itself, that can
+// only be a single unfinished frame left by a crash mid append, and cutting
+// it away is always safe. A failure to open or truncate is not surfaced:
+// the in-memory rows already reflect the good prefix, so the worst this
+// costs is one more torn tail found on the next load.
+fn repair_torn_tail(path: &Path, good_len: usize) {
+    if let Ok(file) = fs::OpenOptions::new().write(true).open(path) {
+        drop(file.set_len(u64::try_from(good_len).unwrap_or(0)));
+    }
 }
 
 // `Encoder` and `Decoder` have no signed integer methods, so a modified time
@@ -258,13 +376,16 @@ mod tests {
     }
 
     #[test]
-    fn record_then_save_then_load_round_trips() {
+    fn record_then_load_round_trips() {
         let dir = temp_dir("round-trip");
         let path = dir.join("held");
         let mut store = HeldStore::load(&path);
-        store.record(row("device-1", "DCIM/a.jpg", 1024, -5, 1));
-        store.record(row("device-2", "DCIM/b.jpg", 2048, 500, 2));
-        store.save().expect("the index should save");
+        store
+            .record(row("device-1", "DCIM/a.jpg", 1024, -5, 1))
+            .expect("the record should append");
+        store
+            .record(row("device-2", "DCIM/b.jpg", 2048, 500, 2))
+            .expect("the record should append");
 
         let loaded = HeldStore::load(&path);
         assert_eq!(loaded.len(), 2);
@@ -276,7 +397,9 @@ mod tests {
     #[test]
     fn contains_path_needs_every_field_to_match() {
         let mut store = HeldStore::load(&temp_dir("path-match").join("held"));
-        store.record(row("device", "DCIM/a.jpg", 1024, 500, 1));
+        store
+            .record(row("device", "DCIM/a.jpg", 1024, 500, 1))
+            .expect("the record should append");
         assert!(store.contains_path("device", "DCIM/a.jpg", 1024, 500));
         assert!(!store.contains_path("other", "DCIM/a.jpg", 1024, 500));
         assert!(!store.contains_path("device", "DCIM/b.jpg", 1024, 500));
@@ -287,7 +410,9 @@ mod tests {
     #[test]
     fn contains_root_matches_across_devices_and_paths() {
         let mut store = HeldStore::load(&temp_dir("root-match").join("held"));
-        store.record(row("device-1", "DCIM/a.jpg", 1024, 0, 7));
+        store
+            .record(row("device-1", "DCIM/a.jpg", 1024, 0, 7))
+            .expect("the record should append");
         assert!(
             store.contains_root(&[7; 32]),
             "the same content pulled under a different device or path still counts as held"
@@ -299,18 +424,30 @@ mod tests {
         let mut store = HeldStore::load(&temp_dir("bound").join("held"));
         for i in 0..MAX_ROWS {
             let byte = u8::try_from(i % 256).unwrap_or(0);
-            store.record(row("device", &format!("DCIM/{i}.jpg"), 1, 0, byte));
+            store
+                .record(row("device", &format!("DCIM/{i}.jpg"), 1, 0, byte))
+                .expect("the record should append");
         }
         assert_eq!(store.len(), MAX_ROWS);
         assert!(store.contains_path("device", "DCIM/0.jpg", 1, 0));
+        assert_eq!(
+            store.rewrites, 0,
+            "every row up to the bound is an append, never a rewrite"
+        );
 
-        store.record(row("device", "DCIM/new.jpg", 1, 0, 255));
+        store
+            .record(row("device", "DCIM/new.jpg", 1, 0, 255))
+            .expect("the record should rebuild the file");
         assert_eq!(store.len(), MAX_ROWS, "the bound is never crossed");
         assert!(
             !store.contains_path("device", "DCIM/0.jpg", 1, 0),
             "the oldest row is the one dropped"
         );
         assert!(store.contains_path("device", "DCIM/new.jpg", 1, 0));
+        assert_eq!(
+            store.rewrites, 1,
+            "crossing the bound is the one time this rebuilds the file"
+        );
     }
 
     #[test]
@@ -318,8 +455,9 @@ mod tests {
         let dir = temp_dir("bad-version");
         let path = dir.join("held");
         let mut store = HeldStore::load(&path);
-        store.record(row("device", "DCIM/a.jpg", 1, 0, 1));
-        store.save().expect("the index should save");
+        store
+            .record(row("device", "DCIM/a.jpg", 1, 0, 1))
+            .expect("the record should append");
 
         let mut bytes = fs::read(&path).expect("the file should be there");
         bytes[0] = 99;
@@ -330,6 +468,69 @@ mod tests {
             loaded.len(),
             0,
             "a file this build cannot read loads as empty, not a startup failure"
+        );
+    }
+
+    #[test]
+    fn fifty_completed_pulls_append_without_a_full_rewrite() {
+        // G1: every completed pull used to rewrite and sync the whole
+        // index. Now each one appends a single framed row, and only
+        // rebuilds the whole file once the row count passes `MAX_ROWS`,
+        // which fifty rows never comes close to.
+        let dir = temp_dir("append-only");
+        let path = dir.join("held");
+        let mut store = HeldStore::load(&path);
+        for i in 0..50u64 {
+            let byte = u8::try_from(i).unwrap_or(0);
+            store
+                .record(row("device", &format!("DCIM/{i}.jpg"), 1, 0, byte))
+                .expect("each of the fifty pulls should append");
+        }
+        assert_eq!(store.len(), 50);
+        assert_eq!(
+            store.rewrites, 0,
+            "fifty completed pulls, all under the bound, only append"
+        );
+
+        let loaded = HeldStore::load(&path);
+        assert_eq!(loaded.len(), 50, "every appended row survives a reload");
+        assert!(loaded.contains_path("device", "DCIM/0.jpg", 1, 0));
+        assert!(loaded.contains_path("device", "DCIM/49.jpg", 1, 0));
+    }
+
+    #[test]
+    fn the_index_loads_after_a_torn_last_row() {
+        // G1: a crash mid append can only ever leave one unfinished frame
+        // at the end of this file, the same guarantee `access.rs` relies on
+        // for a day file. `load` must still return every whole row before
+        // it, and must cut the torn bytes away so the next append lands
+        // right after the last good row.
+        let dir = temp_dir("torn-tail");
+        let path = dir.join("held");
+        let mut store = HeldStore::load(&path);
+        store
+            .record(row("device", "DCIM/a.jpg", 1024, 0, 1))
+            .expect("the first row should append");
+
+        // A length prefix declaring one hundred bytes of content, with
+        // nothing actually written after it: exactly what a crash between
+        // writing a frame's length and its content leaves behind.
+        let mut bytes = fs::read(&path).expect("the file should be there");
+        let good_len = bytes.len();
+        bytes.extend_from_slice(&100u32.to_be_bytes());
+        fs::write(&path, &bytes).expect("the torn tail should write");
+
+        let loaded = HeldStore::load(&path);
+        assert_eq!(loaded.len(), 1, "the whole first row still loads");
+        assert!(loaded.contains_path("device", "DCIM/a.jpg", 1024, 0));
+
+        let repaired_len = fs::metadata(&path)
+            .expect("the file should still exist")
+            .len();
+        assert_eq!(
+            repaired_len,
+            u64::try_from(good_len).unwrap_or(u64::MAX),
+            "the torn tail is cut off, not left for the next append to land after"
         );
     }
 }
