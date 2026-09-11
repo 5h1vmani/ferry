@@ -733,15 +733,7 @@ impl AccessLog {
     /// A day file's name is eight ASCII digits, so ordinary string order is
     /// chronological order; nothing here parses a date to sort them.
     fn day_files_newest_first(&self) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(&self.dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| is_day_file_name(name))
-            .collect();
-        names.sort_unstable_by(|a, b| b.cmp(a));
-        names
+        day_file_names_newest_first(&self.dir)
     }
 
     /// Every entry across every device, newest first, or only `device_key_hex`'s
@@ -791,47 +783,118 @@ impl AccessLog {
         out
     }
 
-    /// Every damaged day file's name (see [`AccessLog::load_day_state`]), in
-    /// no particular order: [`AccessLog::prune`] only checks each one's own
-    /// age, never sequences through them the way it does ordinary day files.
-    fn damaged_file_names(&self) -> Vec<String> {
-        fs::read_dir(&self.dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| is_damaged_file_name(name))
-            .collect()
-    }
-
     /// Delete every day file, and every day file set aside as damaged, older
     /// than [`RETENTION_DAYS`] days, as measured from `now`.
     ///
-    /// A file exactly [`RETENTION_DAYS`] days old is kept: it is not yet
-    /// older than the limit. A damaged file's age is the day named in its
-    /// own file name, the day it was writing to when it was set aside, not
-    /// the day it happened to be pruned.
+    /// The scan and the unlinks are [`prune_dir`], run against this store's
+    /// own folder; this only adds applying the result to [`AccessLog::days`]
+    /// afterward, with [`AccessLog::forget_pruned`]. A caller whose store
+    /// sits behind a lock other threads need for every served operation
+    /// calls [`prune_dir`] directly instead, outside that lock, and applies
+    /// its own result with [`AccessLog::forget_pruned`] afterward.
+    /// `docs/audits/fable-lifecycle.md`, finding 6.
     ///
     /// # Errors
     ///
     /// Returns [`AccessLogError::Io`] when a file that should be removed
     /// cannot be.
     pub(crate) fn prune(&mut self, now: i64) -> Result<(), AccessLogError> {
-        let cutoff = day_key(now - RETENTION_DAYS * SECS_PER_DAY);
-        for name in self.day_files_newest_first() {
-            if name < cutoff {
-                fs::remove_file(self.day_path(&name))?;
-                self.days.remove(&name);
-            }
-        }
-        for name in self.damaged_file_names() {
-            let day = name.strip_suffix(".damaged").unwrap_or(&name);
-            if day < cutoff.as_str() {
-                fs::remove_file(self.dir.join(&name))?;
-            }
-        }
+        let removed = prune_dir(&self.dir, now)?;
+        self.forget_pruned(&removed);
         Ok(())
     }
+
+    /// Drop `names` from [`AccessLog::days`], the in-memory cache of what
+    /// each day file holds. [`AccessLog::prune`] calls this itself, right
+    /// after [`prune_dir`] deletes their files on disk; a caller that ran
+    /// [`prune_dir`] on its own applies the same result this way.
+    /// `docs/audits/fable-lifecycle.md`, finding 6.
+    pub(crate) fn forget_pruned(&mut self, names: &[String]) {
+        for name in names {
+            self.days.remove(name);
+        }
+    }
+
+    /// The folder this store keeps its day files in, for a caller that
+    /// wants to run [`prune_dir`] itself, outside whatever lock this store
+    /// sits behind. `docs/audits/fable-lifecycle.md`, finding 6.
+    #[must_use]
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+/// Every day file's name directly under `dir`, newest day first.
+///
+/// A day file's name is eight ASCII digits, so ordinary string order is
+/// chronological order; nothing here parses a date to sort them. A free
+/// function, not a method, so [`prune_dir`] can scan a store's folder
+/// without needing the store itself, or whatever lock guards it.
+/// `docs/audits/fable-lifecycle.md`, finding 6.
+fn day_file_names_newest_first(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| is_day_file_name(name))
+        .collect();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    names
+}
+
+/// Every damaged day file's name directly under `dir`, in no particular
+/// order: [`prune_dir`] only checks each one's own age, never sequences
+/// through them the way it does ordinary day files. As
+/// [`day_file_names_newest_first`], a free function so it needs no lock.
+fn damaged_file_names_in(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| is_damaged_file_name(name))
+        .collect()
+}
+
+/// Delete every day file, and every day file set aside as damaged, older
+/// than [`RETENTION_DAYS`] days, as measured from `now`, directly under
+/// `dir`. Returns the name of every ordinary day file it removed.
+///
+/// A file exactly [`RETENTION_DAYS`] days old is kept: it is not yet older
+/// than the limit. A damaged file's age is the day named in its own file
+/// name, the day it was writing to when it was set aside, not the day it
+/// happened to be pruned.
+///
+/// `docs/audits/fable-lifecycle.md`, finding 6: this is the slow part of a
+/// prune, one directory scan and a handful of unlinks. It takes no
+/// [`AccessLog`] and touches no in-memory state, so a caller whose store
+/// sits behind a lock other threads need for every served operation, such
+/// as `ferry_runtime::engine`'s `access_log_loop`, can run this outside
+/// that lock, and apply the day names it returns to its own cache with
+/// [`AccessLog::forget_pruned`] afterward, under the lock again but only
+/// for that.
+///
+/// # Errors
+///
+/// Returns [`AccessLogError::Io`] when a file that should be removed
+/// cannot be.
+pub(crate) fn prune_dir(dir: &Path, now: i64) -> Result<Vec<String>, AccessLogError> {
+    let cutoff = day_key(now - RETENTION_DAYS * SECS_PER_DAY);
+    let mut removed = Vec::new();
+    for name in day_file_names_newest_first(dir) {
+        if name < cutoff {
+            fs::remove_file(dir.join(&name))?;
+            removed.push(name);
+        }
+    }
+    for name in damaged_file_names_in(dir) {
+        let day = name.strip_suffix(".damaged").unwrap_or(&name);
+        if day < cutoff.as_str() {
+            fs::remove_file(dir.join(&name))?;
+        }
+    }
+    Ok(removed)
 }
 
 /// One access log entry that is still open: more operations on the same
@@ -905,6 +968,22 @@ impl RollUp {
     /// cannot be.
     pub(crate) fn prune(&mut self, now: i64) -> Result<(), AccessLogError> {
         self.store.prune(now)
+    }
+
+    /// The folder this roll-up's store keeps its day files in, for a
+    /// caller that wants to run [`prune_dir`] itself, outside the lock
+    /// this roll-up sits behind. `docs/audits/fable-lifecycle.md`,
+    /// finding 6.
+    #[must_use]
+    pub(crate) fn store_dir(&self) -> &Path {
+        self.store.dir()
+    }
+
+    /// Apply the result of a [`prune_dir`] call that already ran outside
+    /// the lock this roll-up sits behind, the same way [`RollUp::prune`]
+    /// would have. `docs/audits/fable-lifecycle.md`, finding 6.
+    pub(crate) fn forget_pruned(&mut self, names: &[String]) {
+        self.store.forget_pruned(names);
     }
 
     /// Record one operation on `connection`.

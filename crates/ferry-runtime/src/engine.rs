@@ -4013,6 +4013,14 @@ fn add_candidate(shared: &Arc<Shared>, shown: &PairingCandidate, addr: SocketAdd
 /// roll-up's five second idle rule somewhere to run, which is the same
 /// cadence `notify.rs` reports on, and an hourly job can ride along on top
 /// of that (docs/engine-contract.md, item 13).
+///
+/// `docs/audits/fable-lifecycle.md`, finding 6: a prune's directory scan
+/// and unlinks used to run with `shared.access_log` locked the whole time,
+/// which every served operation's `record` and every bridge request's
+/// `record_this` also lock, so both stalled for one scan and some unlinks
+/// once an hour. The lock is now taken twice, briefly: once to read the
+/// store's own folder, and once to apply the result; `access::prune_dir`
+/// runs the slow part outside it.
 fn access_log_loop(shared: &Arc<Shared>) {
     let mut next_prune = Instant::now() + ACCESS_LOG_PRUNE;
     loop {
@@ -4027,8 +4035,14 @@ fn access_log_loop(shared: &Arc<Shared>) {
             notify(shared, Change::AccessLog);
         }
         if Instant::now() >= next_prune {
-            if let Some(rollup) = lock(&shared.access_log).as_mut() {
-                drop(rollup.prune(now_unix_secs()));
+            let dir = lock(&shared.access_log)
+                .as_ref()
+                .map(|rollup| rollup.store_dir().to_path_buf());
+            if let Some(dir) = dir
+                && let Ok(removed) = access::prune_dir(&dir, now_unix_secs())
+                && let Some(rollup) = lock(&shared.access_log).as_mut()
+            {
+                rollup.forget_pruned(&removed);
             }
             next_prune = Instant::now() + ACCESS_LOG_PRUNE;
         }
