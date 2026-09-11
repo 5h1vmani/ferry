@@ -2,13 +2,18 @@
 <!--
     Every user-facing string in the Ferry Android app. A string inline in a
     view is a bug (docs/design.md). Words follow docs/voice.md; most are
-    taken directly from docs/ia.md and docs/components.md.
+    taken directly from docs-v2/ia.md and docs-v2/components.md.
 
     Text that describes one error is not here. It lives in the generated
     table in Errors.kt, built from design/errors.json, so the phone and the
-    Mac say the same words for the same error code. What follows is the
+    Mac say the same words for the same error code. That includes the four
+    QR pairing errors and the camera refusal: the phone names the code and
+    reads the words, and composes no English of its own. What follows is the
     fixed wording around the engine's data: titles, labels, button text, and
     the templates a number is placed into.
+
+    Same event, same words, both platforms. Every string added in this pass
+    has a twin in the Mac's Strings.swift.
 -->
 <resources>
     <string name="app_name">Ferry</string>
@@ -18,16 +23,13 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_confirm">Confirm</string>
     <string name="action_retry">Retry</string>
-    <string name="action_forget_this_mac">Forget this Mac</string>
+    <string name="action_forget_this_device">Forget this device</string>
     <string name="action_open_settings">Open settings</string>
-    <!-- docs/voice.md rule 9 asks a button to name a verb and rules out
-         "Continue". docs/ia.md's phone first run names this control
-         "Continue" in as many words, and it is the specification, so the
-         word here is the one it gives. -->
-    <string name="action_continue">Continue</string>
     <string name="cd_back">Back</string>
+    <!-- Between two facts on one line: "14:31 · 48 KB". -->
+    <string name="dot_separator"> · </string>
 
-    <!-- TransportBadge, docs/components.md. -->
+    <!-- TransportBadge, docs-v2/components.md. -->
     <string name="transport_usb">USB</string>
     <string name="transport_wifi">Wi-Fi</string>
     <string name="transport_connecting">Connecting</string>
@@ -40,8 +42,25 @@
     <string name="cd_transport_connecting">Connecting</string>
     <string name="cd_transport_not_reachable">Not reachable</string>
 
-    <!-- DeviceRow, docs/components.md. -->
+    <!-- DeviceRow, docs-v2/components.md. The spare transport is stated
+         beside the badge, never inside it: a badge that names two paths
+         stops answering which one is carrying this. -->
     <string name="device_last_seen">Last seen %1$s ago</string>
+    <string name="devices_spare_transport_wifi">Wi-Fi also available</string>
+    <string name="devices_spare_transport_usb">USB also available</string>
+
+    <!-- PresenceControl, docs-v2/components.md. Job 5's only control. It
+         appears on Devices and in the notification, and both read one
+         value, so both read these words. -->
+    <string name="presence_advertising">Advertising</string>
+    <string name="presence_not_advertising">Not advertising</string>
+    <!-- Stated because the failure it causes is silent. Named by its real
+         name: this phone, Wi-Fi, USB. -->
+    <string name="presence_consequence">This phone cannot be found on Wi-Fi. USB still works.</string>
+    <string name="presence_start">Start advertising</string>
+    <string name="presence_stop">Stop advertising</string>
+    <string name="cd_presence_on">Advertising, on</string>
+    <string name="cd_presence_off">Not advertising, off. %1$s</string>
 
     <!-- Sizes and durations, for the numbers the engine reports. Units are
          decimal, the way a disk and a network count them. -->
@@ -63,15 +82,58 @@
         <item quantity="one">%1$d day</item>
         <item quantity="other">%1$d days</item>
     </plurals>
+    <!-- How long a finished transfer took. Short forms, because these sit
+         inside a line of other numbers: "12 files · 4.8 GB · 3 min". -->
+    <string name="duration_seconds">%1$d s</string>
+    <string name="duration_minutes_short">%1$d min</string>
+    <string name="duration_hours_short">%1$d h %2$d min</string>
 
-    <!-- ProgressLine, docs/components.md. The engine reports one file per
-         transfer, with a byte count, so the active line counts bytes rather
-         than the "3 of 120 files" a folder-sized transfer would show. -->
+    <!-- ProgressLine and TransferRow, docs-v2/components.md. -->
     <string name="progress_queued">Queued.</string>
-    <string name="progress_active">%1$s of %2$s</string>
+    <string name="progress_remaining">%1$s remaining</string>
     <string name="progress_paused">Paused. %1$s</string>
     <string name="progress_paused_plain">Paused.</string>
     <string name="cd_progress_transferring_percent">Transferring, %1$d percent</string>
+
+    <!-- The Transfers section, docs-v2/ia.md. Origin is a word in the same
+         type as the direction, because it is the same kind of fact: how
+         this transfer came to exist. Job 7. -->
+    <string name="transfers_direction_phone_to_mac">Phone to Mac</string>
+    <string name="transfers_direction_mac_to_phone">Mac to phone</string>
+    <string name="transfers_origin_automatic">Automatic</string>
+    <string name="transfers_files_progress">%1$d of %2$d files</string>
+    <string name="transfers_file_count">%1$d files</string>
+
+    <!-- The chunk disclosure, docs-v2/ia.md. The bottom of the depth axis,
+         one tap away and never in the way. -->
+    <string name="chunks_show">Show chunks</string>
+    <string name="chunks_verified">%1$d of %2$d verified</string>
+    <string name="chunks_verified_summary">%1$d of %2$d chunks verified.</string>
+    <string name="chunks_failed_chunk">Chunk %1$d failed to verify.</string>
+
+    <!-- The access log, docs-v2/ia.md. L5, job 9.
+
+         The subject is always named, never "you" and never an arrow: a log
+         is read months later, out of context. The verbs are the file
+         operations layer's own words, so a log line and a protocol trace
+         say the same word. -->
+    <string name="access_log_title">Access log</string>
+    <string name="access_log_empty">No access yet.</string>
+    <string name="access_log_retention">Kept for 30 days.</string>
+    <string name="access_log_today">Today</string>
+    <string name="access_log_yesterday">Yesterday</string>
+    <string name="access_log_this_phone">This phone</string>
+    <string name="access_log_sentence">%1$s %2$s %3$s</string>
+    <string name="access_log_sentence_files">%1$s %2$s %3$s, %4$d files</string>
+    <string name="access_log_entries">%1$d entries</string>
+    <string name="access_verb_list">listed</string>
+    <string name="access_verb_stat">checked</string>
+    <string name="access_verb_read">read</string>
+    <string name="access_verb_write">wrote</string>
+    <string name="access_verb_truncate">truncated</string>
+    <string name="access_verb_rename">renamed</string>
+    <string name="access_verb_mkdir">created</string>
+    <string name="access_verb_delete">deleted</string>
 
     <!-- An error code the generated table does not hold. That means
          design/errors.json and the engine have drifted apart. -->
@@ -79,8 +141,9 @@
     <string name="error_unknown_why">It reported the code %1$s, which this version does not know.</string>
     <string name="error_unknown_todo">Report this. Nothing you did caused it.</string>
 
-    <!-- PairingCode, docs/components.md. Digit words spell the code for a
-         screen reader, one digit at a time. -->
+    <!-- PairingCode, docs-v2/components.md. Digit words spell the code for
+         a screen reader, one digit at a time, so it can be compared
+         against the other screen. -->
     <string-array name="digit_words">
         <item>zero</item>
         <item>one</item>
@@ -94,48 +157,83 @@
         <item>nine</item>
     </string-array>
     <string name="cd_pairing_code">Pairing code, %1$s</string>
-    <!-- Adapted from docs/components.md's "Confirm this matches on the
-         phone.": that line is written from the Mac's screen. This is the
-         phone's own screen, confirming against the Mac's, so it names the
-         Mac instead. -->
+    <!-- This is the phone's own screen, confirming against the Mac's, so it
+         names the Mac. -->
     <string name="pairing_code_instruction">Confirm this matches on the Mac.</string>
     <string name="pairing_confirmed_label">Confirmed.</string>
 
-    <!-- EmptyState, docs/components.md. -->
+    <!-- Pairing, docs-v2/ia.md, Pairing, the phone.
+
+         Two ways in, and every step offers the other one. Scanning is
+         fewer steps when both devices are in reach, which is when pairing
+         happens, so it is named first — but a refused camera, a Mac on a
+         screen this phone cannot point at, and a person who would rather
+         type all end up on the code path, and none of them should have to
+         go back a screen to get there. -->
+    <string name="pairing_title">Pairing</string>
+    <string name="pairing_choose_title">Pair with a Mac.</string>
+    <string name="pairing_choose_body">Scanning is quicker when the Mac is in front of you. A code works from anywhere on the network.</string>
+    <string name="pairing_scan_the_code">Scan the Mac\'s code</string>
+    <string name="pairing_scan_instead">Scan the Mac\'s code instead</string>
+    <string name="pairing_use_code_instead">Use a pairing code instead</string>
+    <string name="pairing_point_the_camera">Point the camera at the Mac\'s screen.</string>
+    <string name="pairing_scanned">Code read. Confirm on the Mac.</string>
+    <string name="pairing_scanned_named">%1$s found. Confirm on the Mac.</string>
+    <string name="pairing_waiting_title">Pairing on. Open Ferry on the Mac.</string>
+    <!-- The only place this phone's random mDNS name is ever shown. A
+         person in a room with three phones can tell which is theirs, and a
+         wrong pick is safe anyway, because the six digits will not match. -->
+    <string name="pairing_short_code_is">This phone appears on the Mac as</string>
+    <!-- The two minute timeout, counted. Not "soon", which is an adjective
+         standing in for a number. -->
+    <string name="pairing_stops_in">Pairing stops in %1$s.</string>
+
+    <!-- First run, docs-v2/ia.md, First run, phone.
+
+         The control is "Grant access", not "Continue": rule 9 of
+         docs/voice.md bans that word by name, and this button does one
+         nameable thing. Skip exists because all files access can be
+         refused and Devices must still work when it is.
+
+         The camera is not asked for here. It is asked for when a person
+         taps to scan, so this screen still names two things and a person
+         who pairs by code is never asked for a camera at all. -->
+    <string name="first_run_title">Ferry needs two things.</string>
+    <string name="first_run_all_files_title">All files access</string>
+    <string name="first_run_all_files_why">Ferry serves the shared folders to the Mac. Without it, every transfer fails.</string>
+    <string name="first_run_notifications_title">Notifications</string>
+    <string name="first_run_notifications_why">One notification says Ferry is reachable, and stops it.</string>
+    <string name="first_run_grant">Grant access</string>
+    <string name="first_run_skip">Skip</string>
+
+    <!-- EmptyState, docs-v2/components.md. -->
     <string name="devices_empty_line">No Mac paired.</string>
     <string name="transfers_empty_line">No transfers.</string>
 
-    <!-- Devices screen, docs/ia.md. -->
+    <!-- Devices screen, docs-v2/ia.md. -->
     <string name="devices_title">Devices</string>
     <string name="cd_settings_action">Settings</string>
-
-    <!-- Device (detail) screen, docs/ia.md. -->
     <string name="device_section_transfers">Transfers</string>
-    <string name="device_section_info">Info</string>
     <string name="device_info_paired_label">Paired %1$s</string>
-    <string name="device_info_fingerprint_label">Key fingerprint</string>
 
-    <!-- Pairing screen, docs/ia.md phone first run, steps 5-7. -->
-    <string name="pairing_title">Pairing</string>
-    <string name="pairing_waiting_title">Pairing on. Open Ferry on the Mac.</string>
-    <string name="pairing_short_code_label">Short code</string>
-
-    <!-- First run, docs/ia.md phone step 1. The doc names the two things
-         Ferry needs and why, and names the control Continue. These lines
-         say the same in docs/voice.md's plain form. -->
-    <string name="first_run_title">Ferry needs two things.</string>
-    <string name="first_run_all_files">All files access, so Ferry can serve the shared folders to the Mac.</string>
-    <string name="first_run_notification">A notification, so Ferry can stay reachable.</string>
-
-    <!-- The reachable foreground service, docs/ia.md. -->
+    <!-- The reachable foreground service, docs-v2/ia.md. While it runs the
+         phone is advertising, so the notification states that and offers
+         the one action that changes it. The device is named rather than
+         called "your phone", because a person may have two. -->
     <string name="notification_channel_reachable">Reachable</string>
-    <string name="notification_reachable_title">Ferry is reachable.</string>
-    <string name="notification_action_turn_off">Turn off</string>
+    <string name="notification_advertising">%1$s is reachable over Wi-Fi.</string>
 
-    <!-- Settings screen, docs/ia.md. -->
+    <!-- Settings screen, docs-v2/ia.md, Settings, the phone.
+
+         Reachability has left this screen. It was a switch filed under
+         preferences; it is a mode with a consequence, and it now lives
+         where presence lives. -->
     <string name="settings_title">Settings</string>
-    <string name="settings_reachable_label">Reachable</string>
-    <string name="settings_reachable_caption">On: the phone advertises and accepts connections. Off: neither.</string>
+    <string name="settings_group_this_phone">This phone</string>
+    <string name="settings_group_permissions">Permissions</string>
+    <string name="settings_group_record">Record</string>
+    <string name="settings_group_paired">Paired</string>
+    <string name="settings_name_label">Name</string>
     <string name="settings_shared_storage_label">Shared storage</string>
     <string name="settings_shared_storage_value">Internal storage</string>
     <string name="settings_shared_storage_caption">Not editable in phase 1.</string>

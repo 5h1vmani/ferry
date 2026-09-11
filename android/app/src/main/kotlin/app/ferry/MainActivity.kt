@@ -12,22 +12,24 @@ import app.ferry.engine.FerryEngine
 // screen state, not by the Android framework's back stack.
 //
 // The activity owns everything that needs an Activity: the system screens
-// for all files access and notifications, the runtime notification prompt,
-// and the engine's start and stop.
+// for all files access, notifications and this app's own settings, the two
+// runtime prompts, and the engine's start and stop.
 class MainActivity : ComponentActivity() {
     private lateinit var notificationPrompt: ActivityResultLauncher<String>
+    private lateinit var cameraPrompt: ActivityResultLauncher<String>
 
-    // True once the person has used Continue on the first run screen. The
+    // True once the person has granted on the first run screen. The
     // notification prompt follows the all files access screen, which is
-    // step 3 of the phone first run in docs/ia.md.
+    // step 3 of the phone first run in docs-v2/ia.md.
     private var cameFromFirstRun = false
 
-    // The prompt is shown once per run of the process. Android itself
-    // refuses to show it again after two refusals, so asking again on every
-    // resume would do nothing.
-    private var promptShown = false
+    // Each prompt is shown once per run of the process. Android itself
+    // refuses to show one again after two refusals, so asking again on
+    // every resume would do nothing.
+    private var notificationPromptShown = false
+    private var cameraPromptShown = false
 
-    // Set when the reachable switch went on and the prompt had to come
+    // Set when advertising went on and the notification prompt had to come
     // first. The service starts as soon as the prompt is answered.
     private var startServiceAfterPrompt = false
 
@@ -42,14 +44,28 @@ class MainActivity : ComponentActivity() {
                 ReachableService.turnOn(this)
             }
         }
+        cameraPrompt = registerForActivityResult(
+            ActivityResultContracts.RequestPermission(),
+        ) { granted ->
+            Permissions.cameraAnswered(granted)
+            if (granted) {
+                // The tap that asked for the camera was a tap to scan, so
+                // granting it starts the scan rather than making a person
+                // tap the same control twice.
+                FerryEngine.startPairing(app.ferry.model.PairingMethod.Scan)
+            }
+        }
         setContent {
             FerryApp(
-                onContinueFirstRun = ::continueFirstRun,
+                onGrantFirstRunAccess = ::grantFirstRunAccess,
+                onSkipFirstRun = { Permissions.markFirstRunDone() },
                 onOpenAllFilesAccess = { startActivity(Permissions.allFilesAccessIntent(this)) },
                 onOpenNotificationSettings = {
                     startActivity(Permissions.notificationSettingsIntent(this))
                 },
-                onSetReachable = ::setReachable,
+                onOpenAppSettings = { startActivity(Permissions.appSettingsIntent(this)) },
+                onRequestCamera = ::requestCamera,
+                onSetAdvertising = ::setAdvertising,
             )
         }
     }
@@ -61,11 +77,11 @@ class MainActivity : ComponentActivity() {
         // engine. This builds a fresh one in that case, and does nothing in
         // the ordinary one.
         FerryEngine.create(this)
-        if (cameFromFirstRun && Permissions.asksForNotifications() && !promptShown &&
+        if (cameFromFirstRun && Permissions.asksForNotifications() && !notificationPromptShown &&
             !Permissions.notifications.value
         ) {
             cameFromFirstRun = false
-            promptShown = true
+            notificationPromptShown = true
             notificationPrompt.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         // The engine's start opens the shared root, so it can only succeed
@@ -87,21 +103,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun continueFirstRun() {
+    private fun grantFirstRunAccess() {
         cameFromFirstRun = true
         Permissions.markFirstRunDone()
         startActivity(Permissions.allFilesAccessIntent(this))
     }
 
-    private fun setReachable(on: Boolean) {
+    // Asked for when a person taps to scan, never at first run. Refused
+    // twice, Android stops showing the prompt, so the pairing screen offers
+    // this app's settings page and the code method instead.
+    private fun requestCamera() {
+        if (cameraPromptShown) {
+            Permissions.cameraAnswered(false)
+            return
+        }
+        cameraPromptShown = true
+        cameraPrompt.launch(Manifest.permission.CAMERA)
+    }
+
+    private fun setAdvertising(on: Boolean) {
         if (!on) {
             ReachableService.turnOff(this)
             return
         }
         // Android 13 and later need POST_NOTIFICATIONS before the service
         // can show its ongoing notification, so the prompt comes first.
-        if (Permissions.asksForNotifications() && !Permissions.notifications.value && !promptShown) {
-            promptShown = true
+        if (Permissions.asksForNotifications() && !Permissions.notifications.value &&
+            !notificationPromptShown
+        ) {
+            notificationPromptShown = true
             startServiceAfterPrompt = true
             notificationPrompt.launch(Manifest.permission.POST_NOTIFICATIONS)
             return

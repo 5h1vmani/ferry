@@ -19,7 +19,7 @@ import app.ferry.FerrySpace
 // Transfers with no transfers. docs/components.md.
 //
 // Sizing is the caller's choice: DevicesScreen fills the whole screen with
-// it, DeviceScreen fits it into the Transfers section of a longer list.
+// it, DevicesScreen fits it into the Transfers section of a longer list.
 @Composable
 fun EmptyState(
     line: String,

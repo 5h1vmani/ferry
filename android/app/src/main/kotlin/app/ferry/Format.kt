@@ -11,6 +11,10 @@ import java.util.Locale
 
 // Numbers turned into the text a person reads. Every template lives in
 // strings.xml, so no sentence is written in a view.
+//
+// Every number any screen shows passes through this file. That is the
+// point: two views that print a byte count must print it the same way, and
+// a change to how Ferry rounds is a change in one place.
 
 private const val BYTES_PER_KILOBYTE = 1_000.0
 private const val SECONDS_PER_MINUTE = 60L
@@ -58,6 +62,49 @@ fun formatAgo(unixSecs: Long): String {
     }
     val days = (seconds / SECONDS_PER_DAY).toInt()
     return pluralStringResource(R.plurals.duration_days, days, days)
+}
+
+// How long a finished transfer took: "18 s", "3 min", "1 h 12 min". The
+// engine now carries both timestamps, so a done row states its duration
+// instead of leaving it out.
+@Composable
+fun formatDuration(seconds: Long): String {
+    val clamped = seconds.coerceAtLeast(0L)
+    if (clamped < SECONDS_PER_MINUTE) {
+        return stringResource(R.string.duration_seconds, clamped)
+    }
+    val minutes = clamped / SECONDS_PER_MINUTE
+    if (minutes < SECONDS_PER_MINUTE) {
+        return stringResource(R.string.duration_minutes_short, minutes)
+    }
+    return stringResource(
+        R.string.duration_hours_short,
+        minutes / SECONDS_PER_MINUTE,
+        minutes % SECONDS_PER_MINUTE,
+    )
+}
+
+// The time a pairing code has left, as "1:12". Counted, not described,
+// because "soon" is an adjective standing in for a number.
+//
+// No template: a clock count is digits and a colon in every language this
+// app will ship in, and putting it in strings.xml would invite a
+// translation that is not one.
+fun formatCountdown(seconds: Long): String {
+    val clamped = seconds.coerceAtLeast(0L)
+    return String.format(
+        Locale.getDefault(),
+        "%d:%02d",
+        clamped / SECONDS_PER_MINUTE,
+        clamped % SECONDS_PER_MINUTE,
+    )
+}
+
+// A moment as a clock time: "14:31", or "2:31 PM" where that is the
+// person's own format. One access log row's time.
+fun formatTimeOfDay(unixSecs: Long): String {
+    val time = Instant.ofEpochSecond(unixSecs).atZone(ZoneId.systemDefault()).toLocalTime()
+    return DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).format(time)
 }
 
 // A unix time as a date in the person's own language and order. No Ferry

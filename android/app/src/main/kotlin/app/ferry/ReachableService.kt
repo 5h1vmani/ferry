@@ -9,15 +9,19 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.os.Build
 import android.os.IBinder
 import app.ferry.engine.FerryEngine
 
-// The foreground service that keeps the phone reachable.
+// The foreground service that keeps the phone reachable, and the
+// notification that says so.
 //
-// While it runs, the engine advertises over mDNS and accepts connections
-// from paired devices, and one ongoing notification says so. That
-// notification is what Android needs from a foreground service, and it is
-// also the honest answer to "is Ferry running" (docs/ia.md).
+// That notification is what Android needs from a foreground service, and it
+// is also presence — the honest answer to "is Ferry running", available
+// without opening anything. It is one of the two surfaces PresenceControl's
+// value reaches on this phone; the other is the row on Devices. Both say
+// the same words about the same fact, which is why those words live in
+// strings.xml and not in either of them.
 //
 // The service type is dataSync. Android 15 and later limit a dataSync
 // foreground service to six hours in a day, after which the system stops
@@ -27,7 +31,7 @@ class ReachableService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_TURN_OFF) {
+        if (intent?.action == ACTION_STOP_ADVERTISING) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -58,6 +62,13 @@ class ReachableService : Service() {
         manager.createNotificationChannel(channel)
     }
 
+    // While this service runs the phone is advertising, so the notification
+    // states that and offers the one action that changes it. The off state
+    // has no notification to show: Android only keeps one while the service
+    // is alive, and a service that is not advertising has nothing to serve.
+    //
+    // The device is named rather than called "your phone", because a person
+    // reading this may have two.
     private fun buildNotification(): Notification {
         val open = PendingIntent.getActivity(
             this,
@@ -65,22 +76,22 @@ class ReachableService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val turnOff = PendingIntent.getService(
+        val stop = PendingIntent.getService(
             this,
             1,
-            Intent(this, ReachableService::class.java).setAction(ACTION_TURN_OFF),
+            Intent(this, ReachableService::class.java).setAction(ACTION_STOP_ADVERTISING),
             PendingIntent.FLAG_IMMUTABLE,
         )
         return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle(getString(R.string.notification_reachable_title))
+            .setContentTitle(getString(R.string.notification_advertising, Build.MODEL))
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(
                 Notification.Action.Builder(
                     Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
-                    getString(R.string.notification_action_turn_off),
-                    turnOff,
+                    getString(R.string.presence_stop),
+                    stop,
                 ).build(),
             )
             .build()
@@ -89,7 +100,7 @@ class ReachableService : Service() {
     companion object {
         private const val CHANNEL_ID = "reachable"
         private const val NOTIFICATION_ID = 1
-        private const val ACTION_TURN_OFF = "app.ferry.action.TURN_OFF"
+        private const val ACTION_STOP_ADVERTISING = "app.ferry.action.STOP_ADVERTISING"
 
         // True while the service runs. MainActivity reads it to decide
         // whether the engine may be stopped.
