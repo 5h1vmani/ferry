@@ -43,13 +43,14 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use ferry_core::localfs::LocalFs;
 use ferry_core::path::RemotePath;
-use ferry_core::rpc::{Client, exchange_hello};
+use ferry_core::rpc::{Client, FileOps, exchange_hello};
 use ferry_core::session::SessionId;
 use ferry_core::wire::{Decoder, Encoder};
 
 use crate::batch::{self, BatchRecord};
-use crate::engine::{Shared, SocketRegistration, mark_reachable, notify};
+use crate::engine::{Shared, SocketRegistration, leaf_of, mark_reachable, notify};
 use crate::errors::failed;
 use crate::folder;
 use crate::guard::StopAware;
@@ -518,6 +519,7 @@ fn queue_batch(
     let started_unix_secs = now_unix_secs();
     let prefix = format!("{}/", source.as_str());
     let chunk_size = *lock(&shared.chunk_size);
+    let download_fs = shared.download_fs();
 
     let mut rows = Vec::with_capacity(files.len());
     for (full_path, _size) in files {
@@ -527,6 +529,16 @@ fn queue_batch(
             .unwrap_or(full_path.as_str());
         let Ok(destination) = RemotePath::parse(&format!("DCIM/{relative}")) else {
             return false;
+        };
+        // G5: job 7 says automatic copying never writes back. `run_inner`
+        // already filtered out anything a held row names, so a file
+        // already sitting at this destination was never put there by an
+        // earlier run of this same file; overwriting it would destroy
+        // something this run has no business touching. Land beside it
+        // under a free name instead.
+        let destination = match &download_fs {
+            Some(fs) => free_destination(fs, destination),
+            None => destination,
         };
         let Ok(session) = SessionId::generate() else {
             return false;
@@ -597,6 +609,58 @@ fn queue_batch(
         transfer::spawn(shared, id);
     }
     true
+}
+
+/// The most alternative names [`free_destination`] tries before giving up
+/// and using the one it was asked for anyway. Never reached in practice; it
+/// only bounds how long a folder somehow already holding hundreds of
+/// numbered alternatives could make this loop.
+const MAX_CONFLICT_ATTEMPTS: u32 = 1000;
+
+/// `destination` if nothing is there yet in the download folder, or the
+/// first `"name (2).ext"`, `"name (3).ext"`, ... alternative beside it that
+/// is free.
+///
+/// G5: job 7 says automatic copying is one way and never writes back.
+/// `run_inner` only ever reaches here with a file no held row names, so
+/// anything already at `destination` was never put there by an earlier run
+/// of this same file; overwriting it would destroy something this run has
+/// no business touching.
+fn free_destination(download_fs: &LocalFs, destination: RemotePath) -> RemotePath {
+    if download_fs.stat(&destination).is_err() {
+        return destination;
+    }
+    let leaf = leaf_of(&destination);
+    let parent = destination
+        .as_str()
+        .strip_suffix(leaf.as_str())
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let stem = Path::new(&leaf)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(leaf.as_str());
+    let extension = Path::new(&leaf)
+        .extension()
+        .and_then(|extension| extension.to_str());
+
+    for n in 2..=MAX_CONFLICT_ATTEMPTS {
+        let candidate_name = match extension {
+            Some(extension) => format!("{stem} ({n}).{extension}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate_path = if parent.is_empty() {
+            candidate_name
+        } else {
+            format!("{parent}/{candidate_name}")
+        };
+        if let Ok(candidate) = RemotePath::parse(&candidate_path)
+            && download_fs.stat(&candidate).is_err()
+        {
+            return candidate;
+        }
+    }
+    destination
 }
 
 // ---------------------------------------------------------------------------

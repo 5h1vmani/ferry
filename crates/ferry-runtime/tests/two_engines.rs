@@ -854,6 +854,58 @@ fn a_second_reachability_transition_during_a_moving_batch_starts_no_second_run()
     phone.engine.stop();
 }
 
+/// G5: job 7 says automatic copying is one way and never writes back. A
+/// file already sitting at the destination auto-copy would otherwise use,
+/// put there by anything other than a held pull of this same file, must
+/// never be overwritten: the new file lands beside it under a free name.
+#[test]
+fn a_destination_already_occupied_lands_beside_it_under_a_free_name() {
+    let phone = build("Pixel 3 XL");
+    let mac = build("Vamana");
+    let phone_key = pair(&mac, &phone);
+
+    std::fs::create_dir(phone.shared_root.join("DCIM")).expect("a folder for the camera roll");
+    let incoming = sample_bytes();
+    std::fs::write(phone.shared_root.join("DCIM/a.jpg"), &incoming)
+        .expect("the phone's shared folder should accept a file");
+
+    // Nothing this device ever pulled: dragged in by hand, or left over
+    // from before this device was ever paired. The held index knows
+    // nothing about it.
+    std::fs::create_dir(mac.download_root.join("DCIM")).expect("the download folder's DCIM");
+    let already_there = b"not something ferry ever put here".to_vec();
+    std::fs::write(mac.download_root.join("DCIM/a.jpg"), &already_there)
+        .expect("the pre-existing file should write");
+
+    mac.engine
+        .list(phone_key.clone(), String::new())
+        .expect("listing the phone's roots should succeed");
+    mac.engine
+        .set_auto_copy(phone_key.clone(), true)
+        .expect("the device is paired, so the switch should turn on");
+
+    let engine = Arc::clone(&mac.engine);
+    let wanted = phone_key.clone();
+    mac.inbox.wait_until("the run to finish", move || {
+        engine.auto_copy(wanted.clone()).last_run_files == Some(1)
+    });
+
+    assert_eq!(
+        std::fs::read(mac.download_root.join("DCIM/a.jpg"))
+            .expect("the pre-existing file must still be there"),
+        already_there,
+        "the file already at the destination must never be overwritten"
+    );
+    assert_eq!(
+        std::fs::read(mac.download_root.join("DCIM/a (2).jpg"))
+            .expect("the new file should land beside it under a free name"),
+        incoming
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}
+
 // ---------------------------------------------------------------------------
 // Item 13: the access log records what each side did.
 // ---------------------------------------------------------------------------
