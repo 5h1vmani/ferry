@@ -34,14 +34,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // boundary enum `Config` and `DeviceInfo` carry. This is `ferry-core`'s own,
 // needed only for the raw `exchange_hello` call in the no-reconnect test.
 use ferry_core::chunk::{ChunkSize, manifest_from_bytes};
-use ferry_core::noise::{PublicKey, StaticKey};
+use ferry_core::noise::{PublicKey, QR_NONCE_LEN, StaticKey};
+use ferry_core::offer::Offer;
 use ferry_core::ops::OpError;
 use ferry_core::path::RemotePath;
 use ferry_core::peers::DeviceKind as CoreDeviceKind;
 use ferry_core::rpc::{Client, RpcError, exchange_hello};
 use ferry_core::tcp;
 use ferry_runtime::{
-    AccessVerb, Actor, Config, DeviceKind, Direction, Engine, EngineListener, KeyPair, PairingMethod, PairingState, Root, TransferState, Transport, generate_key,
+    AccessVerb, Actor, Config, DeviceKind, Direction, Engine, EngineListener, KeyPair,
+    PairingMethod, PairingState, Root, TransferState, Transport, generate_key,
 };
 
 /// How long any wait may take before the test gives up.
@@ -295,8 +297,8 @@ fn two_engines_pair_and_move_a_file() {
 
     // The phone is the side that waits. The Mac is the side that looks.
     phone.engine.set_reachable(true);
-    phone.engine.start_pairing();
-    mac.engine.start_pairing();
+    phone.engine.start_pairing_with(PairingMethod::Code);
+    mac.engine.start_pairing_with(PairingMethod::Code);
 
     // Item 10: every pairing state that has a deadline states it, including
     // Waiting, the state a side that is not looking for anyone starts in.
@@ -482,8 +484,8 @@ fn the_mac_lists_a_folder_on_the_phone() {
     let mac = build("Vamana");
 
     phone.engine.set_reachable(true);
-    phone.engine.start_pairing();
-    mac.engine.start_pairing();
+    phone.engine.start_pairing_with(PairingMethod::Code);
+    mac.engine.start_pairing_with(PairingMethod::Code);
 
     let phone_addr = loopback_addr(&phone);
     mac.engine.offer_candidate(phone_addr);
@@ -1132,8 +1134,8 @@ fn a_bad_set_roots_call_is_refused_and_the_old_roots_keep_serving() {
 /// exercise the pairing screens.
 fn pair(mac: &Side, phone: &Side) -> String {
     phone.engine.set_reachable(true);
-    phone.engine.start_pairing();
-    mac.engine.start_pairing();
+    phone.engine.start_pairing_with(PairingMethod::Code);
+    mac.engine.start_pairing_with(PairingMethod::Code);
 
     let phone_addr = loopback_addr(phone);
     mac.engine.offer_candidate(phone_addr);
