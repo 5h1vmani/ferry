@@ -35,11 +35,26 @@ struct PresenceSnapshot: Equatable {
     /// shows: the words are the same either way.
     let isReportedByEngine: Bool
 
+    /// The Wi-Fi network name the app last set. Nil when unknown: Wi-Fi
+    /// off, the location permission refused, or the name unreadable.
+    /// `docs/engine-contract.md`, item 18.
+    let networkName: String?
+    /// True while this device advertises, browses, and accepts over
+    /// Wi-Fi.
+    let isWifiPresenceOn: Bool
+
+    /// True when this Mac advertises but is quiet on the current
+    /// network: the network is not trusted and no pairing is in
+    /// progress. `docs/engine-contract.md`, item 18.
+    var isQuietOnThisNetwork: Bool { isAdvertising && !isWifiPresenceOn }
+
     static let unknown = PresenceSnapshot(
         isAdvertising: false,
         activeTransport: nil,
         speedBytesPerSec: nil,
-        isReportedByEngine: false
+        isReportedByEngine: false,
+        networkName: nil,
+        isWifiPresenceOn: false
     )
 }
 

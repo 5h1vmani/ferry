@@ -153,6 +153,36 @@ enum PreviewData {
         devices: []
     )
 
+    /// Advertising, but quiet on a known network this Mac does not trust
+    /// yet. `docs/engine-contract.md`, item 18.
+    static let quietKnownNetwork = EngineAdapter.presence(
+        status: Status(
+            reachable: true,
+            listenPort: 53317,
+            adbPresent: true,
+            network: "Café Wifi",
+            wifiPresence: false
+        ),
+        devices: []
+    )
+
+    /// Advertising, quiet, and the network name could not be read: no
+    /// location authorisation yet. `docs/engine-contract.md`, item 18.
+    static let quietUnknownNetwork = EngineAdapter.presence(
+        status: Status(
+            reachable: true,
+            listenPort: 53317,
+            adbPresent: true,
+            network: nil,
+            wifiPresence: false
+        ),
+        devices: []
+    )
+
+    /// This Mac's trusted Wi-Fi networks. `docs/engine-contract.md`, item
+    /// 18.
+    static let trustedNetworks = ["Home", "Office"]
+
     /// `reachablePhone` already carries a mount path; this is the same fact,
     /// for a preview that wants the mount alone.
     static let mountReady = MountSnapshot(path: reachablePhone.mountPath)

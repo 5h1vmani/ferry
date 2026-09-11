@@ -210,7 +210,9 @@ enum EngineAdapter {
             isAdvertising: status.reachable,
             activeTransport: moving?.reachableVia,
             speedBytesPerSec: moving?.speedBytesPerSec,
-            isReportedByEngine: true
+            isReportedByEngine: true,
+            networkName: status.network,
+            isWifiPresenceOn: status.wifiPresence
         )
     }
 

@@ -60,6 +60,20 @@ enum S {
         static func accessibilityOff(consequence: String) -> String {
             String(format: accessibilityOffFormat, consequence)
         }
+
+        /// Shown under the switch, and in Settings, Networks, when
+        /// advertising is on and Wi-Fi presence is off because the
+        /// current network is known and not trusted.
+        /// `docs/engine-contract.md`, item 18.
+        static let quietKnownNetwork = "Ferry is quiet on this network."
+        /// The same state, but the name could not be read: no location
+        /// authorisation. Named by the real cause, not guessed.
+        static let quietUnknownNetwork = "Ferry cannot read the network name."
+
+        static let accessibilityQuietFormat = "Advertising, quiet on this network. %@"
+        static func accessibilityQuiet(why: String) -> String {
+            String(format: accessibilityQuietFormat, why)
+        }
     }
 
     /// The menu bar item. New in docs/ia.md, L0.
@@ -412,6 +426,22 @@ enum S {
         static let rootAccessibilityFormat = "%1$@, shared from %2$@"
         static func rootAccessibility(name: String, path: String) -> String {
             String(format: rootAccessibilityFormat, name, path)
+        }
+
+        // Networks. New in docs/engine-contract.md, item 18.
+        static let networks = "Networks"
+        static let trustThisNetwork = "Trust this network"
+        static let remove = "Remove"
+        static let openLocationSettings = "Open Location Settings"
+
+        static let currentNetworkAccessibilityFormat = "%@, not trusted"
+        static func currentNetworkAccessibility(name: String) -> String {
+            String(format: currentNetworkAccessibilityFormat, name)
+        }
+
+        static let trustedNetworkAccessibilityFormat = "%@, trusted"
+        static func trustedNetworkAccessibility(name: String) -> String {
+            String(format: trustedNetworkAccessibilityFormat, name)
         }
     }
 

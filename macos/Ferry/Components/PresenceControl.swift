@@ -45,6 +45,14 @@ struct PresenceControl: View {
                     .font(FerryFont.caption)
                     .foregroundStyle(FerryColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
+            } else if presence.isQuietOnThisNetwork {
+                // Same reasoning, for the quiet-on-this-network state
+                // (docs/engine-contract.md, item 18): the words are the
+                // same ones Settings, Networks shows for this state.
+                Text(quietLine)
+                    .font(FerryFont.caption)
+                    .foregroundStyle(FerryColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(presence.isAdvertising ? FerrySpace.s1 : FerrySpace.s3)
@@ -62,6 +70,12 @@ struct PresenceControl: View {
 
     private var label: String {
         presence.isAdvertising ? S.presence.advertising : S.presence.notAdvertising
+    }
+
+    /// The quiet-on-this-network line, worded by whether the name is
+    /// known. `docs/engine-contract.md`, item 18.
+    private var quietLine: String {
+        presence.networkName == nil ? S.presence.quietUnknownNetwork : S.presence.quietKnownNetwork
     }
 
     /// Off, the block lifts out of the sidebar with one step of grey and
@@ -82,9 +96,13 @@ struct PresenceControl: View {
     }
 
     private var accessibilityLabel: String {
-        presence.isAdvertising
-            ? S.presence.accessibilityOn
-            : S.presence.accessibilityOff(consequence: S.presence.consequence)
+        guard presence.isAdvertising else {
+            return S.presence.accessibilityOff(consequence: S.presence.consequence)
+        }
+        guard presence.isQuietOnThisNetwork else {
+            return S.presence.accessibilityOn
+        }
+        return S.presence.accessibilityQuiet(why: quietLine)
     }
 }
 
@@ -96,10 +114,23 @@ struct PresenceControl: View {
                 isAdvertising: true,
                 activeTransport: .usb,
                 speedBytesPerSec: 38_000_000,
-                isReportedByEngine: false
+                isReportedByEngine: false,
+                networkName: "Home",
+                isWifiPresenceOn: true
             ),
             onChange: { _ in },
             showsSpeed: true
+        )
+        PresenceControl(
+            presence: PresenceSnapshot(
+                isAdvertising: true,
+                activeTransport: nil,
+                speedBytesPerSec: nil,
+                isReportedByEngine: true,
+                networkName: "Café Wifi",
+                isWifiPresenceOn: false
+            ),
+            onChange: { _ in }
         )
         PresenceControl(presence: .unknown, onChange: { _ in })
     }
