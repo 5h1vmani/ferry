@@ -863,6 +863,11 @@ impl Engine {
         // above. Closing every registered socket directly turns that read
         // into an error at once, instead of waiting for the peer or the
         // idle timeout in `tcp.rs`. `docs/engine-contract.md` item 16c.
+        //
+        // F4: a thread still writing to one of these sockets when it closes
+        // raises no `SIGPIPE`: Rust's standard library sets `SO_NOSIGPIPE`
+        // on Apple platforms and passes `MSG_NOSIGNAL` to every write on
+        // Linux and Android, so the write just fails with `EPIPE` instead.
         for socket in lock(&self.shared.sockets).values() {
             drop(socket.shutdown(Shutdown::Both));
         }
