@@ -421,6 +421,11 @@ enum S {
         static let sharedFoldersFooter = "Paired phones can read and write these folders. Nothing outside them is served."
         static let addAFolder = "Add a folder"
         static let stopSharing = "Stop sharing"
+        /// Shown under the last root when Stop sharing is disabled there:
+        /// an engine serving nothing is not a state any screen describes,
+        /// and a disabled control with no reason is a person staring at a
+        /// grey button.
+        static let lastRootCaption = "At least one folder is shared."
         static let whereFilesLand = "Where pulled files land"
 
         static let rootAccessibilityFormat = "%1$@, shared from %2$@"

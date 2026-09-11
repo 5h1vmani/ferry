@@ -138,28 +138,37 @@ private struct SharedRootRow: View {
     let onRemove: () -> Void
 
     var body: some View {
-        HStack(spacing: FerrySpace.s2) {
-            Image(systemName: FerryIcon.folder)
-                .foregroundStyle(FerryColor.textSecondary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(root.name)
-                    .font(FerryFont.body)
-                    .foregroundStyle(FerryColor.text)
-                Text(root.path)
-                    .font(FerryFont.mono)
+        VStack(alignment: .leading, spacing: FerrySpace.s1) {
+            HStack(spacing: FerrySpace.s2) {
+                Image(systemName: FerryIcon.folder)
                     .foregroundStyle(FerryColor.textSecondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(root.name)
+                        .font(FerryFont.body)
+                        .foregroundStyle(FerryColor.text)
+                    Text(root.path)
+                        .font(FerryFont.mono)
+                        .foregroundStyle(FerryColor.textSecondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                Button(S.settings.stopSharing, action: onRemove)
+                    .buttonStyle(.link)
+                    // The last root cannot be removed: an engine serving
+                    // nothing is not a state any screen describes.
+                    .disabled(!canRemove)
             }
-
-            Spacer()
-
-            Button(S.settings.stopSharing, action: onRemove)
-                .buttonStyle(.link)
-                // The last root cannot be removed: an engine serving
-                // nothing is not a state any screen describes.
-                .disabled(!canRemove)
+            // Stated because a disabled control with no reason is a grey
+            // button and a guess.
+            if !canRemove {
+                Text(S.settings.lastRootCaption)
+                    .font(FerryFont.caption)
+                    .foregroundStyle(FerryColor.textSecondary)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(S.settings.rootAccessibility(name: root.name, path: root.path))
