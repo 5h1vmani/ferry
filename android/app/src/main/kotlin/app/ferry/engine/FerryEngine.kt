@@ -275,6 +275,14 @@ object FerryEngine {
         _reachable.value = current.status().reachable
     }
 
+    // Records which way in a person chose, without touching the engine.
+    // Used when the camera permission has to be asked for first, so a
+    // refusal is attributed to the right method and pairingStepOf can show
+    // CameraRefused.
+    fun setPairingMethod(method: UiPairingMethod) {
+        _pairingMethod.value = method
+    }
+
     // Enters pairing by one method, and remembers which. Called when the
     // pairing screen opens and again if a person switches methods.
     //

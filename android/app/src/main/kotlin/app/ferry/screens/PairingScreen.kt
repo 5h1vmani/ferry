@@ -115,6 +115,10 @@ fun PairingScreen(
         if (cameraGranted) {
             FerryEngine.startPairing(PairingMethod.Scan)
         } else {
+            // The method has to be recorded before the prompt, not after:
+            // pairingStepOf's CameraRefused guard needs method == Scan
+            // already set once cameraRefused turns true.
+            FerryEngine.setPairingMethod(PairingMethod.Scan)
             onRequestCamera()
         }
     }
