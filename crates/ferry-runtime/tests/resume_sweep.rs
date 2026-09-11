@@ -31,16 +31,24 @@
 //! - A `stat` response payload is one `Entry`: `name(4+len) + kind(1) +
 //!   size(8) + modified(8)`.
 //! - A `hello` payload is `name(4+len) + kind(1)`.
+//! - A `manifest` request payload is `opcode(1) + path(4+len)`, the same
+//!   shape as `stat`.
+//! - A `manifest` response payload is `bytes(4+len)`, holding the
+//!   manifest's own encoding: `length(8) + chunk_size(4) + count(4) +
+//!   count*32 (one chaining value per chunk) + root(32)`.
 //!
+//! Since `docs/engine-contract.md` item 16a, a pull's first pass fetches the
+//! manifest before its first chunk, once per dial, the same as `stat`. So
 //! `retry_wire()` is the cost paid again on every dial: one hello written by
-//! this device, one hello read back from the peer, and one `stat` request
-//! and response. `chunk_wire(len)` is what a cut can cause to be paid twice
-//! for one chunk of `len` bytes: the chunk's own bytes, plus the frame bytes
-//! of the `read` request that asked for it and the frame bytes of the `read`
-//! response around it (its header and its length prefix; the chunk bytes
-//! themselves are the first term, so they are not counted again here).
-//! `max_chunk_wire()` is `chunk_wire` for the largest chunk in the file,
-//! which is the most a single cut can cause to be paid twice.
+//! this device, one hello read back from the peer, one `stat` request and
+//! response, and one `manifest` request and response. `chunk_wire(len)` is
+//! what a cut can cause to be paid twice for one chunk of `len` bytes: the
+//! chunk's own bytes, plus the frame bytes of the `read` request that asked
+//! for it and the frame bytes of the `read` response around it (its header
+//! and its length prefix; the chunk bytes themselves are the first term, so
+//! they are not counted again here). `max_chunk_wire()` is `chunk_wire` for
+//! the largest chunk in the file, which is the most a single cut can cause
+//! to be paid twice.
 //!
 //! # Why the bound holds
 //!
@@ -86,6 +94,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+use ferry_core::chunk::{ChunkSize, Manifest, manifest_from_bytes};
 use ferry_core::noise::{PublicKey, StaticKey};
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
@@ -161,9 +170,37 @@ fn stat_response_bytes() -> u64 {
     frame_bytes(LEN_PREFIX + FILE_NAME.len() as u64 + 1 + 8 + 8)
 }
 
-/// The cost paid again on every dial: both hellos, and one `stat` call.
+/// The wire cost of the `manifest` request frame. Same shape as `stat`:
+/// opcode(1) + path(4+len).
+fn manifest_request_bytes() -> u64 {
+    frame_bytes(1 + LEN_PREFIX + FILE_NAME.len() as u64)
+}
+
+/// How many bytes `Manifest::encode` writes for this file: `length(8)` +
+/// `chunk_size(4)` + `count(4)` + one 32 byte chaining value per chunk +
+/// `root(32)`. See `crates/ferry-core/src/chunk.rs`.
+fn manifest_encoded_len() -> u64 {
+    let chunks = chunk_lengths().len() as u64;
+    8 + 4 + 4 + chunks * 32 + 32
+}
+
+/// The wire cost of the `manifest` response frame: the encoded manifest as
+/// one length-prefixed byte string.
+fn manifest_response_bytes() -> u64 {
+    frame_bytes(LEN_PREFIX + manifest_encoded_len())
+}
+
+/// The cost paid again on every dial: both hellos, one `stat` call, and one
+/// `manifest` call. docs/engine-contract.md item 16a: the first pass fetches
+/// the manifest before its first chunk, on every attempt, the same as it
+/// already fetches `stat`.
 fn retry_wire() -> u64 {
-    hello_bytes(ENGINE_NAME) + hello_bytes(PEER_NAME) + stat_request_bytes() + stat_response_bytes()
+    hello_bytes(ENGINE_NAME)
+        + hello_bytes(PEER_NAME)
+        + stat_request_bytes()
+        + stat_response_bytes()
+        + manifest_request_bytes()
+        + manifest_response_bytes()
 }
 
 /// One chunk's own bytes, and the request and response frame bytes around
@@ -419,6 +456,18 @@ impl FileOps for OneFile {
 
     fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
         Err(OpError::Unsupported)
+    }
+
+    fn manifest(&self, path: &RemotePath) -> Result<Manifest, OpError> {
+        if path.as_str() != FILE_NAME {
+            return Err(OpError::NotFound);
+        }
+        // The same chunk size `setup` gives the engine, so the wire
+        // arithmetic below can predict the manifest's own encoded length.
+        Ok(manifest_from_bytes(
+            &self.bytes,
+            ChunkSize::new(CHUNK_SIZE).expect("1024 is a valid chunk size"),
+        ))
     }
 }
 
