@@ -696,7 +696,7 @@ once the bindings are regenerated. `Status` and `DeviceInfo` gain fields
 here, so every builder runs `scripts/gate.sh mac` and `scripts/gate.sh
 android` once before it reports, as rule 3 requires.
 
-### 17. Thumbnail prefetch, PLAN phase 2 item 4: open
+### 17. Thumbnail prefetch, PLAN phase 2 item 4: built
 
 Finder opens a folder of 500 photos and asks for the head of every file
 to draw its thumbnails. Today each of those asks costs one `Stat` and one
@@ -751,7 +751,9 @@ log shows three reads, then requests the first kilobyte of one image
 with a `Range` header and proves the phone's log gains no new read. A
 second test proves the head cache misses after the file is written
 again with a new size. A pure test covers the extension check and the
-first in first out bound.
+first in first out bound. That pure test lives in `src/dav/heads.rs`,
+not in the test file above, because the cache and the constants named
+here are `pub(crate)` and no integration test can reach them.
 
 ### 18. Trusted networks, PLAN phase 2 item 7: engine built, apps open
 

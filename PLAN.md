@@ -472,7 +472,10 @@ Phase 2, in order:
 4. Thumbnail prefetch through range reads. After a listing, prefetch the
    first 64 KB of every image through the transfer worker pool, so Finder
    shows a folder of 500 photos in seconds. This answers open question 3 by
-   serving the requests rather than suppressing them. Days.
+   serving the requests rather than suppressing them. Days. Built on 11
+   September 2026: the prefetch runs through the bridge's own connection
+   pool, not the transfer workers, because that pool takes transfer records
+   and runs whole-file pulls. See `docs/engine-contract.md` item 17.
 5. Push, from the Mac to the phone. Finder save needs it.
 6. Chunk-level delta when Finder saves a file. The bridge receives the whole
    file on loopback, hashes it, and sends only the chunks the phone lacks.
