@@ -21,6 +21,11 @@ workspace = true
 
 [dependencies]
 ferry-core = { path = "../ferry-core" }
+# Used only by `dav::random_hex`, for the per-start mount password and lock
+# tokens. The same crate `ferry-core::session::SessionId` already uses, so
+# this is not a new source of randomness in the workspace, only a direct
+# dependency edge to reach the one this crate already trusts.
+getrandom = "0.3"
 thiserror = "2"
 uniffi = { version = "0.32", features = ["cli"] }
 zeroize = "1"
