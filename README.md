@@ -14,11 +14,18 @@ engine changes behind the screens are in `docs/engine-contract.md`, with
 their status. Later that day the engine gained a manifest request so every
 pull verifies from its first byte, automatic photo import, push, the
 Finder mount over WebDAV with saves that send only changed chunks, and
-QR pairing on the Mac side. Each was audited and the findings fixed. None
-of it has run on real devices yet; `docs/manual-checks.md` task 4 is the
-list. The phone's screens for the new features wait for a Kotlin design
-pass. Nothing is packaged for install yet. To build and run it, follow
-`docs/manual-checks.md` task 3.
+QR pairing on the Mac side. Each was audited and the findings fixed. In a
+third pass the same day, the phone took its own designed screens,
+including pairing by scanning the Mac's QR code and an access log screen;
+a lifecycle audit found fifteen findings, every one fixed. The engine then
+gained a head cache and prefetch for the Finder mount so a thumbnail costs
+nothing on the wire, advertising and browsing limited to trusted Wi-Fi
+networks with a Networks section in Settings on both apps, and the Mac's
+shared folders inside the phone's Files app. Every part of the third run
+ran through `scripts/gate.sh`, a gate script built the same day. None of
+it has run on real devices yet; `docs/manual-checks.md` tasks 4, 5, and 6
+are the list. Nothing is packaged for install yet. To build and run it,
+follow `docs/manual-checks.md` task 3.
 
 ## The problem
 
