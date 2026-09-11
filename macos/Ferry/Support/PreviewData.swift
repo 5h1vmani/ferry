@@ -21,7 +21,8 @@ enum PreviewData {
         speedBytesPerSec: 38_000_000,
         lastSeenUnixSecs: nil,
         availableTransports: [.usb, .wifi],
-        kind: .phone
+        kind: .phone,
+        mountPath: "/Volumes/Pixel 3 XL"
     )
 
     static let idlePhone = DeviceInfo(
@@ -32,7 +33,8 @@ enum PreviewData {
         speedBytesPerSec: nil,
         lastSeenUnixSecs: nil,
         availableTransports: [.wifi],
-        kind: .phone
+        kind: .phone,
+        mountPath: nil
     )
 
     static let unreachablePhone = DeviceInfo(
@@ -43,7 +45,8 @@ enum PreviewData {
         speedBytesPerSec: nil,
         lastSeenUnixSecs: 1_757_100_000,
         availableTransports: [],
-        kind: .phone
+        kind: .phone,
+        mountPath: nil
     )
 
     static let devices = [reachablePhone, idlePhone, unreachablePhone]
@@ -129,18 +132,18 @@ enum PreviewData {
     static let transferGroups = EngineAdapter.groups(transfers: transfers, batches: [])
 
     static let advertising = EngineAdapter.presence(
-        status: Status(reachable: true, listenPort: 53317, adbPresent: true, mount: nil),
+        status: Status(reachable: true, listenPort: 53317, adbPresent: true),
         devices: devices
     )
 
     static let notAdvertising = EngineAdapter.presence(
-        status: Status(reachable: false, listenPort: 53317, adbPresent: true, mount: nil),
+        status: Status(reachable: false, listenPort: 53317, adbPresent: true),
         devices: []
     )
 
-    /// A mount the engine cannot report yet (docs/engine-contract.md, item 6),
-    /// so the Access section can be previewed before it exists.
-    static let mountReady = MountSnapshot(path: "/Volumes/Pixel 3 XL")
+    /// `reachablePhone` already carries a mount path; this is the same fact,
+    /// for a preview that wants the mount alone.
+    static let mountReady = MountSnapshot(path: reachablePhone.mountPath)
 
     static let roots = [
         SharedRootSnapshot(name: "Desktop", path: "/Users/yantram/Desktop", isWritable: true),

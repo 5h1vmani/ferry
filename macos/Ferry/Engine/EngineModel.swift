@@ -23,6 +23,9 @@
 //   - list, pull, forget, and retry talk to the other device, so each one
 //     runs in a detached task and publishes its result back on the main
 //     actor.
+//   - Mounting a newly reachable device runs the same way: `mount_start`,
+//     the NetFS call in FinderMount.swift, and `set_mount_path` all happen
+//     in one detached task, off the main actor.
 
 import Foundation
 import SwiftUI
@@ -54,6 +57,11 @@ final class EngineModel: ObservableObject {
     /// Which way in a person chose. A view concern, held here because the
     /// engine is told about it and the sheet may be rebuilt at any moment.
     private var pairingMethod: PairingMethod?
+    /// Devices this run has already tried to mount since they last became
+    /// reachable. Cleared when a device stops being reachable, so the next
+    /// reachable moment gets its own try. `docs/engine-contract.md`, item
+    /// 6: "do not retry more than once per reachability change."
+    private var mountAttempted: Set<String> = []
 
     private var engine: Engine?
     private var events: EngineEvents?
@@ -120,6 +128,11 @@ final class EngineModel: ObservableObject {
     /// Stops every thread the engine started. The app calls this on quit.
     /// Safe to call twice.
     func stop() {
+        // Unmount every mounted device before the engine that serves them
+        // stops answering. `docs/engine-contract.md`, item 6.
+        for device in deviceInfos where device.mountPath != nil {
+            unmountAndStopBridge(forDevice: device.keyHex)
+        }
         engine?.stop()
         engine = nil
         events = nil
@@ -131,14 +144,17 @@ final class EngineModel: ObservableObject {
         pairingMethod = nil
         pairing = .choosing
         presence = .unknown
+        mountAttempted = []
     }
 
     // MARK: - What the listener calls
 
     func reloadDevices() {
+        let previous = deviceInfos
         deviceInfos = engine?.devices() ?? []
         devices = EngineAdapter.devices(deviceInfos)
         refreshPresence()
+        mountNewlyReachableDevices(from: previous, to: deviceInfos)
     }
 
     func reloadTransfers() {
@@ -196,7 +212,7 @@ final class EngineModel: ObservableObject {
 
     /// Whether the phone's folders are mounted in Finder, and where.
     func mount(forDevice keyHex: String) -> MountSnapshot {
-        EngineAdapter.mount(forDevice: keyHex)
+        EngineAdapter.mount(deviceInfos.first { $0.keyHex == keyHex })
     }
 
     /// Job 7's switch and its lines, for one device.
@@ -226,6 +242,59 @@ final class EngineModel: ObservableObject {
     /// disabled in the view and this does nothing. It is here so that the
     /// view's shape does not change when the engine gains it.
     func setAutoCopy(forDevice keyHex: String, enabled: Bool) {
+    }
+
+    // MARK: - The Finder mount, item 6
+
+    /// Starts the bridge and mounts it for every device that just became
+    /// reachable and has no mount yet.
+    ///
+    /// `docs/engine-contract.md`, item 6: the Mac starts the bridge and
+    /// mounts when a phone becomes reachable. `mountAttempted` is how "do
+    /// not retry more than once per reachability change" is kept: a device
+    /// enters it the moment a try starts, whether or not that try
+    /// succeeds, and leaves it only once the device stops being reachable.
+    private func mountNewlyReachableDevices(from previous: [DeviceInfo], to current: [DeviceInfo]) {
+        let previousByKey = Dictionary(uniqueKeysWithValues: previous.map { ($0.keyHex, $0) })
+        for device in current {
+            guard device.reachableVia != nil else {
+                mountAttempted.remove(device.keyHex)
+                continue
+            }
+            let wasReachable = previousByKey[device.keyHex]?.reachableVia != nil
+            guard !wasReachable, device.mountPath == nil, !mountAttempted.contains(device.keyHex) else {
+                continue
+            }
+            mountAttempted.insert(device.keyHex)
+            mountReachableDevice(device)
+        }
+    }
+
+    /// Starts one device's bridge, mounts it through NetFS off the main
+    /// actor, and reports where the OS put it. On failure this reports the
+    /// error through the existing `report(_:)` path and does not retry
+    /// itself; `mountNewlyReachableDevices` is what tries again, on the
+    /// device's next reachable moment.
+    private func mountReachableDevice(_ device: DeviceInfo) {
+        guard let engine else { return }
+        Task.detached { [weak self] in
+            do {
+                let endpoint = try engine.mountStart(deviceKeyHex: device.keyHex)
+                let path = try FinderMount.mount(endpoint: endpoint, deviceName: device.name)
+                try engine.setMountPath(deviceKeyHex: device.keyHex, path: path)
+            } catch {
+                await self?.report(error)
+            }
+        }
+    }
+
+    /// Unmounts and stops one device's bridge. Used at `forget` and at
+    /// quit; safe to call on a device that was never mounted.
+    private func unmountAndStopBridge(forDevice keyHex: String) {
+        if let path = deviceInfos.first(where: { $0.keyHex == keyHex })?.mountPath {
+            FinderMount.unmount(path: path)
+        }
+        engine?.mountStop(deviceKeyHex: keyHex)
     }
 
     // MARK: - Pairing
@@ -380,6 +449,12 @@ final class EngineModel: ObservableObject {
     /// Removes a device's key and every transfer record for it.
     func forget(keyHex: String) {
         guard let engine else { return }
+        // Unmounted before the key is gone, while `deviceInfos` still holds
+        // its mount path. The engine's own `forget` also stops the bridge,
+        // but not the OS side of the mount. `docs/engine-contract.md`, item
+        // 6.
+        unmountAndStopBridge(forDevice: keyHex)
+        mountAttempted.remove(keyHex)
         Task.detached { [weak self] in
             do {
                 try engine.forget(keyHex: keyHex)

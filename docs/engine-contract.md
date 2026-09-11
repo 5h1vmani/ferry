@@ -56,9 +56,6 @@ pub struct Status {
     pub listen_port: u16,
     /// Whether adb was found when the engine started.
     pub adb_present: bool,
-    /// Where the peer's roots are mounted on this device. None until
-    /// item 6 is built.
-    pub mount: Option<String>,
 }
 
 fn status(&self) -> Status;
@@ -534,7 +531,7 @@ controls. It opens the file panel for one or more files and calls
 `push_files` into the folder the section is showing. One string added.
 Rows show the direction through the existing `TransferRow`.
 
-### 6. The mount: open
+### 6. The mount: I1 built, I2 open
 
 The Finder mount is a WebDAV bridge, as ADR 0008 decided. The bridge
 lives in the Rust runtime as `crates/ferry-runtime/src/dav/`, a

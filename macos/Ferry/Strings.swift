@@ -427,4 +427,16 @@ enum S {
         static let wrongSizeWhy = "It is not the size Ferry expects."
         static let wrongSizeToDo = "Delete the Ferry device key in Keychain Access. Ferry makes a new one."
     }
+
+    /// The Finder mount, item 6. A NetFS failure is not an engine error, so
+    /// its words are here and not in the generated table, the same choice
+    /// `keyStore` makes.
+    enum mount {
+        static let failedStopped = "The Finder mount did not start."
+        static let failedWhyFormat = "%@"
+        static func failedWhy(reason: String) -> String {
+            String(format: failedWhyFormat, reason)
+        }
+        static let failedToDo = "Try again. If it keeps failing, restart Ferry."
+    }
 }

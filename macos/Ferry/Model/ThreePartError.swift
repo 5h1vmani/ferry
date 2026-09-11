@@ -57,6 +57,9 @@ extension ThreePartError {
         if let keyError = error as? KeyStoreError {
             return keyError.threePart(canRetry: canRetry)
         }
+        if let mountError = error as? FinderMountError {
+            return mountError.threePart(canRetry: canRetry)
+        }
         return ThreePartError(
             whatStopped: S.common.unknownErrorStopped,
             why: S.common.unknownErrorWhy(code: String(describing: type(of: error))),

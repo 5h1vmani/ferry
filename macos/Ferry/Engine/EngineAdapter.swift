@@ -6,12 +6,12 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// Three items in docs/engine-contract.md have no field in the engine yet: 6,
-// 12, and 14. Each one is marked `TODO(engine N)`, where N is its
-// item number, and each has a default here that is honest: a missing count
-// is absent, not zero, and a missing sentence is left out, not guessed.
-// That is the three-part rule from docs/voice.md applied to the boundary
-// rather than to prose.
+// Two items in docs/engine-contract.md have no field in the engine yet: 12
+// and 14. Each one is marked `TODO(engine N)`, where N is its item number,
+// and each has a default here that is honest: a missing count is absent,
+// not zero, and a missing sentence is left out, not guessed. That is the
+// three-part rule from docs/voice.md applied to the boundary rather than to
+// prose.
 //
 //   grep -rn "TODO(engine" macos/
 //
@@ -210,12 +210,10 @@ enum EngineAdapter {
 
     /// Whether the phone's folders are mounted in Finder, and where.
     ///
-    /// TODO(engine 6): nothing reports mount state, and the choice of who
-    /// owns it — the engine, or this app through FSKit — is open. Until it
-    /// is made there is nothing true to say, so the Access section is
-    /// absent rather than showing a negative.
-    static func mount(forDevice keyHex: String) -> MountSnapshot {
-        .notMounted
+    /// `info` is `nil` once the device is forgotten, between the moment
+    /// its row disappears and the moment a view stops asking about it.
+    static func mount(_ info: DeviceInfo?) -> MountSnapshot {
+        MountSnapshot(path: info?.mountPath)
     }
 
     /// The folders this Mac serves, from the engine's own `roots()`.
