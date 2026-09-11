@@ -42,7 +42,7 @@ enum FerryErrors {
         "OpError::IsADirectory": (stopped: "The file could not be read.", why: "That path is a folder, not a file.", todo: "Choose a file."),
         "OpError::NotADirectory": (stopped: "The folder could not be opened.", why: "That path is a file, not a folder.", todo: "Choose a folder."),
         "OpError::NotEmpty": (stopped: "The folder was not deleted.", why: "It still holds files.", todo: "Delete the files inside it first."),
-        "OpError::NotFound": (stopped: "The file was not found.", why: "It is no longer at that path.", todo: "Refresh and try again."),
+        "OpError::NotFound": (stopped: "The file was not found.", why: "It is no longer at that path.", todo: "Try again."),
         "OpError::PermissionDenied": (stopped: "The file could not be accessed.", why: "The device refused access to it.", todo: "Check the shared folder setting on that device."),
         "OpError::RangeTooLarge": (stopped: "The request was refused.", why: "It asked for more than one message may carry.", todo: "Update Ferry on both devices."),
         "OpError::Unsupported": (stopped: "The item was skipped.", why: "It is not a regular file or a folder.", todo: "Nothing to do. Ferry serves files and folders only."),

@@ -45,7 +45,7 @@ object FerryErrors {
         "OpError::IsADirectory" to Words("The file could not be read.", "That path is a folder, not a file.", "Choose a file."),
         "OpError::NotADirectory" to Words("The folder could not be opened.", "That path is a file, not a folder.", "Choose a folder."),
         "OpError::NotEmpty" to Words("The folder was not deleted.", "It still holds files.", "Delete the files inside it first."),
-        "OpError::NotFound" to Words("The file was not found.", "It is no longer at that path.", "Refresh and try again."),
+        "OpError::NotFound" to Words("The file was not found.", "It is no longer at that path.", "Try again."),
         "OpError::PermissionDenied" to Words("The file could not be accessed.", "The device refused access to it.", "Check the shared folder setting on that device."),
         "OpError::RangeTooLarge" to Words("The request was refused.", "It asked for more than one message may carry.", "Update Ferry on both devices."),
         "OpError::Unsupported" to Words("The item was skipped.", "It is not a regular file or a folder.", "Nothing to do. Ferry serves files and folders only."),

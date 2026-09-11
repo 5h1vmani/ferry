@@ -184,7 +184,7 @@
     "OpError::NotFound": {
       "stopped": "The file was not found.",
       "why": "It is no longer at that path.",
-      "todo": "Refresh and try again."
+      "todo": "Try again."
     },
     "OpError::PermissionDenied": {
       "stopped": "The file could not be accessed.",
