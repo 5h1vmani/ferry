@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 use ferry_core::adb::{Adb, find_adb};
 use ferry_core::chunk::ChunkSize;
 use ferry_core::discovery::{Advertiser, Browser, Event};
-use ferry_core::limits::{MAX_READ_LEN, MAX_SERVING_PER_PEER, MAX_WRITE_LEN};
+use ferry_core::limits::{
+    MAX_INBOUND_CONNECTIONS, MAX_READ_LEN, MAX_SERVING_PER_PEER, MAX_WRITE_LEN,
+};
 use ferry_core::localfs::LocalFs;
 use ferry_core::noise::{NoiseError, PublicKey, QR_NONCE_LEN, SecureStream, StaticKey};
 use ferry_core::offer::{Offer, PairingError as OfferError};
@@ -336,6 +338,16 @@ pub(crate) struct Shared {
     /// [`Engine::accepted_connections`], and it reads a difference across
     /// the calls it makes rather than an absolute count.
     pub(crate) accepted: AtomicU64,
+    /// How many inbound connections are alive right now: accepted, and
+    /// still being served by their own thread, regardless of the mode that
+    /// connection agreed to or which peer, if any, it authenticates as.
+    ///
+    /// Unlike `accepted`, this counts down too, as each thread ends.
+    /// `docs/audits/fable-engineering.md`, finding 2: `accept_loop`
+    /// refuses to spawn a thread once this reaches
+    /// [`MAX_INBOUND_CONNECTIONS`], the same way `ferry_core::tcp` refuses
+    /// a pending handshake past its own cap.
+    pub(crate) inbound: AtomicU32,
     /// One connection pool per device key, made on first use by
     /// [`Shared::pool_for`] and dropped by `forget` and by `stop`.
     ///
@@ -916,6 +928,7 @@ impl Engine {
             next_connection: AtomicU64::new(0),
             mounts: dav::MountRegistry::new(),
             accepted: AtomicU64::new(0),
+            inbound: AtomicU32::new(0),
             pools: Mutex::new(HashMap::new()),
             sockets: Mutex::new(HashMap::new()),
             download_dir: Mutex::new(PathBuf::from(&config.download_dir)),
@@ -2761,6 +2774,30 @@ pub fn welcomes_inbound(
     wifi_presence || pairing_accepts_inbound || (reachable && remote.ip().is_loopback())
 }
 
+/// Reserves one of [`MAX_INBOUND_CONNECTIONS`] slots, or `None` when the
+/// engine already holds that many. Mirrors `ConnectionSlot` in
+/// `dav/server.rs`: a slot can only be created while one is free, and
+/// dropping it is the only way to free one again, so the count can never
+/// be missed or double counted. `docs/audits/fable-engineering.md`,
+/// finding 2.
+struct InboundSlot(Arc<Shared>);
+
+impl Drop for InboundSlot {
+    fn drop(&mut self) {
+        self.0.inbound.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn reserve_inbound_slot(shared: &Arc<Shared>) -> Option<InboundSlot> {
+    shared
+        .inbound
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+            (current < MAX_INBOUND_CONNECTIONS).then_some(current + 1)
+        })
+        .ok()?;
+    Some(InboundSlot(Arc::clone(shared)))
+}
+
 /// Accept connections until the engine stops.
 fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
     while !shared.stopping() {
@@ -2790,10 +2827,30 @@ fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
             drop(pending);
             continue;
         }
+        // `docs/audits/fable-engineering.md`, finding 2: a peer on a
+        // trusted network could otherwise open connections in a loop
+        // until thread creation itself failed. Refused here, before a
+        // thread is even asked for, the same way a pending handshake past
+        // its own cap is refused in `ferry_core::tcp`.
+        let Some(slot) = reserve_inbound_slot(shared) else {
+            drop(pending);
+            continue;
+        };
         shared.accepted.fetch_add(1, Ordering::SeqCst);
         let shared = Arc::clone(shared);
         // A serving thread is not joined. See the crate documentation.
-        drop(std::thread::spawn(move || handle_inbound(&shared, pending)));
+        //
+        // `Builder::spawn` rather than the panicking `thread::spawn`: when
+        // the OS refuses a new thread, `pending` (moved into the closure
+        // below) is simply dropped along with it, closing the socket, and
+        // the accept loop keeps running instead of taking the whole
+        // engine down with it. `docs/audits/fable-engineering.md`,
+        // finding 2.
+        let spawned = std::thread::Builder::new().spawn(move || {
+            let _slot = slot;
+            handle_inbound(&shared, pending);
+        });
+        drop(spawned);
     }
 }
 
@@ -3305,12 +3362,23 @@ fn hello_with_deadline(
     let stopping = Arc::clone(&shared.stopping);
     // Not joined. It ends when the exchange ends, or when the wrapper below
     // fails the next read because the engine is stopping.
-    drop(std::thread::spawn(move || {
+    //
+    // `Builder::spawn` rather than the panicking `thread::spawn`:
+    // `docs/audits/fable-engineering.md`, finding 2, names this spawn as
+    // the same unguarded pattern `accept_loop`'s had. A refused thread is
+    // reported as `FrameError::Io`, the same code a real I/O failure on
+    // this exchange would carry, instead of taking the engine down with
+    // it.
+    let spawned = std::thread::Builder::new().spawn(move || {
         let mut stream = StopAware::new(stream, stopping);
         let outcome =
             exchange_hello(&mut stream, &my_name, my_kind).map(|(name, kind)| (name, kind, stream));
         drop(sender.send(outcome));
-    }));
+    });
+    if spawned.is_err() {
+        return Err(failed("FrameError::Io"));
+    }
+    drop(spawned);
 
     let deadline = Instant::now() + FINISH_PAIRING_DEADLINE;
     loop {

@@ -521,6 +521,37 @@ Test: `crates/ferry-runtime/tests/security_bounds.rs`. A fifth silent
 connection to the bridge is refused at once; once the first four have
 timed out, an authenticated connection is still served normally.
 
+**16g. A cap on inbound connections overall, `docs/audits/fable-engineering.md`
+finding 2.** `MAX_PENDING_HANDSHAKES` only bounds a connection before its
+own handshake finishes, and `MAX_SERVING_PER_PEER` only bounds connections
+already identified as one particular paired peer, so nothing stopped the
+total number of threads `accept_loop` could have running at once from
+growing without bound, one per connection a peer on a trusted network
+chose to open. That growth could also panic the whole engine: every
+accepted connection got one thread from the panicking `std::thread::spawn`,
+so a host that ran out of threads to give brought the accept loop down
+with it instead of just refusing the connection that asked for one too
+many.
+
+- `MAX_INBOUND_CONNECTIONS = 64`, in `ferry-core`'s `limits.rs`. Counted on
+  `Shared`, from the moment `accept_loop` reserves a slot for an accepted,
+  welcomed connection until the thread serving it ends, regardless of the
+  mode that connection agreed to or which peer, if any, it authenticates
+  as. A 65th is refused at once, before a thread is even asked for, the
+  same way `ferry_core::tcp::Listener` refuses a ninth pending handshake.
+- `accept_loop`'s own spawn, and the one `hello_with_deadline` makes for a
+  pairing's post-confirm name exchange, both moved from the panicking
+  `std::thread::spawn` to `std::thread::Builder::spawn`, matching
+  `dav/server.rs`'s bridge. A thread the OS refuses now drops the
+  connection and carries on, for `accept_loop`, or reports
+  `FrameError::Io`, for the name exchange, instead of taking the engine
+  down with it.
+
+Test: `crates/ferry-runtime/tests/security_bounds.rs`. A 65th inbound
+connection is refused while 64, each its own paired peer, are still held
+open; once all 64 close, the accept loop still accepts and serves a fresh
+connection normally.
+
 ### 14. Automatic copying, job 7: built
 
 ```rust

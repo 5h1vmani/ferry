@@ -185,6 +185,44 @@ fn build(name: &str) -> Side {
     }
 }
 
+/// As [`build`], but seeds the engine's own peer store with `peer_keys`
+/// first, so each is already paired without running the pairing handshake.
+/// Only the inbound-connection-cap test below needs more than one stored
+/// peer at once.
+fn build_with_peers(name: &str, peer_keys: &[KeyPair]) -> Side {
+    let data = tempfile::tempdir().expect("a temporary folder for engine files");
+    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
+    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
+    let key = generate_key().expect("a fresh key pair");
+    for (n, peer_key) in peer_keys.iter().enumerate() {
+        common::seed_peer(
+            data.path(),
+            peer_key,
+            &format!("Peer {n}"),
+            RuntimeDeviceKind::Phone,
+        );
+    }
+    let inbox = Arc::new(Inbox::default());
+    let engine = make_engine(
+        name,
+        key.clone(),
+        data.path(),
+        shared.path(),
+        download.path(),
+        &inbox,
+    )
+    .expect("the engine should build from a good config");
+    engine.start().expect("the engine should start");
+    Side {
+        engine,
+        inbox,
+        key,
+        _data: data,
+        _shared: shared,
+        _download: download,
+    }
+}
+
 /// The address another engine, or a raw client, in this process can dial.
 fn loopback_addr(side: &Side) -> SocketAddr {
     let bound = side.engine.listen_addr().expect("a bound listener");
@@ -497,6 +535,85 @@ fn silent_connections_to_the_bridge_do_not_stop_an_authenticated_one() {
     drop(fifth);
     mac.engine.stop();
     phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// `docs/audits/fable-engineering.md`, finding 2: a cap on inbound
+// connections, across every peer.
+// ---------------------------------------------------------------------------
+
+/// The sixty-fifth inbound connection is refused while sixty-four, each a
+/// different paired peer's, are still open, per
+/// `ferry_core::limits::MAX_INBOUND_CONNECTIONS`. Once all sixty-four close,
+/// the accept loop still accepts normally.
+///
+/// Before the fix, `accept_loop` capped nothing beyond the pending-handshake
+/// limits `ferry_core::tcp::Listener` already enforces, and those only bound
+/// a connection before its own handshake finished. Sixty-four connections,
+/// each already past that point and each its own paired peer so
+/// `MAX_SERVING_PER_PEER` (finding 5) never touches them, would not have
+/// stopped a sixty-fifth from being accepted and served too.
+///
+/// Held past their own handshake rather than during it: `net.accept`'s own
+/// `MAX_PENDING_HANDSHAKES`, eight overall, would refuse a ninth connection
+/// still mid-handshake long before this cap's own sixty-four could ever be
+/// reached, on this or any other test that tried to hold that many
+/// connections still negotiating at once. Each of the sixty-four below
+/// finishes its handshake and its name exchange, the way a real serving
+/// connection would, before the next one dials.
+#[test]
+fn the_sixty_fifth_inbound_connection_is_refused_while_sixty_four_are_held() {
+    let peer_keys: Vec<KeyPair> = (0..ferry_core::limits::MAX_INBOUND_CONNECTIONS)
+        .map(|_| generate_key().expect("a fresh key pair"))
+        .collect();
+    let target = build_with_peers("Target", &peer_keys);
+    target.engine.set_reachable(true);
+    let addr = loopback_addr(&target);
+    let target_public = public_key(&target.key);
+
+    // Each connects as its own already-paired peer and is served: the name
+    // exchange only a served connection answers completes. None sends
+    // another request after that, so each holds its inbound slot, and its
+    // thread, open until this test drops it.
+    let mut held = Vec::with_capacity(peer_keys.len());
+    for (n, peer_key) in peer_keys.iter().enumerate() {
+        let dialing_key = static_key(peer_key);
+        let connection = tcp::connect(addr, &dialing_key, &target_public)
+            .unwrap_or_else(|error| panic!("connection {n} should be accepted: {error}"));
+        let mut stream = connection.stream;
+        exchange_hello(&mut stream, &format!("Peer {n}"), CoreDeviceKind::Phone)
+            .unwrap_or_else(|error| panic!("connection {n} should be served: {error}"));
+        held.push(stream);
+    }
+
+    // The sixty-fifth needs no identity of its own: the cap is checked in
+    // `accept_loop`, before any handshake runs, so a plain silent
+    // connection is refused the same way a real one would be.
+    let mut sixty_fifth = TcpStream::connect(addr).expect("the accept itself is never refused");
+    sixty_fifth
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("a read timeout can be set");
+    let mut buf = [0u8; 1];
+    match sixty_fifth.read(&mut buf) {
+        Ok(0) => {}
+        other => panic!(
+            "expected the sixty-fifth inbound connection to be refused at once, got {other:?}"
+        ),
+    }
+
+    // The cap is a live count, not something that latches once tripped: once
+    // the sixty-four holders close, the accept loop must accept and serve a
+    // fresh connection normally again.
+    drop(held);
+    // A generous margin for each of the sixty-four served threads to notice
+    // its socket closed and free its slot.
+    std::thread::sleep(Duration::from_millis(300));
+    let reconnect_key = static_key(&peer_keys[0]);
+    let mut reconnected = tcp::connect(addr, &reconnect_key, &target_public)
+        .expect("the accept loop should still accept once the sixty-four holders have closed")
+        .stream;
+    exchange_hello(&mut reconnected, "Peer 0", CoreDeviceKind::Phone)
+        .expect("a fresh connection should be served normally again");
 }
 
 // ---------------------------------------------------------------------------

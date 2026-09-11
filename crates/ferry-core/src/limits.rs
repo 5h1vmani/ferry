@@ -15,10 +15,11 @@
 //! it.
 //!
 //! Every constant here is enforced somewhere in this crate, save for
-//! [`MAX_SERVING_PER_PEER`], which `ferry-runtime` enforces because it is
-//! the crate that runs the server loop a paired connection is served from.
-//! A limit that nothing checks belongs in the plan, not in a module named
-//! `limits`.
+//! [`MAX_SERVING_PER_PEER`] and [`MAX_INBOUND_CONNECTIONS`], which
+//! `ferry-runtime` enforces because it is the crate that runs the server
+//! loop a paired connection is served from, and the accept loop every
+//! inbound connection first arrives on. A limit that nothing checks
+//! belongs in the plan, not in a module named `limits`.
 
 /// The largest frame payload, in bytes.
 ///
@@ -132,6 +133,20 @@ pub const MAX_PENDING_HANDSHAKES_PER_ADDR: u32 = 2;
 /// connection the same way `tcp::Listener` refuses a ninth pending one:
 /// dropped at once, nothing reported.
 pub const MAX_SERVING_PER_PEER: u32 = 8;
+
+/// The largest number of inbound connections that may be alive at once,
+/// counted across every peer and every mode a connection may agree to.
+///
+/// `docs/audits/fable-engineering.md`, finding 2: `MAX_PENDING_HANDSHAKES`
+/// only bounds a connection before its handshake finishes, and
+/// [`MAX_SERVING_PER_PEER`] only bounds connections already identified as
+/// one particular paired peer, so neither stopped the total number of
+/// threads `accept_loop` could have running at once from growing without
+/// bound, one per connection a peer on a trusted network chose to open.
+/// `ferry_runtime::engine`'s `accept_loop` enforces this, refusing to
+/// spawn a 65th thread the same way `tcp::Listener` refuses a ninth
+/// pending handshake: dropped at once, nothing reported.
+pub const MAX_INBOUND_CONNECTIONS: u32 = 64;
 
 /// The largest number of reads one byte range may take.
 ///
