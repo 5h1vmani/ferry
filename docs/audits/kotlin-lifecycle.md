@@ -37,3 +37,7 @@ Finding 1 was fixed in the engine, not the app: commit "Lock the data directory 
 - The extra `startPairing(Code)` call from the `LaunchedEffect` at `PairingScreen.kt:103` changes no engine state. The engine refuses a second call while pairing runs, and reports the same state again.
 - `forget`, `retry`, `retryBatch`, and `offerScanned` all run on `Dispatchers.IO`. The crate doc names those as the calls that block.
 - The manifest declares the camera as a feature that is not required, so a phone with no camera can still install Ferry.
+
+## Fix pass, 11 September 2026
+
+Findings 2 through 15 are fixed, one commit per finding. Finding 1 is not fixed here: it is being fixed inside the engine by another builder, so this pass left every lock file alone.
