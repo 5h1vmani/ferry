@@ -17,6 +17,7 @@ import uniffi.ferry_runtime.Engine
 import uniffi.ferry_runtime.EngineListener
 import uniffi.ferry_runtime.FerryException
 import uniffi.ferry_runtime.KeyPair
+import uniffi.ferry_runtime.PairingMethod
 import uniffi.ferry_runtime.PairingState
 import uniffi.ferry_runtime.Root
 import uniffi.ferry_runtime.TransferInfo
@@ -203,11 +204,13 @@ object FerryEngine {
         _shortCode.value = current.shortCode()
     }
 
-    // Enters pairing. The phone waits for one Mac and reports the code
-    // through the listener.
+    // Enters pairing by code. The phone waits for one Mac and reports the
+    // code through the listener. The scan method is the Mac's half of item
+    // 12; the phone's camera screen is a later, Kotlin-side design pass, so
+    // this always asks for Code.
     fun startPairing() {
         _error.value = null
-        engine?.startPairing()
+        engine?.startPairingWith(PairingMethod.CODE)
     }
 
     // Accepts or rejects the Mac whose code is showing.

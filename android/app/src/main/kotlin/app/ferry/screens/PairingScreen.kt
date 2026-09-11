@@ -100,6 +100,15 @@ fun PairingScreen(
                 is PairingState.Waiting -> WaitingContent(shortCode = shortCode, onCancel = cancel)
                 is PairingState.Found -> WaitingContent(shortCode = shortCode, onCancel = cancel)
 
+                // Offering and Requested are the Mac's half of the scan
+                // method (item 12); this phone never starts pairing by
+                // scan today, so it never sees either, but the sealed
+                // class still needs a branch for both. The phone's own
+                // scan screen is a later, Kotlin-side design pass; until
+                // then this is the same honest "waiting" screen as Idle.
+                is PairingState.Offering -> WaitingContent(shortCode = shortCode, onCancel = cancel)
+                is PairingState.Requested -> WaitingContent(shortCode = shortCode, onCancel = cancel)
+
                 is PairingState.Code -> PairingCode(
                     code = groupOfThree(current.code),
                     onConfirm = { FerryEngine.confirmPairing(true) },
