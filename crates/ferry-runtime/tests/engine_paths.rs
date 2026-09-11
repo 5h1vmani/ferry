@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use ferry_core::noise::{PublicKey, StaticKey};
+use ferry_core::noise::{PublicKey, SecureStream, StaticKey};
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
 use ferry_core::peers::DeviceKind;
@@ -2430,4 +2430,158 @@ fn an_operation_served_just_before_stop_is_in_the_log_after_a_restart() {
     assert_eq!(entry.bytes, Some(5));
 
     engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Finding E8: access log behaviours the audit found untested.
+// ---------------------------------------------------------------------------
+
+/// Connect a paired peer to `phone` and finish the name exchange, ready to
+/// send file operations. Shared by every finding E8 test below.
+fn connect_paired_peer<F>(phone: &Side, peer: &Peer<F>) -> Client<SecureStream> {
+    let connection = tcp::connect(
+        loopback_addr(phone),
+        &static_key(&peer.key),
+        &public_key(&phone.key),
+    )
+    .expect("a paired peer should be able to connect");
+    let mut stream = connection.stream;
+    exchange_hello(&mut stream, "Fake", DeviceKind::Phone).expect("the name exchange runs");
+    Client::new(stream)
+}
+
+#[test]
+fn set_mtime_is_never_logged() {
+    let phone = build("Pixel 3 XL");
+    phone.engine.set_reachable(true);
+    std::fs::write(phone.shared_root().join("note.txt"), b"hello")
+        .expect("the shared folder should accept a file");
+    let peer = start_peer(&phone.key, sample_bytes(16));
+    pair_with_peer(&phone, &peer);
+    peer.close();
+
+    let mut client = connect_paired_peer(&phone, &peer);
+    let path = RemotePath::parse("Root/note.txt").expect("a valid path");
+    client
+        .set_mtime(&path, 1_700_000_000)
+        .expect("a paired peer may set the mtime of a file it can write");
+
+    // Close the connection so the served side finalises anything it had
+    // pending, if there were anything to finalise.
+    drop(client);
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert!(
+        phone.engine.access_log(None, 10).is_empty(),
+        "set_mtime always follows a write that is already logged, so it logs nothing of its own"
+    );
+    phone.engine.stop();
+}
+
+#[test]
+fn a_failed_operation_is_never_logged() {
+    let phone = build("Pixel 3 XL");
+    phone.engine.set_reachable(true);
+    std::fs::write(phone.shared_root().join("note.txt"), b"hello")
+        .expect("the shared folder should accept a file");
+    let peer = start_peer(&phone.key, sample_bytes(16));
+    pair_with_peer(&phone, &peer);
+    peer.close();
+
+    let mut client = connect_paired_peer(&phone, &peer);
+
+    let missing = RemotePath::parse("Root/missing.bin").expect("a valid path");
+    match client.stat(&missing) {
+        Err(RpcError::Remote(OpError::NotFound)) => {}
+        other => panic!("a stat on a missing file should be refused, got {other:?}"),
+    }
+
+    let real = RemotePath::parse("Root/note.txt").expect("a valid path");
+    client
+        .stat(&real)
+        .expect("a stat on a file that exists should succeed");
+
+    drop(client);
+    poll_until("the served stat to be logged", || {
+        !phone.engine.access_log(None, 10).is_empty()
+    });
+
+    let found = phone.engine.access_log(None, 10);
+    assert_eq!(
+        found.len(),
+        1,
+        "only the successful stat is logged, not the failed one"
+    );
+    assert_eq!(found[0].path, "Root/note.txt");
+    phone.engine.stop();
+}
+
+#[test]
+fn rename_logs_the_destination_not_the_source() {
+    let phone = build("Pixel 3 XL");
+    phone.engine.set_reachable(true);
+    std::fs::write(phone.shared_root().join("old.txt"), b"hello")
+        .expect("the shared folder should accept a file");
+    let peer = start_peer(&phone.key, sample_bytes(16));
+    pair_with_peer(&phone, &peer);
+    peer.close();
+
+    let mut client = connect_paired_peer(&phone, &peer);
+    let from = RemotePath::parse("Root/old.txt").expect("a valid path");
+    let to = RemotePath::parse("Root/new.txt").expect("a valid path");
+    client
+        .rename(&from, &to)
+        .expect("a paired peer may rename a file it can write");
+
+    drop(client);
+    poll_until("the served rename to be logged", || {
+        !phone.engine.access_log(None, 10).is_empty()
+    });
+
+    let found = phone.engine.access_log(None, 10);
+    let entry = found
+        .iter()
+        .find(|e| e.verb == AccessVerb::Rename)
+        .expect("the rename should be logged");
+    assert_eq!(
+        entry.path, "Root/new.txt",
+        "the destination is logged, not the source"
+    );
+    phone.engine.stop();
+}
+
+#[test]
+fn forget_keeps_the_devices_access_log_entries() {
+    let phone = build("Pixel 3 XL");
+    phone.engine.set_reachable(true);
+    std::fs::write(phone.shared_root().join("note.txt"), b"hello")
+        .expect("the shared folder should accept a file");
+    let peer = start_peer(&phone.key, sample_bytes(16));
+    pair_with_peer(&phone, &peer);
+    peer.close();
+
+    let mut client = connect_paired_peer(&phone, &peer);
+    let path = RemotePath::parse("Root/note.txt").expect("a valid path");
+    client.read(&path, 0, 5).expect("a paired peer may read");
+    drop(client);
+
+    poll_until("the read to be logged before forget", || {
+        !phone.engine.access_log(None, 10).is_empty()
+    });
+    let before = phone.engine.access_log(None, 10);
+    assert_eq!(before.len(), 1);
+
+    phone
+        .engine
+        .forget(key_hex(&peer.key))
+        .expect("a paired device can be forgotten");
+
+    let after = phone.engine.access_log(None, 10);
+    assert_eq!(
+        after.len(),
+        1,
+        "forget removes the device's peer entry and transfers, not its access log"
+    );
+    assert_eq!(after[0].id, before[0].id);
+    phone.engine.stop();
 }
