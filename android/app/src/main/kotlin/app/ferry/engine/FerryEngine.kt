@@ -320,8 +320,11 @@ object FerryEngine {
             try {
                 current.offerScanned(payload)
             } catch (e: FerryException) {
+                // _scanSent stays true. Clearing it would reopen the
+                // camera on the same code and send it again at once,
+                // failing the same way in a loop. The pairing screen
+                // shows the error instead and offers the code method.
                 _error.value = e
-                _scanSent.value = false
             }
         }
     }

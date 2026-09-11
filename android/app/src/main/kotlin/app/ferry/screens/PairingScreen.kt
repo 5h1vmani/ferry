@@ -86,6 +86,7 @@ fun PairingScreen(
     val shortCode by FerryEngine.shortCode.collectAsState()
     val scanSent by FerryEngine.scanSent.collectAsState()
     val reachable by FerryEngine.reachable.collectAsState()
+    val error by FerryEngine.error.collectAsState()
 
     val step = pairingStepOf(
         state = state,
@@ -176,18 +177,34 @@ fun PairingScreen(
                 }
 
                 is PairingStep.Scanned -> Padded {
-                    // The Mac holds the next step: it asks the one question
-                    // a scan leaves, and this phone asks nothing.
-                    Text(
-                        text = step.deviceName?.let {
-                            stringResource(R.string.pairing_scanned_named, it)
-                        } ?: stringResource(R.string.pairing_scanned),
-                        style = FerryFont.title(),
-                        color = FerryColor.text(),
-                    )
-                    Spacer(Modifier.height(FerrySpace.s5))
-                    TextButton(onClick = cancel) {
-                        Text(stringResource(R.string.action_cancel))
+                    val failure = error
+                    if (failure != null) {
+                        // The engine refused the scan. _scanSent stays
+                        // true, so the camera does not reopen and send it
+                        // again; this is where the person finds out why,
+                        // in the engine's own words, with the other way
+                        // in as the way out.
+                        ErrorBlock(error = threePartError(failure))
+                        Spacer(Modifier.height(FerrySpace.s4))
+                        AlternativeButton(
+                            label = stringResource(R.string.pairing_use_code_instead),
+                            onClick = useCode,
+                        )
+                    } else {
+                        // The Mac holds the next step: it asks the one
+                        // question a scan leaves, and this phone asks
+                        // nothing.
+                        Text(
+                            text = step.deviceName?.let {
+                                stringResource(R.string.pairing_scanned_named, it)
+                            } ?: stringResource(R.string.pairing_scanned),
+                            style = FerryFont.title(),
+                            color = FerryColor.text(),
+                        )
+                        Spacer(Modifier.height(FerrySpace.s5))
+                        TextButton(onClick = cancel) {
+                            Text(stringResource(R.string.action_cancel))
+                        }
                     }
                 }
 
