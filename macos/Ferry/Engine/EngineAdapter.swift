@@ -53,10 +53,21 @@ enum EngineAdapter {
     /// shows them: one row per batch from `batches()`, plus one row per
     /// transfer that names no batch, which is every transfer a single
     /// `pull` made.
+    ///
+    /// `transfers` and `batches` are two separate calls, not one snapshot,
+    /// so a transfer whose `batchId` names a batch that call did not (yet,
+    /// or any more) return is possible, not just theoretical. Such a
+    /// transfer is kept as its own row rather than dropped: a row lost to a
+    /// timing gap between two reads is worse than one shown without its
+    /// batch for a moment.
     static func groups(transfers: [TransferInfo], batches: [BatchInfo]) -> [TransferGroupSnapshot] {
         let batchGroups = batches.map(group)
+        let batchIDs = Set(batches.map(\.id))
         let singleGroups = transfers
-            .filter { $0.batchId == nil }
+            .filter { transfer in
+                guard let batchId = transfer.batchId else { return true }
+                return !batchIDs.contains(batchId)
+            }
             .map(group)
         return batchGroups + singleGroups
     }
@@ -73,18 +84,18 @@ enum EngineAdapter {
             bytesDone: batch.bytesDone,
             bytesTotal: batch.bytesTotal,
             speedBytesPerSec: batch.speedBytesPerSec,
-            // A batch carries no single transport (docs/engine-contract.md,
-            // item 2): its files can move on different ones, so the badge
-            // that reads this states none rather than picking one.
-            transport: nil,
-            // A batch carries no single error either. Its transfers can
-            // fail for different reasons, so a failed batch's row states no
-            // words until the contract carries one.
-            error: nil,
+            // The transport of whichever transfer in the batch is active
+            // right now, or none while none are (docs/engine-contract.md,
+            // item 2).
+            transport: batch.transport,
+            // The first failed transfer's error, so a failed batch's row
+            // says why, the same as a failed single transfer's row does.
+            error: batch.error.map { ThreePartError($0, canRetry: batch.state == .failed) },
             chunks: nil,
             duration: batch.endedUnixSecs.map {
                 FerryFormat.duration(seconds: $0 - batch.startedUnixSecs)
-            }
+            },
+            retryTarget: .batch(id: batch.id)
         )
     }
 
@@ -115,7 +126,8 @@ enum EngineAdapter {
             chunks: chunks(for: transfer),
             duration: transfer.endedUnixSecs.map {
                 FerryFormat.duration(seconds: $0 - transfer.startedUnixSecs)
-            }
+            },
+            retryTarget: .transfer(id: transfer.id)
         )
     }
 

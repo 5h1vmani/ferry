@@ -358,6 +358,18 @@ final class EngineModel: ObservableObject {
         }
     }
 
+    /// Restarts every failed transfer in a batch.
+    func retryBatch(batchId: String) {
+        guard let engine else { return }
+        Task.detached { [weak self] in
+            do {
+                try engine.retryBatch(batchId: batchId)
+            } catch {
+                await self?.report(error)
+            }
+        }
+    }
+
     /// Removes a device's key and every transfer record for it.
     func forget(keyHex: String) {
         guard let engine else { return }

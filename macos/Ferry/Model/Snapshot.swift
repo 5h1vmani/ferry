@@ -109,6 +109,16 @@ enum TransferOrigin: Equatable {
     case automatic
 }
 
+/// How a failed group's row is retried: the whole batch, or the one
+/// transfer it stands for. Decided once, by the adapter that already knows
+/// which `BatchInfo` or `TransferInfo` a group came from, so a view calls
+/// the right engine method without inspecting either engine type itself
+/// (docs/engine-contract.md, item 2).
+enum TransferRetryTarget: Equatable {
+    case transfer(id: String)
+    case batch(id: String)
+}
+
 /// Several transfers started by one action, shown as one row: "DCIM/Camera,
 /// 120 files". A single file is a group of one and renders the same way.
 ///
@@ -137,6 +147,8 @@ struct TransferGroupSnapshot: Equatable, Identifiable {
     /// own timestamps (docs/engine-contract.md, item 9). Nil until the
     /// group ends.
     let duration: String?
+    /// Which engine call a retry on this row makes.
+    let retryTarget: TransferRetryTarget
 
     var fraction: Double {
         guard bytesTotal > 0 else { return 0 }

@@ -63,7 +63,10 @@ struct DeviceDetail: View {
                 } else {
                     ForEach(groups) { group in
                         TransferRow(group: group) {
-                            model.retry(transferId: group.id)
+                            switch group.retryTarget {
+                            case .transfer(let id): model.retry(transferId: id)
+                            case .batch(let id): model.retryBatch(batchId: id)
+                            }
                         }
                     }
                 }
