@@ -39,6 +39,22 @@
 //! on it, or the connection ends. `set_mtime` is never logged, because it
 //! always follows a write that already is.
 //!
+//! A recursive walk pages one folder at a time, but it does not have to
+//! finish paging a folder before it descends into a subfolder it already
+//! saw a page of: on the serving side, that shows up as the same connection
+//! listing `"Camera"`, then `"Camera/Sub"`, then `"Camera"` again to finish
+//! it. Touching `"Camera/Sub"` finalises the pending `"Camera"` entry, since
+//! a connection only has one path open at a time; touching `"Camera"` again
+//! afterwards starts a fresh pending entry rather than reopening the one
+//! already written out. So the parent folder's `List` ends up as more than
+//! one entry on the serving side, one per unbroken run of pages on it,
+//! rather than the single entry its own walk might suggest. This is
+//! accepted rather than fixed: the alternative is keeping a pending entry
+//! alive per path a connection has ever paused on, which is only bounded by
+//! how deep and how interleaved a walk chooses to be, where finalising on
+//! every path change keeps the pending table at at most a few entries no
+//! matter how a walk is shaped.
+//!
 //! # Where it is wired in
 //!
 //! `engine.rs` opens the store at `start` from `data_dir`, holds the

@@ -88,9 +88,21 @@
 //!     /// connections finish, new ones are refused.
 //!     pub fn set_reachable(&self, on: bool);
 //!
+//!     /// Whether this engine accepts connections, what port it listens on,
+//!     /// and whether `adb` was found.
+//!     pub fn status(&self) -> Status;
+//!
 //!     pub fn devices(&self) -> Vec<DeviceInfo>;
 //!     /// Forget a device: remove its key and every transfer record for it.
 //!     pub fn forget(&self, key_hex: String) -> Result<(), FerryError>;
+//!
+//!     /// The roots currently served.
+//!     pub fn roots(&self) -> Vec<Root>;
+//!     /// Replace the served roots. Reaches every already-connected peer on
+//!     /// its next operation; nobody needs to reconnect.
+//!     pub fn set_roots(&self, roots: Vec<Root>) -> Result<(), FerryError>;
+//!     /// Change where a pulled file lands, making the folder if needed.
+//!     pub fn set_download_dir(&self, path: String) -> Result<(), FerryError>;
 //!
 //!     /// Enter pairing. The Mac browses mDNS and polls adb, and reports
 //!     /// candidates through the listener. The phone accepts one XX handshake
@@ -115,6 +127,17 @@
 //!     /// cursor on its own and returns every entry. Blocks for the round
 //!     /// trip, so the app calls it off the main thread.
 //!     pub fn list(&self, device_key_hex: String, remote_path: String) -> Result<Vec<Entry>, FerryError>;
+//!     /// Copy a whole folder. Lists it over the connection, then queues one
+//!     /// transfer per file under a new batch. Blocks until the listing is
+//!     /// done, so the app calls it off the main thread, as it does `list`.
+//!     pub fn pull_folder(&self, device_key_hex: String, remote_path: String) -> Result<String, FerryError>;
+//!     pub fn batches(&self) -> Vec<BatchInfo>;
+//!     /// Retry every `Failed` transfer in a batch.
+//!     pub fn retry_batch(&self, batch_id: String) -> Result<(), FerryError>;
+//!
+//!     /// The access log, newest first. `None` for `device_key_hex` returns
+//!     /// every device's. `limit` is capped at 1,000.
+//!     pub fn access_log(&self, device_key_hex: Option<String>, limit: u32) -> Vec<AccessEntry>;
 //! }
 //! ```
 //!
