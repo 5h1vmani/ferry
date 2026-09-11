@@ -29,32 +29,42 @@ does not care which transport provides that stream.
 
 ## 3. Version negotiation
 
-Every connection starts with seven bytes from each side, before anything else:
+Every connection starts with eight bytes from each side, before anything else:
 
 ```text
-[5 bytes "FERRY"][u16 highest supported version]
+[5 bytes "FERRY"][u16 highest supported version][u8 mode]
 ```
 
 Both sides send first, then read, so neither waits on the other. Each side
-takes the lower of the two versions. This build supports version 2 only. Both
-the oldest and the newest version it speaks moved from 1 to 2 together, in one
-step: version 2 changes the wire, so no build in the field should read version
-1 with anyone but its own author, and a stale build must fail with
-`NoSharedVersion` rather than read version 2 paths as version 1.
+takes the lower of the two versions. This build supports version 3 only. The
+oldest and the newest version it speaks moved together, from 2 to 3, in one
+step: version 3 changes the wire, so no build in the field should read version
+3 bytes as version 2, and a stale build must fail with `NoSharedVersion`
+rather than misread the extra byte.
+
+The mode byte names which Noise pattern the initiator is about to run: `0`
+for `KK`, an ordinary connect between paired devices; `1` for `XX`, pairing by
+a code shown on both screens; `2` for `IK`, pairing by a code scanned from the
+other screen. Only the initiator's byte means anything, since it is the side
+that picks the pattern; the responder sends `0` as a filler, to keep the
+exchange a fixed length in both directions. A responder that reads the
+initiator's byte builds a Noise handshake state for that exact pattern before
+it reads a single byte of it, since a handshake state is built for one
+pattern and cannot be redirected once it exists.
 
 This exchange happens in the clear, because the encrypted channel does not
 exist yet. That would normally let an attacker force both sides down to an old
-version. It cannot happen here, because these exact bytes become the Noise
-prologue:
+version, or claim one pattern and run another. It cannot happen here, because
+these exact bytes become the Noise prologue:
 
 ```text
-[initiator's 7 bytes][responder's 7 bytes]
+[initiator's 8 bytes][responder's 8 bytes]
 ```
 
 A prologue is mixed into the Noise handshake hash. An attacker who edits one
-byte makes the two sides compute different hashes, so the handshake fails. The
-version exchange is unauthenticated when it happens, and authenticated a moment
-later.
+byte, of the version or of the mode, makes the two sides compute different
+hashes, so the handshake fails. The version and mode exchange is
+unauthenticated when it happens, and authenticated a moment later.
 
 Implemented in `crates/ferry-core/src/version.rs`.
 
@@ -126,6 +136,62 @@ exists to stop.
 
 Each device then stores the other's static public key. This is trust on first
 use, with the code protecting the first use.
+
+### Pairing by scanning a code
+
+A second way to pair: the Mac draws a code, and the phone's camera scans it.
+Scanning proves possession earlier than the six digit code does, and needs no
+comparison by a person, because the phone learns the Mac's static key from the
+screen itself, not from the network.
+
+This runs Noise `IK`. The initiator already knows the responder's static key,
+so it sends its own static key in message one, encrypted, instead of waiting
+for message three the way `XX` does:
+
+```text
+-> e, es, s, ss
+<- e, ee, se
+```
+
+An attacker in the middle cannot complete this handshake without the Mac's
+real private key, because the `ss` term only produces the right result when
+the initiator's static key is genuine. There is no code to grind, so decision
+record 6's commit and reveal step is not needed here: the pre-shared key is
+what closes the gap `XX` alone leaves open.
+
+Message one's payload carries two things: a 16 byte nonce, and the
+initiator's hello, encoded exactly as section 5's hello frame encodes a name
+and a kind. The nonce proves this is the offer just scanned, not an older,
+photographed one: it is made fresh for each offer, dies with it, and is
+checked against the one live offer before the handshake is allowed to
+finish. Carrying the hello in message one, rather than after the handshake,
+lets the Mac show who is asking before anyone confirms anything, with no
+second hello needed for that direction.
+
+The offer the Mac draws as a QR code is ASCII text:
+
+```text
+"FERRY1:" then base64url of:
+  version(1)
+  static key(32)
+  expiry(8)           -- Unix seconds, big endian, signed
+  nonce(16)
+  address count(1)
+  for each address: tag(1, 4 or 16) then that many bytes of IP then port(2)
+```
+
+Only the addresses the phone can reach over Wi-Fi are listed; over the cable
+the phone cannot reach the Mac by IP at all. An offer is good for two
+minutes and for one scan: the Mac accepts an `IK` handshake only while it is
+still showing the offer, and only for the one nonce in it, so a stale or
+reused code is refused before the handshake does any real work.
+
+The Mac still asks a person to confirm, the same as the code method: it
+shows the phone's name from the hello, and a person accepts or refuses. The
+phone asks nothing of its own; scanning the code was its answer.
+
+Implemented in `crates/ferry-core/src/offer.rs` for the payload, and
+`crates/ferry-core/src/noise.rs` for the handshake.
 
 ### Forgetting a device
 
