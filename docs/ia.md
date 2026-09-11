@@ -173,6 +173,7 @@ every new string is written out in `macos/Ferry/Strings.swift`.
 |---|---|
 | Advertising | The reachability control, on. The wifi icon and "Advertising". No second line. |
 | Not advertising | The control, off. The not_reachable icon and "Not advertising". Second line: "This phone cannot be found on Wi-Fi. USB still works." **new** On the Mac: "This Mac cannot be found on Wi-Fi. USB still works." **new** |
+| Advertising, quiet on this network | New in item 18. The control stays on. Second line, on the Mac: "Ferry is quiet on this network." **new** when the network is known, or "Ferry cannot read the network name." **new** when it is not. The phone's own row and its notification always show the first line; both phone lines show only in Settings, Networks. |
 | Moving, in the menu bar | The transport icon and the speed, in mono: "38 MB/s". |
 | Notification, phone, advertising | "Pixel 3 XL is reachable over Wi-Fi." One action: "Stop advertising". **new** |
 | Notification, phone, not advertising | "Not advertising. Pixel 3 XL cannot be found on Wi-Fi." **new** One action: "Start advertising". **new** |
@@ -356,9 +357,12 @@ job 9 is not.
 | Shared folders | The roots | One row per root: the folder icon, its name, its path in mono, and "Stop sharing". **new** Below the group title: "Paired phones can read and write these folders. Nothing outside them is served." **new** |
 | Shared folders | Add | "Add a folder" **new** and the standard open panel. |
 | Where pulled files land | The download folder | The path in mono, and "Choose". |
+| Networks | Current network | The name, and "Trust this network" **new** when it is known and not yet trusted. |
+| Networks | Trusted list | One row per trusted name, each with "Remove". **new** |
 
-Two settings, where the first version had one. Forgetting a device lives in
-that device's Info, because it is about one device. Reachability is not here;
+Three settings, where the first version had one. Networks came with item
+18: the Wi-Fi networks this Mac trusts. Forgetting a device lives in that
+device's Info, because it is about one device. Reachability is not here;
 it is presence, and presence is pinned.
 
 Desktop and Downloads are the defaults. They are names a person recognises,
@@ -372,6 +376,10 @@ where the first version's single "Ferry" folder was a name Ferry made up.
 | This phone | Shared storage | "Internal storage". The engine serves one root on the phone. Not editable in phase 1. |
 | Permissions | All files access | "Granted" or "Not granted", with a control that opens the system screen. |
 | Permissions | Notifications | On Android 13 and later: "Allowed" or "Not allowed", with a control to the system screen. |
+| Permissions | Location | New in item 18. "Granted" or "Not granted", with a control that opens the system screen. **new** |
+| Networks | Current network | New in item 18. The name, and "Trust this network" **new** when it is known and not yet trusted. |
+| Networks | Trusted list | One row per trusted name, each with "Remove". **new** |
+| Networks | Quiet reason | Shown only while advertising and quiet on this network. Known: "Ferry is quiet on this network." **new** Unknown: "Ferry cannot read the network name." **new** and an "Open settings" **new** control. |
 | Record | Access log | A destination. **new** |
 | Paired | The Mac | Its name, its key fingerprint in mono, and "Forget this Mac". |
 
