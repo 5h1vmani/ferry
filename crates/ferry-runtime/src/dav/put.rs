@@ -22,10 +22,14 @@
 //! final manifest check. That is the delta on save.
 //!
 //! Neither path resumes across attempts the way a background transfer
-//! does. A `PUT` or a `COPY` is one HTTP request: a peer failure partway
-//! through answers 502 or 503 and leaves nothing spooled behind, per
-//! `docs/engine-contract.md`, item 6; Finder is the one that retries, the
-//! same way it retries any other failed request.
+//! does. A `PUT` or a `COPY` is one HTTP request. `docs/engine-contract.md`,
+//! item 6: "a failed landing removes the spool file." Finder is the one
+//! that retries, the same way it retries any other failed request.
+//!
+//! The spool file itself is a [`SpoolFile`], whose `Drop` removes it: a
+//! short body, a dropped connection, or any other early return between
+//! [`new_spool_path`] and a landing's own cleanup must never leave a spool
+//! file behind, per that same rule.
 
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -41,16 +45,97 @@ use crate::engine::Shared;
 
 use super::http;
 
+/// The most the spool folder, `data_dir/dav_spool/`, may hold at once,
+/// across every device. Past this, [`new_spool_path`] answers
+/// [`SpoolError::Full`] rather than creating another file: a `PUT` this
+/// bridge cannot yet land must not be allowed to fill the disk with spool
+/// files while it waits.
+pub(crate) const MAX_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+
+/// A spool file's path, removed the moment this drops. Every caller of
+/// [`new_spool_path`] holds one of these for exactly as long as the spool
+/// file may exist: a short body, a dropped connection, or any other early
+/// return cleans it up the same way a successful landing's own explicit
+/// `drop` does. `docs/engine-contract.md`, item 6: "a failed landing
+/// removes the spool file."
+pub(crate) struct SpoolFile(PathBuf);
+
+impl SpoolFile {
+    pub(crate) fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for SpoolFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Why [`new_spool_path`] could not make a fresh spool file.
+pub(crate) enum SpoolError {
+    /// The spool folder already holds [`MAX_SPOOL_BYTES`] or more. The
+    /// caller answers 507, the same code the lock table's own cap uses.
+    Full,
+    /// The folder could not be made, or a name could not be generated.
+    /// Nothing on the wire caused this, so the caller answers 500.
+    Failed,
+}
+
 /// Creates a fresh, empty spool file under
 /// `data_dir/dav_spool/<device key hex>/` with a random name, and returns
-/// its path. `None` when the folder cannot be made or a name cannot be
-/// generated; the caller answers 500 in that case, since nothing on the
-/// wire caused it.
-pub(crate) fn new_spool_path(shared: &Shared, device_key_hex: &str) -> Option<PathBuf> {
+/// it.
+///
+/// # Errors
+///
+/// Returns [`SpoolError::Full`] when the spool folder's total size is
+/// already at or past [`MAX_SPOOL_BYTES`], and [`SpoolError::Failed`] when
+/// the folder cannot be made or a name cannot be generated.
+pub(crate) fn new_spool_path(
+    shared: &Shared,
+    device_key_hex: &str,
+) -> Result<SpoolFile, SpoolError> {
+    let root = shared.data_dir.join("dav_spool");
+    let dir = root.join(device_key_hex);
+    std::fs::create_dir_all(&dir).map_err(|_| SpoolError::Failed)?;
+    if dir_bytes(&root) >= MAX_SPOOL_BYTES {
+        return Err(SpoolError::Full);
+    }
+    let name = super::random_hex(16).map_err(|_| SpoolError::Failed)?;
+    Ok(SpoolFile(dir.join(name)))
+}
+
+/// Removes every leftover file under `data_dir/dav_spool/<device key
+/// hex>/`, left behind by a crash or an ungraceful quit before this
+/// device's bridge last stopped. Called once, at `mount_start`, only on a
+/// bridge that is not already running: a live bridge's own spool files are
+/// never swept out from under it.
+pub(crate) fn sweep_spool(shared: &Shared, device_key_hex: &str) {
     let dir = shared.data_dir.join("dav_spool").join(device_key_hex);
-    std::fs::create_dir_all(&dir).ok()?;
-    let name = super::random_hex(16).ok()?;
-    Some(dir.join(name))
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The combined size of every file under `dir`, walked recursively.
+///
+/// Best effort: a folder that cannot be read contributes 0 rather than
+/// failing [`new_spool_path`] outright, so a transient I/O error here never
+/// wrongly refuses an otherwise healthy `PUT`.
+fn dir_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_dir() {
+            total += dir_bytes(&entry.path());
+        } else {
+            total += metadata.len();
+        }
+    }
+    total
 }
 
 /// Receives exactly `content_length` bytes from `reader` into a fresh
@@ -129,6 +214,17 @@ pub(crate) fn fetch_into_spool<S: Read + Write>(
 /// `<destination>.ferry-part`, verified by the peer's own manifest of the
 /// partial, renamed onto `destination`, then `set_mtime`.
 ///
+/// A failure tries one `delete` of the partial before returning: a `PUT`
+/// is one HTTP request with no resume, so a partial this attempt cannot
+/// finish is not worth keeping around for a next one to find. The delete
+/// itself is best effort; its own failure is not reported, since the
+/// original error is the one the caller needs.
+///
+/// `bytes_written` is increased by every byte actually sent to the peer,
+/// whether or not this call ends up returning `Ok`: the caller logs it
+/// either way, so a failed landing's access log entry says what was
+/// really written, not nothing.
+///
 /// # Errors
 ///
 /// Returns [`RpcError::Remote`] with [`OpError::Internal`] when the
@@ -140,13 +236,39 @@ pub(crate) fn land_new<S: Read + Write>(
     spool_fs: &LocalFs,
     spool_leaf: &RemotePath,
     manifest: &Manifest,
+    bytes_written: &mut u64,
 ) -> Result<(), RpcError> {
     let partial = partial_path(destination)?;
+    match land_new_partial(
+        client,
+        destination,
+        &partial,
+        spool_fs,
+        spool_leaf,
+        manifest,
+        bytes_written,
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = client.delete(&partial);
+            Err(error)
+        }
+    }
+}
 
+fn land_new_partial<S: Read + Write>(
+    client: &mut Client<S>,
+    destination: &RemotePath,
+    partial: &RemotePath,
+    spool_fs: &LocalFs,
+    spool_leaf: &RemotePath,
+    manifest: &Manifest,
+    bytes_written: &mut u64,
+) -> Result<(), RpcError> {
     if manifest.length() == 0 {
         // An empty file still needs its partial to exist, so the rename
         // below has something to rename.
-        client.write(&partial, 0, Vec::new())?;
+        client.write(partial, 0, Vec::new())?;
     }
     for index in 0..manifest.chunk_count() {
         let Some((offset, length)) = manifest.chunk_range(index) else {
@@ -155,15 +277,15 @@ pub(crate) fn land_new<S: Read + Write>(
         let bytes = spool_fs
             .read(spool_leaf, offset, length)
             .map_err(RpcError::Remote)?;
-        write_all_remote(client, &partial, offset, &bytes)?;
+        write_all_remote(client, partial, offset, &bytes, bytes_written)?;
     }
-    client.truncate(&partial, manifest.length())?;
+    client.truncate(partial, manifest.length())?;
 
-    let landed = client.manifest(&partial)?;
+    let landed = client.manifest(partial)?;
     if landed != *manifest {
         return Err(RpcError::Remote(OpError::Internal));
     }
-    client.rename(&partial, destination)?;
+    client.rename(partial, destination)?;
     client.set_mtime(destination, crate::state::now_unix_secs())?;
     Ok(())
 }
@@ -173,6 +295,10 @@ pub(crate) fn land_new<S: Read + Write>(
 /// chunks whose chaining values differ from the peer's own manifest are
 /// written, in place, before a `truncate` to the new length, `set_mtime`,
 /// and a final manifest check.
+///
+/// `bytes_written` is increased by every byte actually sent to the peer,
+/// whether or not this call ends up returning `Ok`, the same as
+/// [`land_new`].
 ///
 /// # Errors
 ///
@@ -184,6 +310,7 @@ pub(crate) fn land_delta<S: Read + Write>(
     spool_fs: &LocalFs,
     spool_leaf: &RemotePath,
     manifest: &Manifest,
+    bytes_written: &mut u64,
 ) -> Result<(), RpcError> {
     let remote = client.manifest(destination)?;
     let common = manifest.chunk_count().min(remote.chunk_count());
@@ -197,15 +324,19 @@ pub(crate) fn land_delta<S: Read + Write>(
         let bytes = spool_fs
             .read(spool_leaf, offset, length)
             .map_err(RpcError::Remote)?;
-        write_all_remote(client, destination, offset, &bytes)?;
+        write_all_remote(client, destination, offset, &bytes, bytes_written)?;
     }
     client.truncate(destination, manifest.length())?;
-    client.set_mtime(destination, crate::state::now_unix_secs())?;
 
+    // The manifest is checked before the modified time is touched: a file
+    // that changed on the peer between its manifest and these writes fails
+    // here, and must keep its old modified time, not one this landing never
+    // actually earned.
     let landed = client.manifest(destination)?;
     if landed != *manifest {
         return Err(RpcError::Remote(OpError::Internal));
     }
+    client.set_mtime(destination, crate::state::now_unix_secs())?;
     Ok(())
 }
 
@@ -220,21 +351,23 @@ fn partial_path(destination: &RemotePath) -> Result<RemotePath, RpcError> {
 }
 
 /// True when `name`, a path's last segment, is this bridge's own partial
-/// marker. `docs/engine-contract.md`, item 6, I2: "`HEAD` and `GET` of a
-/// `.ferry-part` name are 404 and a listing never shows one, so Finder
-/// never sees a partial."
+/// marker. `docs/engine-contract.md`, item 6, I2: "a `.ferry-part` name is
+/// 404 on `GET`, `HEAD`, and `PROPFIND`, and never listed."
 #[must_use]
 pub(crate) fn is_partial_name(name: &str) -> bool {
     name.ends_with(".ferry-part")
 }
 
 /// Write one range to the peer, in pieces one `write` call accepts.
-/// Exactly `push.rs`'s own helper of the same name.
+/// Broadly `push.rs`'s own helper of the same name, plus `bytes_written`,
+/// increased by every byte actually sent, success or not, so a caller can
+/// log what a failed landing managed before it failed.
 fn write_all_remote<S: Read + Write>(
     client: &mut Client<S>,
     path: &RemotePath,
     offset: u64,
     bytes: &[u8],
+    bytes_written: &mut u64,
 ) -> Result<(), RpcError> {
     let cap = usize::try_from(limits::MAX_WRITE_LEN).unwrap_or(usize::MAX);
     let mut written = 0usize;
@@ -245,6 +378,7 @@ fn write_all_remote<S: Read + Write>(
         if sent == 0 {
             return Err(RpcError::Remote(OpError::Internal));
         }
+        *bytes_written += u64::from(sent);
         written += usize::try_from(sent).unwrap_or(piece);
     }
     Ok(())
@@ -257,7 +391,7 @@ mod tests {
     use ferry_core::chunk::{ChunkSize, manifest_from_bytes};
     use ferry_core::memfs::MemoryFs;
     use ferry_core::path::RemotePath;
-    use ferry_core::rpc::{Client, RpcError, serve};
+    use ferry_core::rpc::{Client, FileOps, RpcError, serve};
     use ferry_core::transport::{Endpoint, loopback};
 
     use super::{land_delta, land_new};
@@ -266,7 +400,9 @@ mod tests {
         RemotePath::parse(text).unwrap()
     }
 
-    fn spawn_server(fs: MemoryFs) -> (Client<Endpoint>, thread::JoinHandle<Result<(), RpcError>>) {
+    fn spawn_server(
+        fs: impl FileOps + 'static,
+    ) -> (Client<Endpoint>, thread::JoinHandle<Result<(), RpcError>>) {
         let (client_end, mut server_end) = loopback();
         let handle = thread::spawn(move || serve(&mut server_end, &fs));
         (Client::new(client_end), handle)
@@ -311,7 +447,17 @@ mod tests {
 
         let peer = MemoryFs::new();
         let (mut client, handle) = spawn_server(peer);
-        land_new(&mut client, &path("Root/a.txt"), &fs, &leaf, &manifest).unwrap();
+        let mut bytes_written = 0u64;
+        land_new(
+            &mut client,
+            &path("Root/a.txt"),
+            &fs,
+            &leaf,
+            &manifest,
+            &mut bytes_written,
+        )
+        .unwrap();
+        assert_eq!(bytes_written, 20, "every byte of the file was sent");
 
         let landed = client.read(&path("Root/a.txt"), 0, 64).unwrap();
         assert_eq!(landed, b"hello from the spool");
@@ -336,7 +482,21 @@ mod tests {
 
         let fixture = SpoolFixture::new("delta", &changed);
         let (fs, leaf, manifest) = super::open_spool(&fixture.spool_path()).unwrap();
-        land_delta(&mut client, &path("Root/a.txt"), &fs, &leaf, &manifest).unwrap();
+        let mut bytes_written = 0u64;
+        land_delta(
+            &mut client,
+            &path("Root/a.txt"),
+            &fs,
+            &leaf,
+            &manifest,
+            &mut bytes_written,
+        )
+        .unwrap();
+        assert_eq!(
+            bytes_written,
+            chunk_size.as_u64(),
+            "only the one changed chunk should be sent, not the whole file"
+        );
 
         // One `read` call is bounded to `MAX_READ_LEN` (one mebibyte), so
         // the two chunks are fetched back separately.
@@ -369,12 +529,148 @@ mod tests {
 
         let fixture = SpoolFixture::new("shrink", b"short");
         let (fs, leaf, manifest) = super::open_spool(&fixture.spool_path()).unwrap();
-        land_delta(&mut client, &path("Root/a.txt"), &fs, &leaf, &manifest).unwrap();
+        let mut bytes_written = 0u64;
+        land_delta(
+            &mut client,
+            &path("Root/a.txt"),
+            &fs,
+            &leaf,
+            &manifest,
+            &mut bytes_written,
+        )
+        .unwrap();
 
         let entry = client.stat(&path("Root/a.txt")).unwrap();
         assert_eq!(entry.size, 5);
         let landed = client.read(&path("Root/a.txt"), 0, 5).unwrap();
         assert_eq!(landed, b"short");
+
+        finish(client, handle);
+    }
+
+    /// Wraps a real [`MemoryFs`], answering the first `manifest` call
+    /// honestly and every one after that only once it has appended one
+    /// byte directly to the file, bypassing whatever `land_delta` itself
+    /// wrote. This stands in for a peer whose file changes between
+    /// `land_delta`'s opening manifest read and the writes that follow it,
+    /// without needing to race two threads against each other.
+    struct ChangesAfterFirstManifest {
+        inner: MemoryFs,
+        manifest_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl ferry_core::rpc::FileOps for ChangesAfterFirstManifest {
+        fn manifest(
+            &self,
+            path: &RemotePath,
+        ) -> Result<ferry_core::chunk::Manifest, ferry_core::ops::OpError> {
+            let n = self
+                .manifest_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 1
+                && let Some(mut bytes) = self.inner.file_bytes(path.as_str())
+            {
+                bytes.push(b'!');
+                self.inner.insert_file(path.as_str(), bytes);
+            }
+            self.inner.manifest(path)
+        }
+        fn list(
+            &self,
+            path: &RemotePath,
+            cursor: u64,
+        ) -> Result<(Vec<ferry_core::ops::Entry>, Option<u64>), ferry_core::ops::OpError> {
+            self.inner.list(path, cursor)
+        }
+        fn stat(
+            &self,
+            path: &RemotePath,
+        ) -> Result<ferry_core::ops::Entry, ferry_core::ops::OpError> {
+            self.inner.stat(path)
+        }
+        fn read(
+            &self,
+            path: &RemotePath,
+            offset: u64,
+            length: u32,
+        ) -> Result<Vec<u8>, ferry_core::ops::OpError> {
+            self.inner.read(path, offset, length)
+        }
+        fn write(
+            &self,
+            path: &RemotePath,
+            offset: u64,
+            bytes: &[u8],
+        ) -> Result<u32, ferry_core::ops::OpError> {
+            self.inner.write(path, offset, bytes)
+        }
+        fn truncate(&self, path: &RemotePath, length: u64) -> Result<(), ferry_core::ops::OpError> {
+            self.inner.truncate(path, length)
+        }
+        fn rename(
+            &self,
+            from: &RemotePath,
+            to: &RemotePath,
+        ) -> Result<(), ferry_core::ops::OpError> {
+            self.inner.rename(from, to)
+        }
+        fn set_mtime(
+            &self,
+            path: &RemotePath,
+            modified_unix_secs: i64,
+        ) -> Result<(), ferry_core::ops::OpError> {
+            self.inner.set_mtime(path, modified_unix_secs)
+        }
+        fn mkdir(&self, path: &RemotePath) -> Result<(), ferry_core::ops::OpError> {
+            self.inner.mkdir(path)
+        }
+        fn delete(&self, path: &RemotePath) -> Result<(), ferry_core::ops::OpError> {
+            self.inner.delete(path)
+        }
+    }
+
+    #[test]
+    fn land_delta_keeps_the_old_modified_time_when_the_peer_changes_first() {
+        let peer = MemoryFs::new();
+        peer.insert_file("Root/a.txt", b"a long original file".to_vec());
+        let peer = ChangesAfterFirstManifest {
+            inner: peer,
+            manifest_calls: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let (mut client, handle) = spawn_server(peer);
+
+        let fixture = SpoolFixture::new("mid-change", b"short");
+        let (fs, leaf, manifest) = super::open_spool(&fixture.spool_path()).unwrap();
+        let mut bytes_written = 0u64;
+        let error = land_delta(
+            &mut client,
+            &path("Root/a.txt"),
+            &fs,
+            &leaf,
+            &manifest,
+            &mut bytes_written,
+        )
+        .expect_err("the peer's file changed underneath the landing");
+        assert!(matches!(
+            error,
+            RpcError::Remote(ferry_core::ops::OpError::Internal)
+        ));
+        assert_eq!(
+            bytes_written, 5,
+            "a failed landing still reports what it actually wrote"
+        );
+
+        // `ChangesAfterFirstManifest` itself writes the file directly
+        // (bypassing `land_delta`'s own writes) to simulate the peer
+        // changing underneath the landing, and that direct write resets
+        // the modified time to 0. A `land_delta` that still called
+        // `set_mtime` after its manifest check failed would show a recent,
+        // real timestamp here instead.
+        let entry = client.stat(&path("Root/a.txt")).unwrap();
+        assert_eq!(
+            entry.modified_unix_secs, 0,
+            "a failed landing must never touch the modified time"
+        );
 
         finish(client, handle);
     }
