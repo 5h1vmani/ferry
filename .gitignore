@@ -38,3 +38,6 @@ android/app/src/main/jniLibs
 
 # Design pass output, kept out of the repo
 design_ouput/
+
+# Worktrees the orchestrating agent creates
+.claude/worktrees/
