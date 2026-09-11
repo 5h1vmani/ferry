@@ -9,7 +9,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import app.ferry.engine.FerryEngine
@@ -37,6 +37,27 @@ sealed class Screen {
     data object AccessLog : Screen()
 }
 
+// Screen holds no Parcelable state of its own, so rememberSaveable in
+// FerryApp stores this name instead, across rotation and process death.
+private const val SCREEN_DEVICES = "Devices"
+private const val SCREEN_PAIRING = "Pairing"
+private const val SCREEN_SETTINGS = "Settings"
+private const val SCREEN_ACCESS_LOG = "AccessLog"
+
+private fun Screen.toSavedName(): String = when (this) {
+    Screen.Devices -> SCREEN_DEVICES
+    Screen.Pairing -> SCREEN_PAIRING
+    Screen.Settings -> SCREEN_SETTINGS
+    Screen.AccessLog -> SCREEN_ACCESS_LOG
+}
+
+private fun screenFromSavedName(name: String): Screen = when (name) {
+    SCREEN_PAIRING -> Screen.Pairing
+    SCREEN_SETTINGS -> Screen.Settings
+    SCREEN_ACCESS_LOG -> Screen.AccessLog
+    else -> Screen.Devices
+}
+
 // The one activity's content. Every value on screen comes from the engine's
 // flows, mapped by model/Mapping.kt. Nothing here is sample data, and
 // nothing here formats a number or composes a sentence.
@@ -59,7 +80,14 @@ fun FerryApp(
         onSurface = FerryColor.text(),
     )
 
-    var screen by remember { mutableStateOf<Screen>(Screen.Devices) }
+    // remember alone loses this to a rotation: the activity is destroyed
+    // and rebuilt, and Devices was the only screen that ever came back.
+    // Screen has no Parcelable of its own, so its name is what is saved.
+    var screenName by rememberSaveable { mutableStateOf(Screen.Devices.toSavedName()) }
+    val screen: Screen = screenFromSavedName(screenName)
+    fun goTo(next: Screen) {
+        screenName = next.toSavedName()
+    }
 
     // The system back gesture otherwise finishes the activity from every
     // screen, whatever screen is showing. Each branch does what that
@@ -68,10 +96,10 @@ fun FerryApp(
         when (screen) {
             is Screen.Pairing -> {
                 FerryEngine.cancelPairing()
-                screen = Screen.Devices
+                goTo(Screen.Devices)
             }
-            is Screen.Settings -> screen = Screen.Devices
-            is Screen.AccessLog -> screen = Screen.Settings
+            is Screen.Settings -> goTo(Screen.Devices)
+            is Screen.AccessLog -> goTo(Screen.Settings)
             is Screen.Devices -> Unit
         }
     }
@@ -145,9 +173,9 @@ fun FerryApp(
                     if (!isAdvertising) {
                         onSetAdvertising(true)
                     }
-                    screen = Screen.Pairing
+                    goTo(Screen.Pairing)
                 },
-                onSettingsClick = { screen = Screen.Settings },
+                onSettingsClick = { goTo(Screen.Settings) },
                 onRetryGroup = { group ->
                     // A batch retries every failed transfer in it, in one
                     // tap rather than one tap per file. A lone transfer's
@@ -165,7 +193,7 @@ fun FerryApp(
                 cameraRefused = cameraRefused,
                 onRequestCamera = onRequestCamera,
                 onOpenAppSettings = onOpenAppSettings,
-                onDone = { screen = Screen.Devices },
+                onDone = { goTo(Screen.Devices) },
             )
 
             is Screen.Settings -> SettingsScreen(
@@ -176,12 +204,12 @@ fun FerryApp(
                 notificationsAllowed = notificationsAllowed,
                 onOpenAllFilesAccess = onOpenAllFilesAccess,
                 onOpenNotificationSettings = onOpenNotificationSettings,
-                onOpenAccessLog = { screen = Screen.AccessLog },
+                onOpenAccessLog = { goTo(Screen.AccessLog) },
                 onForget = { device ->
                     FerryEngine.forget(device.id)
-                    screen = Screen.Devices
+                    goTo(Screen.Devices)
                 },
-                onBack = { screen = Screen.Devices },
+                onBack = { goTo(Screen.Devices) },
             )
 
             is Screen.AccessLog -> AccessLogScreen(
@@ -194,7 +222,7 @@ fun FerryApp(
                     devices.firstOrNull { it.id == keyHex }?.name
                         ?: app.ferry.model.fingerprintOf(keyHex)
                 },
-                onBack = { screen = Screen.Settings },
+                onBack = { goTo(Screen.Settings) },
             )
         }
     }
