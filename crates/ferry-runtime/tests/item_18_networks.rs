@@ -637,3 +637,52 @@ fn pairing_trusts_the_network_on_both_sides() {
     mac.engine.stop();
     phone.engine.stop();
 }
+
+// ---------------------------------------------------------------------------
+// Audit `docs/audits/third-run-engine.md`, finding 2: a control character in
+// a network name.
+// ---------------------------------------------------------------------------
+
+/// A name holding a newline is one name to the person and two lines in the
+/// file. On the next start the second line loads as a network nobody
+/// trusted, and `forget_network` with the whole name removes neither half.
+#[test]
+fn a_name_holding_a_control_character_is_refused_and_never_loads() {
+    let side = build("Bharata");
+
+    let refused = side
+        .engine
+        .trust_network("Home\nCafe".to_owned())
+        .expect_err("a name holding a newline cannot be trusted");
+    assert_eq!(code_of_error(&refused), "Runtime::NetworkName");
+    assert!(
+        side.engine.trusted_networks().is_empty(),
+        "a refused name is not added"
+    );
+
+    side.engine
+        .trust_network("Home".to_owned())
+        .expect("an ordinary name should be trusted");
+    side.engine.stop();
+
+    // A file written by an older build, or by hand, can hold a line this
+    // build would refuse. Loading drops that line and keeps the rest.
+    let path = side.data.path().join("networks");
+    std::fs::write(&path, "Home\nCa\u{7}fe\n").expect("the list file should write");
+    let inbox = Arc::new(Inbox::default());
+    let engine = open(
+        "Bharata",
+        DeviceKind::Mac,
+        &side.key,
+        &inbox,
+        side.data.path(),
+        side.shared.path(),
+        side.download.path(),
+    );
+    assert_eq!(
+        engine.trusted_networks(),
+        names(&["Home"]),
+        "a stored line holding a control character is skipped, not loaded"
+    );
+    engine.stop();
+}

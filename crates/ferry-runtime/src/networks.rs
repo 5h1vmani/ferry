@@ -119,6 +119,18 @@ pub(crate) fn wifi_presence(state: &State) -> bool {
     state.reachable && browse_allowed(state)
 }
 
+/// True when `name` holds any control character.
+///
+/// `docs/engine-contract.md`, item 18. The file holds one name per line, so
+/// a name holding a newline would be read back as two names on the next
+/// start, one of which nobody trusted. A name holding a carriage return
+/// would change, because `str::lines` drops that return. Every other control
+/// character is refused with it: no Wi-Fi network name needs one, and a name
+/// that cannot be shown is a name a person cannot forget again.
+fn holds_control_character(name: &str) -> bool {
+    name.chars().any(char::is_control)
+}
+
 /// The trusted Wi-Fi network names, and the file they live in.
 #[derive(Debug, Clone)]
 pub(crate) struct TrustedNetworks {
@@ -141,7 +153,10 @@ impl TrustedNetworks {
             // A line this build would refuse to add is dropped rather than
             // kept, so what is loaded is always a list this build could have
             // written itself.
-            if line.is_empty() || line.len() > MAX_NETWORK_NAME_BYTES || names.len() >= MAX_NETWORKS
+            if line.is_empty()
+                || line.len() > MAX_NETWORK_NAME_BYTES
+                || holds_control_character(line)
+                || names.len() >= MAX_NETWORKS
             {
                 continue;
             }
@@ -166,11 +181,11 @@ impl TrustedNetworks {
     /// # Errors
     ///
     /// Returns `Runtime::NetworkName` for an empty name, a name over
-    /// [`MAX_NETWORK_NAME_BYTES`] bytes, or a name that would be the
-    /// [`MAX_NETWORKS`] plus first. Returns `TransferError::Local` when
-    /// local storage refuses the write.
+    /// [`MAX_NETWORK_NAME_BYTES`] bytes, a name holding a control
+    /// character, or a name that would be the [`MAX_NETWORKS`] plus first.
+    /// Returns `TransferError::Local` when local storage refuses the write.
     pub(crate) fn add(&mut self, name: &str) -> Result<bool, FerryError> {
-        if name.is_empty() || name.len() > MAX_NETWORK_NAME_BYTES {
+        if name.is_empty() || name.len() > MAX_NETWORK_NAME_BYTES || holds_control_character(name) {
             return Err(failed("Runtime::NetworkName"));
         }
         if self.names.iter().any(|known| known == name) {

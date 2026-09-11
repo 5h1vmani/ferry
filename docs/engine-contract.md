@@ -768,7 +768,11 @@ The engine decides what to do with it.
 /// the name unknown. Called after start and on every change. Idempotent.
 fn set_network(&self, name: Option<String>);
 /// Adds a name to the trusted list. An empty name, a name over 32
-/// bytes, or a 33rd name is refused with `Runtime::NetworkName`.
+/// bytes, a name holding any control character, or a 33rd name is
+/// refused with `Runtime::NetworkName`. The file holds one name per
+/// line, so a name holding a newline would load as two names on the
+/// next start. A stored line holding a control character is skipped
+/// by `load` for the same reason.
 fn trust_network(&self, name: String) -> Result<(), FerryError>;
 fn forget_network(&self, name: String) -> Result<(), FerryError>;
 fn trusted_networks(&self) -> Vec<String>;
