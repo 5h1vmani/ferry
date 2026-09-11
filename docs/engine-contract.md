@@ -755,7 +755,7 @@ first in first out bound. That pure test lives in `src/dav/heads.rs`,
 not in the test file above, because the cache and the constants named
 here are `pub(crate)` and no integration test can reach them.
 
-### 18. Trusted networks, PLAN phase 2 item 7: engine and Mac built, phone open
+### 18. Trusted networks, PLAN phase 2 item 7: built
 
 Job 5 gets stronger. A device that paired at home stays silent in a
 café, and the phone saves the battery the advertiser and the browser
