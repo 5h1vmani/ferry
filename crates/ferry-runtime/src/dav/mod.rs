@@ -42,6 +42,7 @@ mod handlers;
 mod heads;
 mod http;
 mod lock;
+mod prefetch;
 mod probes;
 mod put;
 mod server;
@@ -316,7 +317,7 @@ impl MountRegistry {
         let bridge_for_prefetch = Arc::clone(&bridge);
         let running_for_prefetch = Arc::clone(&running);
         let prefetch = std::thread::spawn(move || {
-            server::prefetch_loop(
+            prefetch::prefetch_loop(
                 &shared_for_prefetch,
                 &bridge_for_prefetch,
                 &running_for_prefetch,
