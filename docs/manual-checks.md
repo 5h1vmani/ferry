@@ -224,8 +224,9 @@ phone's half.
 3. Grant the camera the first time the phone asks for it. The phone
    should show "Point the camera at the Mac's screen."
 4. Point the camera at the Mac's code. The phone should show the Mac's
-   name and "Confirm on the Mac."
-5. On the Mac, confirm the phone that scanned in. Devices on the phone
+   name and "Is this your Mac?"
+5. On the phone, tap Confirm.
+6. On the Mac, confirm the phone that scanned in. Devices on the phone
    should then show the Mac, reachable.
 
 ### What to send back
