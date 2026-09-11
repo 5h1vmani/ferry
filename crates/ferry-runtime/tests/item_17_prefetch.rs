@@ -627,3 +627,94 @@ fn mount_stop_returns_quickly_when_the_peers_socket_goes_silent() {
     peer.close();
     mac.engine.stop();
 }
+
+// ---------------------------------------------------------------------------
+// `docs/audits/fable-lifecycle.md`, finding 8: two concurrent `mount_start`
+// calls for the same device must share one bridge.
+// ---------------------------------------------------------------------------
+
+#[test]
+// `MountRegistry::start` used to hold the registry lock across the spool
+// sweep, the bind, and both spawns, so one call blocked any other for its
+// whole duration and idempotency came for free. The fix takes the lock
+// twice instead, guarded by a per key in-progress mark so a second
+// concurrent call for the same key waits for the first rather than binding
+// a second port. This proves that guard holds: two threads racing
+// `mount_start` for one device must still land on the same endpoint, with
+// only one bridge behind it.
+fn concurrent_mount_start_for_one_device_shares_one_bridge() {
+    let mac_key = generate_key().expect("a fresh key pair");
+    let phone_key = generate_key().expect("a fresh key pair");
+    let mac = build_side(
+        "Vamana",
+        DeviceKind::Mac,
+        mac_key.clone(),
+        &[],
+        &phone_key,
+        "Pixel 3 XL",
+        DeviceKind::Phone,
+    );
+    let phone = build_side(
+        "Pixel 3 XL",
+        DeviceKind::Phone,
+        phone_key,
+        &[("Notes.txt", b"hello".as_slice())],
+        &mac_key,
+        "Vamana",
+        DeviceKind::Mac,
+    );
+    phone.engine.set_reachable(true);
+
+    let phone_key_hex = mac
+        .engine
+        .devices()
+        .first()
+        .expect("the phone should already be paired, from the seeded peer store")
+        .key_hex
+        .clone();
+    mac.engine.offer_candidate(loopback_addr(&phone));
+    mac.engine
+        .list(phone_key_hex.clone(), String::new())
+        .expect("listing the phone's root should succeed once dialable");
+
+    let barrier = Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = (0..2)
+        .map(|_| {
+            let engine = Arc::clone(&mac.engine);
+            let key = phone_key_hex.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                engine.mount_start(key)
+            })
+        })
+        .collect();
+    let endpoints: Vec<_> = handles
+        .into_iter()
+        .map(|handle| {
+            handle
+                .join()
+                .expect("mount_start should not panic")
+                .expect("mount_start should succeed for a paired, reachable device")
+        })
+        .collect();
+
+    assert_eq!(
+        endpoints[0].url, endpoints[1].url,
+        "two concurrent starts for one device must share one bridge, not bind two ports"
+    );
+    assert_eq!(endpoints[0].password, endpoints[1].password);
+
+    mac.engine.mount_stop(phone_key_hex);
+    let port = port_of(&endpoints[0].url);
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("a loopback address");
+    assert!(
+        TcpStream::connect(addr).is_err(),
+        "one mount_stop must close the one bridge's one port"
+    );
+
+    mac.engine.stop();
+    phone.engine.stop();
+}

@@ -50,7 +50,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use crate::errors::{failed, failed_with};
@@ -95,6 +95,48 @@ struct Mount {
     pool: Arc<Pool>,
 }
 
+/// One [`MountRegistry::start`] in flight for one device key.
+///
+/// `docs/audits/fable-lifecycle.md`, finding 8: the first caller for a key
+/// builds this and does the real work; every other concurrent caller for
+/// the same key finds it already in [`MountRegistry::starting`] and waits
+/// on it instead, so a second concurrent `start` never sweeps the spool,
+/// binds a second port, or spawns a second pair of threads for one device.
+struct InProgress {
+    result: Mutex<Option<Result<MountEndpoint, FerryError>>>,
+    done: Condvar,
+}
+
+impl InProgress {
+    fn new() -> Self {
+        Self {
+            result: Mutex::new(None),
+            done: Condvar::new(),
+        }
+    }
+
+    /// Blocks until [`InProgress::finish`] has run, then returns a copy of
+    /// what it recorded.
+    fn wait(&self) -> Result<MountEndpoint, FerryError> {
+        let mut result = lock_mutex(&self.result);
+        while result.is_none() {
+            result = self
+                .done
+                .wait(result)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        result
+            .clone()
+            .unwrap_or_else(|| unreachable!("the loop above only exits once this is Some"))
+    }
+
+    /// Records the leader's result and wakes every waiter.
+    fn finish(&self, result: Result<MountEndpoint, FerryError>) {
+        *lock_mutex(&self.result) = Some(result);
+        self.done.notify_all();
+    }
+}
+
 /// Every device's `WebDAV` bridge, by device key hex.
 ///
 /// One instance lives in [`crate::engine::Shared`] for the life of the
@@ -103,6 +145,9 @@ struct Mount {
 /// idempotent.
 pub(crate) struct MountRegistry {
     mounts: Mutex<BTreeMap<String, Mount>>,
+    /// One entry per device key with a [`MountRegistry::start`] in flight
+    /// right now. `docs/audits/fable-lifecycle.md`, finding 8.
+    starting: Mutex<BTreeMap<String, Arc<InProgress>>>,
     /// The spool folder's running byte total, across every device.
     /// `docs/audits/fable-engineering.md`, finding 4: kept exact instead of
     /// walked on every `PUT` and `COPY`. See [`put::SpoolBytes`].
@@ -113,6 +158,7 @@ impl MountRegistry {
     pub(crate) fn new() -> Self {
         Self {
             mounts: Mutex::new(BTreeMap::new()),
+            starting: Mutex::new(BTreeMap::new()),
             spool_bytes: put::SpoolBytes::new(),
         }
     }
@@ -146,18 +192,64 @@ impl MountRegistry {
         device_key_hex: &str,
         device_name: &str,
     ) -> Result<MountEndpoint, FerryError> {
-        let mut mounts = lock_mutex(&self.mounts);
-        // `Engine::stop` sets `stopping`, then copies the keys here and
-        // stops each one. A bridge started after that copy would never be
-        // joined, so its port and its two threads would outlive `stop`.
-        // Refusing here, under the same lock the copy takes, is what closes
-        // that gap. An endpoint already running is refused too: `stop_all`
-        // is about to take it away.
+        // `docs/audits/fable-lifecycle.md`, finding 8: this used to hold
+        // `self.mounts` across the spool sweep, the bind, and both spawns
+        // below, so one device's `start` blocked `stop` and `stop_all` for
+        // any other device for as long as that took. The lock is now taken
+        // twice instead: once here, to return an existing bridge's endpoint
+        // at once and to leave a per key mark for a concurrent second call
+        // to find, and once more in `start_uncontested`, to publish the
+        // result. A second concurrent call for the same key waits on that
+        // mark rather than repeating the sweep, the bind, and the spawns.
+        let in_progress = {
+            if let Some(mount) = lock_mutex(&self.mounts).get(device_key_hex) {
+                return Ok(mount.endpoint.clone());
+            }
+            let mut starting = lock_mutex(&self.starting);
+            if let Some(mount) = lock_mutex(&self.mounts).get(device_key_hex) {
+                // Lost the race to insert a mark below to a call that
+                // already finished and inserted into `self.mounts` in the
+                // gap between the two checks above.
+                return Ok(mount.endpoint.clone());
+            }
+            if let Some(existing) = starting.get(device_key_hex) {
+                Err(Arc::clone(existing))
+            } else {
+                let mine = Arc::new(InProgress::new());
+                starting.insert(device_key_hex.to_owned(), Arc::clone(&mine));
+                Ok(mine)
+            }
+        };
+        let mine = match in_progress {
+            Ok(mine) => mine,
+            // A `start` for this key is already in flight. Its own result,
+            // once it has one, is this call's result too: `Ok` with the one
+            // bridge it built, or whatever error it hit.
+            Err(waiting_on) => return waiting_on.wait(),
+        };
+
+        let result = self.start_uncontested(shared, device_key_hex, device_name);
+        lock_mutex(&self.starting).remove(device_key_hex);
+        mine.finish(result.clone());
+        result
+    }
+
+    /// The real work of [`MountRegistry::start`], run by whichever caller's
+    /// [`InProgress`] mark won the race in [`MountRegistry::starting`].
+    fn start_uncontested(
+        &self,
+        shared: &Arc<crate::engine::Shared>,
+        device_key_hex: &str,
+        device_name: &str,
+    ) -> Result<MountEndpoint, FerryError> {
+        // `Engine::stop` sets `stopping` before it ever touches
+        // `self.mounts`. Checked again here, right before the slow work
+        // below begins, refuses a `start` that reaches this point after a
+        // `stop` already under way; the second check at the insert, below,
+        // is what actually closes the race, for a `stop` that runs its
+        // whole course while this call is still doing that work.
         if shared.stopping() {
             return Err(failed("Runtime::NotReachable"));
-        }
-        if let Some(mount) = mounts.get(device_key_hex) {
-            return Ok(mount.endpoint.clone());
         }
 
         // A fresh start only: a bridge already running for this device may
@@ -191,7 +283,7 @@ impl MountRegistry {
         // bridge's own, so `Engine::list` and this bridge share it. A
         // device that is not paired has no pool, so no bridge is built for
         // one. Kept here, not only inside `Bridge`, so `stop` can reach it;
-        // see `Mount::pool`. `docs/audits/fable-lifecycle.md`, finding 2.
+        // see `Mount::pool`.
         let pool = shared.pool_for(device_key_hex)?;
         let running = Arc::new(AtomicBool::new(true));
         let bridge = Arc::new(server::Bridge::new(
@@ -230,6 +322,24 @@ impl MountRegistry {
             );
         });
 
+        let mut mounts = lock_mutex(&self.mounts);
+        // Re-checked under the same lock `stop_all`'s own copy of the keys
+        // takes: `docs/audits/fable-lifecycle.md`, finding 8, and the
+        // comment above this function. If `Engine::stop` ran its whole
+        // course, unseen, while this call did the slow work above, its
+        // `stop_all` copied the keys `self.mounts` held before this insert,
+        // so this bridge would never be joined, and would outlive `stop`.
+        // Tearing down what was just built, instead of publishing it, is
+        // what the original single, whole-call lock hold did for free.
+        if shared.stopping() {
+            drop(mounts);
+            running.store(false, Ordering::SeqCst);
+            drop(std::net::TcpStream::connect(("127.0.0.1", port)));
+            bridge.stop_prefetch();
+            drop(handle.join());
+            drop(prefetch.join());
+            return Err(failed("Runtime::NotReachable"));
+        }
         mounts.insert(
             device_key_hex.to_owned(),
             Mount {
