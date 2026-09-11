@@ -212,22 +212,31 @@ Added 11 September 2026, for the phone's own designed screens.
    served to the Mac and what it read from it.
 5. Under Paired, it should show the Mac's name, its key fingerprint, and
    "Forget this Mac".
+6. Pull down the notification shade and tap Stop on Ferry's notification.
+   The notification should stay, now saying "Not advertising" with one
+   action, "Start advertising". Tap it. Devices should show the switch on
+   again, and the Mac should see the phone within a few seconds.
 
 ### Part G: pairing by scan, from the phone
 
 Added 11 September 2026. This is `docs/engine-contract.md` item 12, the
 phone's half.
 
-1. On the phone, forget the Mac from Settings, so pairing can run again.
-2. On the phone, tap Pair, then "Scan the Mac's code". On the Mac, click
-   "Pair a phone"; it should show the square code.
+1. Forget on both sides: on the phone, "Forget this Mac" in Settings; on
+   the Mac, "Forget this phone" on the phone's screen. A device that one
+   side still holds refuses to pair again.
+2. On the phone, tap Pair. The first time, a line says "Location, so
+   Ferry can read the Wi-Fi name." and Android asks for location. Allow
+   it. Then tap "Scan the Mac's code". On the Mac, click "Pair a phone";
+   the sheet shows the square code and "Scan this with the phone."
 3. Grant the camera the first time the phone asks for it. The phone
    should show "Point the camera at the Mac's screen."
-4. Point the camera at the Mac's code. The phone should show the Mac's
-   name and "Is this your Mac?"
-5. On the phone, tap Confirm.
-6. On the Mac, confirm the phone that scanned in. Devices on the phone
-   should then show the Mac, reachable.
+4. Point the camera at the Mac's code. The Mac should show the phone's
+   name and ask whether to pair it. Confirm on the Mac.
+5. The phone should then show the Mac's name and "Is this your Mac?"
+   with Confirm and Cancel. Tap Confirm.
+6. Devices on both should show the other device, reachable. Settings on
+   both should list the current Wi-Fi network under Networks.
 
 ### What to send back
 
@@ -286,14 +295,21 @@ Build and install both apps as in task 3.
    home network too.
 4. On the Mac, remove the home network from the trusted list. The Mac's
    presence control should say "Ferry is quiet on this network."
-5. On the phone, wait a few seconds. The Mac should drop out of the
-   phone's device list.
+5. On the phone, wait a few seconds. The Mac should show as not
+   reachable in the phone's device list. With the cable in it should
+   show as reachable over USB, because the cable is never gated.
 6. On the Mac, add the home network to the trusted list again by hand.
    The Mac should become reachable to the phone again within a few
    seconds.
-7. On the phone, next time Android asks for the location permission,
-   refuse it. Every screen and every transfer already working should
-   behave exactly as it did before the refusal.
+7. On the phone, open Android's Settings, Apps, Ferry, Permissions, and
+   set Location to "Don't allow". Reopen Ferry. The presence row should
+   say Ferry cannot read the network name, and the Mac should show the
+   phone as not reachable over Wi-Fi; USB still works. Settings on the
+   phone should offer a way to the permission. Allow location again and
+   both should recover within a few seconds. This is the designed rule:
+   an unknown network with a trusted list is quiet. A phone that refused
+   location at its very first pairing has an empty list and sees no
+   change at all.
 
 ### What to send back
 
