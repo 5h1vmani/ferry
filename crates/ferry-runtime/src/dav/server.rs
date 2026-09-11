@@ -27,7 +27,7 @@ use crate::guard::StopAware;
 
 use super::cache::Cache;
 use super::delete;
-use super::lock::{LockError, LockTable};
+use super::lock::{LockError, LockTable, UnlockOutcome};
 use super::pool::{self, Pool};
 use super::probes::{self, SidecarStore, SidecarWriteError};
 use super::put;
@@ -236,6 +236,16 @@ fn respond(
         return Ok(false);
     }
 
+    // This bridge never speaks chunked transfer encoding: its body reading,
+    // on every verb, trusts `Content-Length` alone. A request carrying
+    // `Transfer-Encoding` at all cannot be framed safely against that, so
+    // it is refused the same way a `PUT` with no `Content-Length` is,
+    // before a single body byte is read.
+    if head.header("transfer-encoding").is_some() {
+        no_body(out, "411 Length Required")?;
+        return Ok(false);
+    }
+
     let decoded = http::percent_decode(&head.target);
     let target = decoded.trim_start_matches('/').trim_end_matches('/');
     let is_probe = probes::is_probe_name(probes::last_segment(target));
@@ -268,15 +278,15 @@ fn respond(
     }
 
     // `docs/engine-contract.md`, item 6, I2: a `.ferry-part` name is 404
-    // on `GET` and `HEAD`, checked before the peer or the sidecar store,
-    // since Finder must never see a file still landing.
+    // on `GET`, `HEAD`, and `PROPFIND`, checked before the peer or the
+    // sidecar store, since Finder must never see a file still landing.
     let is_partial = put::is_partial_name(probes::last_segment(target));
 
     match request.method.as_str() {
         "LOCK" => lock_verb(bridge, target, out),
         "UNLOCK" => unlock_verb(bridge, &request, target, out),
         "PUT" => put_sidecar(bridge, target, &request, out),
-        "GET" | "HEAD" if is_partial => no_body(out, "404 Not Found"),
+        "GET" | "HEAD" | "PROPFIND" if is_partial => no_body(out, "404 Not Found"),
         "PROPFIND" if is_probe => propfind_probe(bridge, target, &request, out),
         "GET" | "HEAD" if is_probe => get_probe(bridge, target, &request.method, out),
         "PROPFIND" => propfind(shared, bridge, target, &request, out),
@@ -364,6 +374,8 @@ fn options(out: &mut impl Write) -> io::Result<()> {
 fn lock_verb(bridge: &Bridge, target: &str, out: &mut impl Write) -> io::Result<()> {
     let token = match bridge.locks.lock_path(target) {
         Ok(token) => token,
+        // A second `LOCK` of an unexpired lock, RFC 4918's own 423.
+        Err(LockError::AlreadyLocked) => return no_body(out, "423 Locked"),
         // S5: the table is full, its own storage rather than another
         // resource's lock in the way, so 507 rather than RFC 4918's 423.
         Err(LockError::Full) => return no_body(out, "507 Insufficient Storage"),
@@ -399,10 +411,12 @@ fn unlock_verb(
     out: &mut impl Write,
 ) -> io::Result<()> {
     let token = request.header("lock-token").unwrap_or("");
-    if bridge.locks.unlock_path(target, token) {
-        no_body(out, "204 No Content")
-    } else {
-        no_body(out, "409 Conflict")
+    match bridge.locks.unlock_path(target, token) {
+        UnlockOutcome::Unlocked => no_body(out, "204 No Content"),
+        // A lock is held, but the token given does not name it: something
+        // real is being refused, unlike a path with no lock at all.
+        UnlockOutcome::WrongToken => no_body(out, "403 Forbidden"),
+        UnlockOutcome::NotLocked => no_body(out, "409 Conflict"),
     }
 }
 
@@ -656,6 +670,16 @@ fn delete_verb(
         }
     };
 
+    // Every planned path is checked against the lock table before the
+    // first delete: a locked file or folder anywhere in the tree refuses
+    // the whole `DELETE`, with nothing removed, rather than stopping
+    // partway through once a delete call happens to reach it.
+    for leaf in plan.files.iter().chain(plan.dirs.iter()) {
+        if !bridge.locks.allows(leaf.as_str(), request.header("if")) {
+            return no_body(out, "423 Locked");
+        }
+    }
+
     let file_count = plan.file_count();
     for leaf in plan.files.iter().chain(plan.dirs.iter()) {
         if let Err(error) = borrowed.client().delete(leaf) {
@@ -682,11 +706,38 @@ fn delete_verb(
     no_body(out, "204 No Content")
 }
 
+/// `Overwrite: F`'s check, shared by `move_verb` and `copy_verb`: `None`
+/// when `dest_path` does not exist on the peer, so the caller proceeds;
+/// `Some` with the status to answer otherwise, 412 when it does exist and
+/// whatever `map_write_error` names for any other failure.
+fn overwrite_conflict(
+    borrowed: &mut pool::Borrowed<'_>,
+    dest_path: &RemotePath,
+) -> Option<&'static str> {
+    match borrowed.client().stat(dest_path) {
+        Ok(_) => Some("412 Precondition Failed"),
+        Err(RpcError::Remote(OpError::NotFound)) => None,
+        Err(error) => {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            Some(status)
+        }
+    }
+}
+
 /// `MOVE` is `rename` within one root. `Overwrite: F` is honoured with
 /// 412; across roots the peer's own refusal answers 502
 /// (`map_write_error`). The destination is read from the `Destination`
 /// header, with the same `Host` check and percent decoding the primary
 /// target gets. A sidecar name never reaches the peer.
+///
+/// Either end named `.ferry-part` is 403: that name belongs to a landing
+/// still in progress, never to Finder. So is a destination that is a probe
+/// name while the source is not: a real file has no sidecar entry to
+/// become, and letting the rename reach the peer would leave a real file
+/// there under a name this bridge never shows again.
 fn move_verb(
     shared: &Arc<Shared>,
     bridge: &Bridge,
@@ -703,8 +754,23 @@ fn move_verb(
         return no_body(out, "400 Bad Request");
     };
     let destination = destination.trim_matches('/');
+    if !bridge.locks.allows(destination, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
 
-    if probes::is_probe_name(probes::last_segment(from_target)) {
+    if put::is_partial_name(probes::last_segment(from_target))
+        || put::is_partial_name(probes::last_segment(destination))
+    {
+        return no_body(out, "403 Forbidden");
+    }
+
+    let from_probe = probes::is_probe_name(probes::last_segment(from_target));
+    let to_probe = probes::is_probe_name(probes::last_segment(destination));
+    if to_probe && !from_probe {
+        return no_body(out, "403 Forbidden");
+    }
+
+    if from_probe {
         return if bridge.sidecars.rename(from_target, destination) {
             no_body(out, "204 No Content")
         } else {
@@ -723,18 +789,8 @@ fn move_verb(
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
         return unavailable(out);
     };
-    if overwrite_forbidden {
-        match borrowed.client().stat(&to_path) {
-            Ok(_) => return no_body(out, "412 Precondition Failed"),
-            Err(RpcError::Remote(OpError::NotFound)) => {}
-            Err(error) => {
-                let (status, unhealthy) = map_write_error(&error);
-                if unhealthy {
-                    borrowed.mark_unhealthy();
-                }
-                return no_body(out, status);
-            }
-        }
+    if overwrite_forbidden && let Some(status) = overwrite_conflict(&mut borrowed, &to_path) {
+        return no_body(out, status);
     }
     match borrowed.client().rename(&from_path, &to_path) {
         Ok(()) => {
@@ -771,25 +827,49 @@ fn copy_verb(
     request: &http::Request,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    let Ok(source_path) = RemotePath::parse(source_target) else {
-        return no_body(out, "404 Not Found");
-    };
     let expected_host = format!("127.0.0.1:{}", bridge.port);
     let Some(destination) = http::destination_path(request.header("destination"), &expected_host)
     else {
         return no_body(out, "400 Bad Request");
     };
     let destination = destination.trim_matches('/');
-    let Ok(dest_path) = RemotePath::parse(destination) else {
-        return no_body(out, "400 Bad Request");
-    };
     if !bridge.locks.allows(destination, request.header("if")) {
         return no_body(out, "423 Locked");
     }
 
+    // A probe name's bytes live only in the sidecar store: the source is
+    // read from there and written back under the destination name,
+    // without a single byte reaching the peer.
+    if probes::is_probe_name(probes::last_segment(source_target)) {
+        let Some(sidecar) = bridge.sidecars.read(source_target) else {
+            return no_body(out, "404 Not Found");
+        };
+        return match bridge.sidecars.write(destination, &sidecar.bytes) {
+            Ok(()) => http::write_head(out, "201 Created", &[("Content-Length", "0".to_owned())]),
+            Err(SidecarWriteError::TooLarge) => no_body(out, "413 Payload Too Large"),
+            Err(SidecarWriteError::Full) => no_body(out, "507 Insufficient Storage"),
+            Err(SidecarWriteError::Io) => no_body(out, "500 Internal Server Error"),
+        };
+    }
+
+    let Ok(source_path) = RemotePath::parse(source_target) else {
+        return no_body(out, "404 Not Found");
+    };
+    let Ok(dest_path) = RemotePath::parse(destination) else {
+        return no_body(out, "400 Bad Request");
+    };
+
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
         return unavailable(out);
     };
+    // `Overwrite: F` is honoured the same way `move_verb` honours it: a
+    // destination that already exists is 412, checked before anything is
+    // read from the source.
+    if request.header("overwrite") == Some("F")
+        && let Some(status) = overwrite_conflict(&mut borrowed, &dest_path)
+    {
+        return no_body(out, status);
+    }
     let entry = match borrowed.client().stat(&source_path) {
         Ok(entry) => entry,
         Err(RpcError::Remote(OpError::NotFound)) => return no_body(out, "404 Not Found"),
@@ -805,17 +885,20 @@ fn copy_verb(
         return no_body(out, "403 Forbidden");
     }
 
-    let Some(spool_path) = put::new_spool_path(shared, &bridge.device_key_hex) else {
-        return no_body(out, "500 Internal Server Error");
+    let spool = match put::new_spool_path(shared, &bridge.device_key_hex) {
+        Ok(spool) => spool,
+        Err(put::SpoolError::Full) => return no_body(out, "507 Insufficient Storage"),
+        Err(put::SpoolError::Failed) => return no_body(out, "500 Internal Server Error"),
     };
+    let mut bytes_written = 0u64;
     let landing = copy_landing(
         &mut borrowed,
         &source_path,
         &dest_path,
-        &spool_path,
+        spool.path(),
         entry.size,
+        &mut bytes_written,
     );
-    let _ = std::fs::remove_file(&spool_path);
 
     match landing {
         Ok(()) => {
@@ -859,11 +942,19 @@ fn copy_landing(
     destination: &RemotePath,
     spool_path: &std::path::Path,
     size: u64,
+    bytes_written: &mut u64,
 ) -> Result<(), RpcError> {
     put::fetch_into_spool(borrowed.client(), source, spool_path, size)?;
     let (fs, leaf, manifest) =
         put::open_spool(spool_path).ok_or(RpcError::Remote(OpError::Internal))?;
-    put::land_new(borrowed.client(), destination, &fs, &leaf, &manifest)
+    put::land_new(
+        borrowed.client(),
+        destination,
+        &fs,
+        &leaf,
+        &manifest,
+        bytes_written,
+    )
 }
 
 /// `PUT` of a real file. `docs/engine-contract.md`, item 6, I2: the body
@@ -917,27 +1008,35 @@ fn put_file(
     if !bridge.locks.allows(target, head.header("if")) {
         refuse!("423 Locked");
     }
-    let Some(spool_path) = put::new_spool_path(shared, &bridge.device_key_hex) else {
-        refuse!("500 Internal Server Error");
+    let spool = match put::new_spool_path(shared, &bridge.device_key_hex) {
+        Ok(spool) => spool,
+        Err(put::SpoolError::Full) => refuse!("507 Insufficient Storage"),
+        Err(put::SpoolError::Failed) => refuse!("500 Internal Server Error"),
     };
 
     // A short body or an I/O failure here propagates as an `Err`, closing
     // the connection: the same reasoning `stream_body`'s own S2 carries
     // for a `GET`, in the write direction. Everything from here on
     // answers a real response instead, since the body has, by this
-    // point, been received in full and correctly.
-    put::spool_body(reader, content_length, &spool_path)?;
+    // point, been received in full and correctly. `spool`'s own `Drop`
+    // removes the file on this path, and every path below it.
+    put::spool_body(reader, content_length, spool.path())?;
 
-    let Some((fs, leaf, manifest)) = put::open_spool(&spool_path) else {
-        let _ = std::fs::remove_file(&spool_path);
+    let Some((fs, leaf, manifest)) = put::open_spool(spool.path()) else {
         return no_body(out, "500 Internal Server Error").map(|()| true);
     };
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
-        let _ = std::fs::remove_file(&spool_path);
         return unavailable(out).map(|()| true);
     };
-    let landing = put_landing(&mut borrowed, &path, &fs, &leaf, &manifest);
-    let _ = std::fs::remove_file(&spool_path);
+    let mut bytes_written = 0u64;
+    let landing = put_landing(
+        &mut borrowed,
+        &path,
+        &fs,
+        &leaf,
+        &manifest,
+        &mut bytes_written,
+    );
 
     match landing {
         Ok(kind) => {
@@ -947,7 +1046,7 @@ fn put_file(
                 &bridge.device_key_hex,
                 AccessVerb::Write,
                 path.as_str(),
-                Some(manifest.length()),
+                Some(bytes_written),
                 None,
                 None,
             );
@@ -955,13 +1054,38 @@ fn put_file(
                 Landing::New => "201 Created",
                 Landing::Delta => "204 No Content",
             };
-            no_body(out, status).map(|()| true)
+            // The peer is asked fresh, rather than the size and time this
+            // side computed, so the `ETag` always names what actually
+            // landed. A failed re-stat here is not worth failing an
+            // otherwise successful `PUT` over, so it just means no `ETag`.
+            let etag = borrowed
+                .client()
+                .stat(&path)
+                .ok()
+                .map(|entry| http::etag(entry.size, entry.modified_unix_secs));
+            let mut headers = vec![("Content-Length", "0".to_owned())];
+            if let Some(etag) = &etag {
+                headers.push(("ETag", etag.clone()));
+            }
+            http::write_head(out, status, &headers).map(|()| true)
         }
         // A `PUT` onto an existing folder's path fits no verb this
         // bridge otherwise answers with 409, so it is named here rather
         // than folded into `map_write_error`'s generic mapping.
         Err(RpcError::Remote(OpError::IsADirectory)) => no_body(out, "409 Conflict").map(|()| true),
         Err(error) => {
+            // `docs/engine-contract.md`, item 6: "a failed landing removes
+            // the spool file." Its access log entry still says what was
+            // actually written to the peer before it failed, not nothing.
+            record_this(
+                shared,
+                &bridge.device_key_hex,
+                AccessVerb::Write,
+                path.as_str(),
+                Some(bytes_written),
+                None,
+                None,
+            );
             let (status, unhealthy) = map_write_error(&error);
             if unhealthy {
                 borrowed.mark_unhealthy();
@@ -987,17 +1111,32 @@ fn put_landing(
     fs: &LocalFs,
     leaf: &RemotePath,
     manifest: &Manifest,
+    bytes_written: &mut u64,
 ) -> Result<Landing, RpcError> {
     match borrowed.client().stat(destination) {
         Ok(entry) if entry.kind == FileKind::Directory => {
             Err(RpcError::Remote(OpError::IsADirectory))
         }
         Ok(_) => {
-            put::land_delta(borrowed.client(), destination, fs, leaf, manifest)?;
+            put::land_delta(
+                borrowed.client(),
+                destination,
+                fs,
+                leaf,
+                manifest,
+                bytes_written,
+            )?;
             Ok(Landing::Delta)
         }
         Err(RpcError::Remote(OpError::NotFound)) => {
-            put::land_new(borrowed.client(), destination, fs, leaf, manifest)?;
+            put::land_new(
+                borrowed.client(),
+                destination,
+                fs,
+                leaf,
+                manifest,
+                bytes_written,
+            )?;
             Ok(Landing::New)
         }
         Err(error) => Err(error),
@@ -1025,10 +1164,14 @@ fn proppatch_verb(
     }
     let parsed = xml::read_proppatch(&request.body);
     let mtime = parsed.mtime_text.as_deref().and_then(http::parse_rfc1123);
+    // A modified time property whose date failed to parse is refused, the
+    // same as any other property this bridge does not set: reporting it
+    // as accepted would tell the client its date landed when nothing was
+    // ever touched.
     let (accepted, refused): (Vec<String>, Vec<String>) =
         parsed.names.into_iter().partition(|name| {
             let lower = name.to_ascii_lowercase();
-            lower == "getlastmodified" || lower == "win32lastmodifiedtime"
+            (lower == "getlastmodified" || lower == "win32lastmodifiedtime") && mtime.is_some()
         });
 
     if probes::is_probe_name(probes::last_segment(target)) {
