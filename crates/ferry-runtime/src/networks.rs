@@ -33,13 +33,17 @@ use crate::FerryError;
 use crate::errors::failed;
 use crate::state::State;
 
-/// The trusted list holds at most this many names, and each name holds at
-/// most this many bytes.
+/// The trusted list holds at most this many names.
 ///
-/// `docs/engine-contract.md`, item 18. One number, because the contract
-/// names one: a person hand-trusting a 33rd network, or a name longer than
-/// this, is refused with `Runtime::NetworkName`.
-pub(crate) const NETWORK_LIMIT: usize = 32;
+/// `docs/engine-contract.md`, item 18. A person hand-trusting a 33rd network
+/// is refused with `Runtime::NetworkName`.
+pub(crate) const MAX_NETWORKS: usize = 32;
+
+/// Each trusted name holds at most this many bytes.
+///
+/// `docs/engine-contract.md`, item 18. A name longer than this is refused
+/// with `Runtime::NetworkName`.
+pub(crate) const MAX_NETWORK_NAME_BYTES: usize = 32;
 
 /// The name of the file under the data directory.
 const FILE_NAME: &str = "networks";
@@ -137,7 +141,8 @@ impl TrustedNetworks {
             // A line this build would refuse to add is dropped rather than
             // kept, so what is loaded is always a list this build could have
             // written itself.
-            if line.is_empty() || line.len() > NETWORK_LIMIT || names.len() >= NETWORK_LIMIT {
+            if line.is_empty() || line.len() > MAX_NETWORK_NAME_BYTES || names.len() >= MAX_NETWORKS
+            {
                 continue;
             }
             if !names.iter().any(|known| known == line) {
@@ -161,17 +166,17 @@ impl TrustedNetworks {
     /// # Errors
     ///
     /// Returns `Runtime::NetworkName` for an empty name, a name over
-    /// [`NETWORK_LIMIT`] bytes, or a name that would be the
-    /// [`NETWORK_LIMIT`] plus first. Returns `TransferError::Local` when
+    /// [`MAX_NETWORK_NAME_BYTES`] bytes, or a name that would be the
+    /// [`MAX_NETWORKS`] plus first. Returns `TransferError::Local` when
     /// local storage refuses the write.
     pub(crate) fn add(&mut self, name: &str) -> Result<bool, FerryError> {
-        if name.is_empty() || name.len() > NETWORK_LIMIT {
+        if name.is_empty() || name.len() > MAX_NETWORK_NAME_BYTES {
             return Err(failed("Runtime::NetworkName"));
         }
         if self.names.iter().any(|known| known == name) {
             return Ok(false);
         }
-        if self.names.len() >= NETWORK_LIMIT {
+        if self.names.len() >= MAX_NETWORKS {
             return Err(failed("Runtime::NetworkName"));
         }
         self.names.push(name.to_owned());

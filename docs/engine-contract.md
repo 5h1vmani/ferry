@@ -789,13 +789,13 @@ state but `Idle`, `Confirmed`, and `Failed`. It does not read `reachable`,
 because a browse query is quiet enough to run on any network.
 `wifi_presence(&State) -> bool` gates the advertiser and inbound
 acceptance. It is `reachable` and `browse_allowed`. The module owns the
-trusted list file, both functions, and nothing else. It holds one
-constant, `NETWORK_LIMIT`, which is 32: the list holds at most 32 names,
-and each name holds at most 32 bytes. `State` gains the two fields the
-rule reads, the current network name and the trusted list. An unknown
-network with a non-empty list is off for both functions. So a person who
-never granted the location permission sees no change from today, and a
-person who granted it once is quiet on
+trusted list file, both functions, and nothing else. It holds two
+constants: `MAX_NETWORKS`, which is 32, bounds how many names the list
+holds. `MAX_NETWORK_NAME_BYTES`, also 32, bounds the length of one name.
+`State` gains the two fields the rule reads, the current network name and
+the trusted list. An unknown network with a non-empty list is off for
+both functions. So a person who never granted the location permission
+sees no change from today, and a person who granted it once is quiet on
 every network they did not pair on or trust by hand.
 
 **Applying it.** One function, `apply_presence(shared)`, compares both
