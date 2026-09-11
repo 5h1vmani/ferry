@@ -440,7 +440,11 @@ fn bytes_done_of(shared: &Arc<Shared>, id: &str) -> u64 {
 /// Record what this attempt received from the peer, as actor `This`, and
 /// end the roll-up's connection for it. Skips logging when nothing was
 /// received: a dial that never reached the file layer, or one that failed
-/// before a byte arrived, has nothing to report.
+/// before a byte arrived, has nothing to report. Also skips logging when
+/// `plan.batch_id` is `Some`: a file copied as part of a folder copy logs
+/// nothing of its own on the calling side, because `pull_folder`'s own
+/// entry, with its `files` and `bytes` totals, already covers it
+/// (docs/engine-contract.md, item 13, "Rolling up").
 fn record_attempt_read(
     shared: &Arc<Shared>,
     id: &str,
@@ -448,6 +452,9 @@ fn record_attempt_read(
     connection: u64,
     bytes_before: u64,
 ) {
+    if plan.batch_id.is_some() {
+        return;
+    }
     let received = bytes_done_of(shared, id).saturating_sub(bytes_before);
     if received == 0 {
         return;

@@ -362,7 +362,9 @@ touches a different path, when five seconds pass without a new operation
 on it, or when the connection ends. The listener fires for final entries
 only. A `list` entry counts every page of the listing. A `pull_folder`
 records one entry with the file count and the byte total on the calling
-side. `set_mtime` is not logged: it always follows a write that is.
+side. A file copied as part of a folder copy logs nothing of its own on the
+calling side; the folder entry covers it. `set_mtime` is not logged: it
+always follows a write that is.
 
 **Storage.** `data_dir/access_log/<YYYYMMDD>`, one file per UTC day, a
 version byte first, the same encoder as the peer store. A day holds at
