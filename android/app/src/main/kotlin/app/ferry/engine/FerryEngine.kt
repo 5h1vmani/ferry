@@ -282,12 +282,13 @@ object FerryEngine {
         _error.value = null
         _scanSent.value = false
         _pairingMethod.value = method
-        current.startPairingWith(
-            when (method) {
-                UiPairingMethod.Scan -> EnginePairingMethod.QR
-                UiPairingMethod.Code -> EnginePairingMethod.CODE
-            },
-        )
+        if (method == UiPairingMethod.Scan) {
+            // The phone offers the engine nothing yet: it only opens the
+            // camera. offerScanned is the call that enters pairing, once a
+            // code has been read.
+            return
+        }
+        current.startPairingWith(EnginePairingMethod.CODE)
     }
 
     // Hands the engine the bytes the camera read. The engine dials the
