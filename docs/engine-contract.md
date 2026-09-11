@@ -388,7 +388,7 @@ Each item states its decisions so that a builder needs no other source.
 | J | 12 | The engine and Mac half of QR pairing. The phone's camera screen waits for the Kotlin design pass. |
 | I2 | 6, the write verbs and the delta on save | Needs push and the manifest request. |
 
-### 16. The runtime limits: open
+### 16. The runtime limits: built
 
 Three engine changes from `PLAN.md` phase 2, item 1. None changes an
 existing frame, so the protocol version stays at 2 unless item 12 moves it.

@@ -1,6 +1,7 @@
 //! The engine object and the threads it owns.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+use std::collections::HashMap;
+use std::net::{Ipv4Addr, Shutdown, SocketAddr, SocketAddrV4, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -313,6 +314,16 @@ pub(crate) struct Shared {
     pub(crate) next_connection: AtomicU64,
     /// Every device's `WebDAV` bridge. `docs/engine-contract.md`, item 6.
     pub(crate) mounts: dav::MountRegistry,
+    /// A clone of every open transfer connection's raw socket, keyed by a
+    /// connection id from the same counter as `next_connection`.
+    ///
+    /// A worker can be blocked in a kernel read deep inside an encrypted
+    /// stream, where the stopping flag is invisible to it. `stop` calls
+    /// `shutdown` on every socket registered here, right after it sets that
+    /// flag, which turns a blocked read into an error at once instead of
+    /// waiting for the peer or the idle timeout in `tcp.rs`.
+    /// `docs/engine-contract.md` item 16c.
+    pub(crate) sockets: Mutex<HashMap<u64, TcpStream>>,
 }
 
 impl Shared {
@@ -360,6 +371,18 @@ impl Shared {
     /// A connection id no other open connection is using right now.
     pub(crate) fn next_connection_id(&self) -> u64 {
         self.next_connection.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Register a connection's raw socket under `id`, so `stop` can close it
+    /// directly. `docs/engine-contract.md` item 16c.
+    pub(crate) fn register_socket(&self, id: u64, socket: TcpStream) {
+        lock(&self.sockets).insert(id, socket);
+    }
+
+    /// Remove a connection's registered socket. Called once the connection
+    /// has ended, whether it finished, failed, or was closed by `stop`.
+    pub(crate) fn unregister_socket(&self, id: u64) {
+        lock(&self.sockets).remove(&id);
     }
 
     /// Report a pairing state to the app and remember it.
@@ -679,6 +702,7 @@ impl Engine {
             access_log: Arc::new(Mutex::new(None)),
             next_connection: AtomicU64::new(0),
             mounts: dav::MountRegistry::new(),
+            sockets: Mutex::new(HashMap::new()),
         });
 
         load_saved_transfers(&shared);
@@ -796,6 +820,15 @@ impl Engine {
             state.reachable = false;
         }
         self.shared.stopping.store(true, Ordering::SeqCst);
+
+        // A worker blocked in a kernel read cannot see the flag just set
+        // above. Closing every registered socket directly turns that read
+        // into an error at once, instead of waiting for the peer or the
+        // idle timeout in `tcp.rs`. `docs/engine-contract.md` item 16c.
+        for socket in lock(&self.shared.sockets).values() {
+            drop(socket.shutdown(Shutdown::Both));
+        }
+
         *lock(&self.shared.advertiser) = None;
         self.shared.wake.notify_all();
 
@@ -1325,8 +1358,12 @@ impl Engine {
             }
         }
 
-        let (stream, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
+        let (stream, socket, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
         mark_reachable(&self.shared, &device_key_hex, addr, via);
+        // docs/engine-contract.md item 16c: registered for the life of this
+        // call, so `stop` can close it if the listing hangs.
+        let connection_id = self.shared.next_connection_id();
+        let _socket = SocketRegistration::new(&self.shared, connection_id, socket);
         let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
         exchange_hello(&mut stream, &self.shared.display_name, self.shared.kind)
             .map_err(|error| from_rpc(&error))?;
@@ -1441,8 +1478,12 @@ impl Engine {
             }
         }
 
-        let (stream, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
+        let (stream, socket, addr, via) = transfer::dial(&self.shared, &device_key_hex, &key)?;
         mark_reachable(&self.shared, &device_key_hex, addr, via);
+        // docs/engine-contract.md item 16c: registered for the life of this
+        // call, so `stop` can close it if the listing hangs.
+        let connection_id = self.shared.next_connection_id();
+        let _socket = SocketRegistration::new(&self.shared, connection_id, socket);
 
         let mut stream = StopAware::new(stream, Arc::clone(&self.shared.stopping));
         exchange_hello(&mut stream, &self.shared.display_name, self.shared.kind)
@@ -2299,6 +2340,8 @@ fn serve_connection(shared: &Arc<Shared>, connection: Connection, peer: PublicKe
     let transport = transport_for_inbound(shared, connection.remote);
     let key_hex = hex_of(&peer);
     let allowed = register_serving(shared, &key_hex, connection.remote);
+    let socket_id = shared.next_connection_id();
+    let _socket = SocketRegistration::new(shared, socket_id, connection.socket);
     serve_stream(
         shared,
         connection.stream,
@@ -2307,6 +2350,31 @@ fn serve_connection(shared: &Arc<Shared>, connection: Connection, peer: PublicKe
         connection.remote,
         &allowed,
     );
+}
+
+/// Keeps one connection's raw socket registered in `Shared`, for `stop` to
+/// close directly, for as long as this value lives.
+///
+/// `docs/engine-contract.md` item 16c: every connection registers when it is
+/// established and removes itself when it ends. Using a guard, instead of a
+/// bare register-then-unregister pair, means an early return or a panic on
+/// any path still frees the entry.
+pub(crate) struct SocketRegistration<'a> {
+    shared: &'a Arc<Shared>,
+    id: u64,
+}
+
+impl<'a> SocketRegistration<'a> {
+    pub(crate) fn new(shared: &'a Arc<Shared>, id: u64, socket: TcpStream) -> Self {
+        shared.register_socket(id, socket);
+        Self { shared, id }
+    }
+}
+
+impl Drop for SocketRegistration<'_> {
+    fn drop(&mut self) {
+        self.shared.unregister_socket(self.id);
+    }
 }
 
 /// Serve the shared root on one stream, and keep the device list honest.

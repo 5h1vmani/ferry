@@ -184,28 +184,36 @@
 //! authenticates. `docs/engine-contract.md` item 16b; see `candidate_peers`
 //! in `engine.rs` and `Pending::connect` in `tcp.rs`.
 //!
-//! # Known limitation: a serving thread cannot be woken
+//! # Closing a connection from `stop`
 //!
-//! `stop` joins the accept loop, the discovery loop, the `adb` poll, the
-//! pairing watchdog, and every transfer worker. It does not join threads that
-//! are serving a connection. Such a thread is blocked reading from an
-//! encrypted stream, and the socket handle sits inside that stream where this
-//! crate cannot reach it. So it ends when the peer goes away or when the idle
-//! timeout in `tcp.rs` fires, whichever comes first.
+//! A thread can be blocked in a kernel read, deep inside an encrypted
+//! stream, where the stopping flag `stop` sets is invisible to it: a read
+//! only checks the flag before it starts, not while it waits. Left
+//! unfixed, such a thread ends only when the peer goes away or the idle
+//! timeout in `tcp.rs` fires, whichever comes first, so `stop` could wait
+//! up to five minutes for one silent peer.
 //!
-//! `stop` and `forget` have the same shape of problem and solve it the same
-//! way. Neither can close the socket, so both switch the served filesystem
-//! off instead. Every operation on that connection is refused from that
-//! moment, and `stop` also takes the shared root away, so a socket that
-//! stays open until its idle timeout serves nothing at all. The switch is
-//! put in place as soon as the handshake proves who is calling, before names
-//! are exchanged, so a peer that delays its `hello` is still within reach of
-//! `forget`.
+//! Every connection now registers a clone of its raw socket in `Shared`,
+//! keyed by a connection id from the same counter the access log uses, as
+//! soon as it is established, both dialled and accepted, and removes it
+//! when the connection ends. `stop` sets the flag, then calls
+//! `shutdown(Both)` on every socket still registered, before it joins the
+//! threads it always has. A blocked read then fails at once, so the thread
+//! sees the flag on its very next check. `docs/engine-contract.md` item
+//! 16c; see `Shared::register_socket` and `Engine::stop` in `engine.rs`.
 //!
-//! A transfer thread is joined, and it ends quickly, because the stream it
-//! reads through fails as soon as the stop flag is set. The one case that
-//! still waits is a transfer caught inside a handshake, which `tcp.rs` bounds
-//! at ten seconds.
+//! A serving thread is still not joined: `accept_loop` spawns it and lets
+//! it go, since it may otherwise outlive an idle timeout `stop` should not
+//! have to wait through. It no longer needs to be joined for `stop` to
+//! return quickly, now that its socket closes under it.
+//!
+//! `forget` has the same shape of problem for one device, without touching
+//! every connection the way `stop` does, so it still solves it the old
+//! way: it switches the served filesystem off instead of closing a socket.
+//! Every operation on that connection is refused from that moment. The
+//! switch is put in place as soon as the handshake proves who is calling,
+//! before names are exchanged, so a peer that delays its `hello` is still
+//! within reach of `forget`.
 
 uniffi::setup_scaffolding!();
 

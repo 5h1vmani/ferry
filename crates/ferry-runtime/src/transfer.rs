@@ -58,7 +58,9 @@ use ferry_core::tcp;
 
 use crate::access::{self, EntryFields};
 use crate::batch::{self, BatchRecord};
-use crate::engine::{Shared, dial_targets, mark_reachable, notify, remove_record};
+use crate::engine::{
+    Shared, SocketRegistration, dial_targets, mark_reachable, notify, remove_record,
+};
 use crate::errors::{failed, from_op, from_rpc, from_transfer};
 use crate::guard::{Cut, StopAware};
 use crate::notify::Change;
@@ -375,11 +377,18 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
         return Outcome::Fatal(failed("Runtime::NotStarted"));
     };
 
-    let (stream, addr, via) = match dial(shared, &plan.device_key_hex, &plan.peer) {
+    let (stream, socket, addr, via) = match dial(shared, &plan.device_key_hex, &plan.peer) {
         Ok(found) => found,
         Err(error) => return Outcome::Retry(error),
     };
     mark_reachable(shared, &plan.device_key_hex, addr, via);
+
+    // Registered as soon as the connection exists, so `stop` can close it
+    // even if this attempt later hangs inside the hello exchange or a file
+    // read. The same id doubles as this attempt's access log connection id,
+    // below. docs/engine-contract.md item 16c.
+    let connection = shared.next_connection_id();
+    let _socket = SocketRegistration::new(shared, connection, socket);
 
     // A cut a test armed is for this dial only. Taking it here, right after
     // the dial it belongs to, means the dial after this one starts clean.
@@ -411,7 +420,6 @@ fn attempt(shared: &Arc<Shared>, id: &str) -> Outcome {
     // advances (`Reporter::moved`), so the delta after the attempt is
     // exactly what this attempt itself received (docs/engine-contract.md,
     // item 13).
-    let connection = shared.next_connection_id();
     let bytes_before = bytes_done_of(shared, id);
 
     let mut client = Client::new(stream);
@@ -480,19 +488,31 @@ fn record_attempt_read(
 
 /// Find a way to reach the device, best path first.
 ///
-/// Shared by a transfer attempt and by `Engine::list`, so a dial only has
-/// one implementation.
+/// Shared by a transfer attempt, `Engine::list`, and `Engine::pull_folder`,
+/// so a dial only has one implementation.
+///
+/// The raw socket travels alongside the stream so the caller can register it
+/// with `Shared`, for `stop` to close directly (`docs/engine-contract.md`
+/// item 16c).
 pub(crate) fn dial(
     shared: &Arc<Shared>,
     device_key_hex: &str,
     peer: &PublicKey,
-) -> Result<(ferry_core::noise::SecureStream, SocketAddr, Transport), FerryError> {
+) -> Result<
+    (
+        ferry_core::noise::SecureStream,
+        std::net::TcpStream,
+        SocketAddr,
+        Transport,
+    ),
+    FerryError,
+> {
     for (addr, via) in dial_targets(shared, device_key_hex) {
         if shared.stopping() {
             break;
         }
         if let Ok(connection) = tcp::connect(addr, &shared.key, peer) {
-            return Ok((connection.stream, connection.remote, via));
+            return Ok((connection.stream, connection.socket, connection.remote, via));
         }
     }
     Err(failed("Runtime::NotReachable"))

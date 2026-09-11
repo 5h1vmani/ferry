@@ -29,6 +29,13 @@
 //! not hold its thread forever. The write timeout is cleared, since a write
 //! only blocks when the peer stops reading, which is not covered here.
 //!
+//! `run_handshake` also hands back a clone of the raw socket, taken before
+//! the handshake boxes the stream inside a `SecureStream`. `Connection`
+//! carries it as `socket`, for the caller to register with `Shared`, so
+//! `stop` can call `shutdown` on it directly instead of waiting out
+//! `IDLE_TIMEOUT_SECS` for a peer that stopped answering.
+//! `docs/engine-contract.md` item 16c.
+//!
 //! Public shape:
 //!
 //! ```text
@@ -63,6 +70,10 @@
 //!     /// Whichever candidate authenticated: the peer asked for, when this
 //!     /// device dialled, or whichever of `candidates` did, when it accepted.
 //!     pub peer: PublicKey,
+//!     /// A clone of the raw socket, taken before `stream` boxed it. The
+//!     /// caller registers this with `Shared` so `stop` can close it
+//!     /// directly, both dialled and accepted.
+//!     pub socket: TcpStream,
 //! }
 //!
 //! /// What a successful `pair` or `Pending::pair` produces. `Paired` has no
@@ -233,18 +244,24 @@ impl Write for DeadlineStream {
 /// prologue from [`Agreed`] to start the Noise handshake. It moves the
 /// stream into that handshake, and, on success, into the value it returns.
 ///
-/// A cloned handle to the same socket is kept aside first. A timeout belongs
-/// to the socket, not to whichever Rust value currently holds it, so setting
-/// the idle timeout on that clone reaches the connection no matter which
-/// wrapper the returned value keeps.
+/// Two clones of the same socket are kept aside first, before `stream` is
+/// wrapped in anything. One sets the idle timeout once the handshake ends: a
+/// timeout belongs to the socket, not to whichever Rust value currently
+/// holds it, so setting it on a clone reaches the connection no matter which
+/// wrapper the returned value keeps. The other is returned alongside the
+/// value, for the caller to register with `Shared` so `stop` can call
+/// `shutdown` on it directly, since by the time the handshake finishes the
+/// stream is boxed inside a `SecureStream` and nothing above this point can
+/// reach the socket any other way. `docs/engine-contract.md` item 16c.
 fn run_handshake<T>(
     stream: TcpStream,
     role: Role,
     deadline: Instant,
     idle_timeout: Duration,
     run: impl FnOnce(DeadlineStream, Agreed) -> Result<T, NoiseError>,
-) -> Result<T, TcpError> {
+) -> Result<(T, TcpStream), TcpError> {
     let idle_handle = stream.try_clone()?;
+    let registered_socket = stream.try_clone()?;
     let armed = Arc::new(AtomicBool::new(true));
     let mut deadline_stream = DeadlineStream {
         stream,
@@ -262,7 +279,7 @@ fn run_handshake<T>(
     idle_handle.set_read_timeout(Some(idle_timeout))?;
     idle_handle.set_write_timeout(None)?;
 
-    Ok(value)
+    Ok((value, registered_socket))
 }
 
 /// Reserves one pending-handshake slot, and gives it back when dropped.
@@ -431,7 +448,10 @@ impl Pending {
             slot: _slot,
             ..
         } = self;
-        run_handshake(
+        // Pairing runs once, while a person is watching both screens, and
+        // already has its own timeout; it does not register for `stop` to
+        // close directly the way an ordinary connection does.
+        let (connection, _socket) = run_handshake(
             stream,
             Role::Responder,
             deadline,
@@ -442,7 +462,8 @@ impl Pending {
                     version: agreed.version,
                 })
             },
-        )
+        )?;
+        Ok(connection)
     }
 
     /// Agree a version, then run Noise KK as responder, trying each of
@@ -473,22 +494,23 @@ impl Pending {
             idle_timeout,
             slot: _slot,
         } = self;
-        run_handshake(
+        let ((stream, peer, version), socket) = run_handshake(
             stream,
             Role::Responder,
             deadline,
             idle_timeout,
             |s, agreed| {
-                noise::connect_as_responder_any(s, key, candidates, &agreed.prologue).map(
-                    |(stream, peer)| Connection {
-                        stream,
-                        remote,
-                        version: agreed.version,
-                        peer,
-                    },
-                )
+                noise::connect_as_responder_any(s, key, candidates, &agreed.prologue)
+                    .map(|(stream, peer)| (stream, peer, agreed.version))
             },
-        )
+        )?;
+        Ok(Connection {
+            stream,
+            remote,
+            version,
+            peer,
+            socket,
+        })
     }
 }
 
@@ -507,6 +529,11 @@ pub struct Connection {
     /// candidates actually authenticated. `docs/engine-contract.md` item
     /// 16b.
     pub peer: PublicKey,
+    /// A clone of the raw socket, taken before `stream` boxed it. Register
+    /// this with `Shared` so `stop` can call `shutdown` on it directly; that
+    /// is the only way to reach the socket once this value exists.
+    /// `docs/engine-contract.md` item 16c.
+    pub socket: TcpStream,
 }
 
 /// What a successful [`pair`] or [`Pending::pair`] produces.
@@ -541,20 +568,23 @@ pub fn connect(
     let _ = stream.set_nodelay(true);
     let remote = stream.peer_addr()?;
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
-    run_handshake(
+    let ((stream, version), socket) = run_handshake(
         stream,
         Role::Initiator,
         deadline,
         Duration::from_secs(IDLE_TIMEOUT_SECS),
         |s, agreed| {
-            noise::connect_as_initiator(s, key, peer, &agreed.prologue).map(|stream| Connection {
-                stream,
-                remote,
-                version: agreed.version,
-                peer: *peer,
-            })
+            noise::connect_as_initiator(s, key, peer, &agreed.prologue)
+                .map(|stream| (stream, agreed.version))
         },
-    )
+    )?;
+    Ok(Connection {
+        stream,
+        remote,
+        version,
+        peer: *peer,
+        socket,
+    })
 }
 
 /// Dial a peer, agree a version, and run XX as initiator.
@@ -570,7 +600,9 @@ pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpEr
     // delayed acknowledgement instead of reaching the wire at once.
     let _ = stream.set_nodelay(true);
     let deadline = Instant::now() + Duration::from_secs(limits::HANDSHAKE_TIMEOUT_SECS);
-    run_handshake(
+    // Pairing does not register a socket for `stop` to close; see
+    // `Pending::pair`.
+    let (connection, _socket) = run_handshake(
         stream,
         Role::Initiator,
         deadline,
@@ -581,7 +613,8 @@ pub fn pair(addr: SocketAddr, key: &StaticKey) -> Result<PairedConnection, TcpEr
                 version: agreed.version,
             })
         },
-    )
+    )?;
+    Ok(connection)
 }
 
 #[cfg(test)]
