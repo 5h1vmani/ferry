@@ -672,16 +672,17 @@ pub enum PairingState {
         /// What to draw. `offer.expires_unix_secs` is this state's deadline.
         offer: PairingOffer,
     },
-    /// The Mac read a scan's hello and is waiting for `confirm_pairing`. QR
-    /// method. The phone never shows this: it asks no question of its own.
+    /// A scan's names have crossed, and this side is waiting for
+    /// `confirm_pairing`. QR method. Both sides show it: the Mac names the
+    /// phone that scanned, and the phone names the Mac it scanned.
     Requested {
-        /// The scanning phone's name, from its hello.
+        /// The other device's name, from its hello.
         name: String,
-        /// The scanning device's kind, from its hello. Shown as the
-        /// device's own icon, rather than assuming every scan is a phone.
+        /// The other device's kind, from its hello. Shown as that device's
+        /// own icon, rather than assuming every scan is a phone.
         kind: DeviceKind,
-        /// How the phone reached this Mac. Always `Wifi`: QR pairing only
-        /// dials the Wi-Fi addresses in the offer.
+        /// How the two devices reached each other. Always `Wifi`: QR
+        /// pairing only dials the Wi-Fi addresses in the offer.
         transport: Transport,
     },
     /// Both sides confirmed. The device is now in `devices()`.

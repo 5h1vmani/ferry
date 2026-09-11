@@ -658,10 +658,15 @@ public protocol EngineProtocol: AnyObject, Sendable {
     /**
      * Accept or reject the device whose code, or scan, is showing.
      *
-     * Accepting stores the peer and exchanges names. That takes a round
-     * trip, so it runs on its own thread and reports through the listener.
-     * Works the same way for both pairing methods: whichever of `held`
-     * (code) or `requested` (QR) is holding a connection is the one taken.
+     * Accepting stores the peer, and on most paths exchanges names first.
+     * That takes a round trip, so it runs on its own thread and reports
+     * through the listener. Works the same way for both pairing methods
+     * and for both sides of a scan: whichever of `held` (code) or
+     * `requested` (QR) is holding a connection is the one taken.
+     *
+     * This answers for this device only. The other device answers its own
+     * question on its own screen, and neither answer stores anything on
+     * the other. `docs/engine-contract.md` item 12.
      */
     func confirmPairing(accept: Bool) 
     
@@ -783,8 +788,11 @@ public protocol EngineProtocol: AnyObject, Sendable {
      * three refuses at once, before a single byte reaches the network.
      * Past that point the dial and the `IK` handshake run on their own
      * thread, as `pick_candidate` runs its dial, and the outcome arrives
-     * through the listener: `Confirmed` or `Failed`. This device asks no
-     * question of its own; scanning the code was the answer.
+     * through the listener. Once the names cross, this device publishes
+     * `Requested` with the other device's name and waits for
+     * `confirm_pairing`, the same as the offering Mac does. The scan proves
+     * the key came from a screen; it does not show whose screen, so this
+     * side asks that question before it stores anything.
      *
      * # Errors
      *
@@ -1300,10 +1308,15 @@ open func cancelPairing()  {try! rustCall() {
     /**
      * Accept or reject the device whose code, or scan, is showing.
      *
-     * Accepting stores the peer and exchanges names. That takes a round
-     * trip, so it runs on its own thread and reports through the listener.
-     * Works the same way for both pairing methods: whichever of `held`
-     * (code) or `requested` (QR) is holding a connection is the one taken.
+     * Accepting stores the peer, and on most paths exchanges names first.
+     * That takes a round trip, so it runs on its own thread and reports
+     * through the listener. Works the same way for both pairing methods
+     * and for both sides of a scan: whichever of `held` (code) or
+     * `requested` (QR) is holding a connection is the one taken.
+     *
+     * This answers for this device only. The other device answers its own
+     * question on its own screen, and neither answer stores anything on
+     * the other. `docs/engine-contract.md` item 12.
      */
 open func confirmPairing(accept: Bool)  {try! rustCall() {
         uniffiCallStatus in
@@ -1493,8 +1506,11 @@ open func mountStop(deviceKeyHex: String)  {try! rustCall() {
      * three refuses at once, before a single byte reaches the network.
      * Past that point the dial and the `IK` handshake run on their own
      * thread, as `pick_candidate` runs its dial, and the outcome arrives
-     * through the listener: `Confirmed` or `Failed`. This device asks no
-     * question of its own; scanning the code was the answer.
+     * through the listener. Once the names cross, this device publishes
+     * `Requested` with the other device's name and waits for
+     * `confirm_pairing`, the same as the offering Mac does. The scan proves
+     * the key came from a screen; it does not show whose screen, so this
+     * side asks that question before it stores anything.
      *
      * # Errors
      *
@@ -4429,20 +4445,21 @@ public enum PairingState: Equatable, Hashable {
          */offer: PairingOffer
     )
     /**
-     * The Mac read a scan's hello and is waiting for `confirm_pairing`. QR
-     * method. The phone never shows this: it asks no question of its own.
+     * A scan's names have crossed, and this side is waiting for
+     * `confirm_pairing`. QR method. Both sides show it: the Mac names the
+     * phone that scanned, and the phone names the Mac it scanned.
      */
     case requested(
         /**
-         * The scanning phone's name, from its hello.
+         * The other device's name, from its hello.
          */name: String, 
         /**
-         * The scanning device's kind, from its hello. Shown as the
-         * device's own icon, rather than assuming every scan is a phone.
+         * The other device's kind, from its hello. Shown as that device's
+         * own icon, rather than assuming every scan is a phone.
          */kind: DeviceKind, 
         /**
-         * How the phone reached this Mac. Always `Wifi`: QR pairing only
-         * dials the Wi-Fi addresses in the offer.
+         * How the two devices reached each other. Always `Wifi`: QR
+         * pairing only dials the Wi-Fi addresses in the offer.
          */transport: Transport
     )
     /**
@@ -5413,7 +5430,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() != 50742) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 48275) {
+    if (uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() != 57704) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_delete() != 25057) {
@@ -5440,7 +5457,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_mount_stop() != 21724) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_offer_scanned() != 59759) {
+    if (uniffi_ferry_runtime_checksum_method_engine_offer_scanned() != 29500) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pick_candidate() != 19467) {

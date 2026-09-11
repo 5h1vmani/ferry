@@ -1818,10 +1818,29 @@ fn two_devices_pair_by_scanning_a_qr_code() {
     assert_eq!(kind, DeviceKind::Phone);
     assert_eq!(transport, Transport::Wifi);
 
-    // The phone asks no question of its own: scanning was its answer. Only
-    // the Mac calls `confirm_pairing`.
+    // Both sides confirm. The Mac's confirm releases its hello, and that
+    // hello is what names the Mac to the phone, so the phone's own
+    // `Requested` can only arrive after it; see `docs/engine-contract.md`
+    // item 12.
     mac.engine.confirm_pairing(true);
     mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
+
+    let scanned = phone
+        .inbox
+        .wait_pairing("the phone to show the Mac it scanned", is_requested);
+    let PairingState::Requested {
+        name,
+        kind,
+        transport,
+    } = scanned
+    else {
+        panic!("expected Requested, got {scanned:?}");
+    };
+    assert_eq!(name, "Vamana");
+    assert_eq!(kind, DeviceKind::Mac);
+    assert_eq!(transport, Transport::Wifi);
+
+    phone.engine.confirm_pairing(true);
     phone
         .inbox
         .wait_pairing("the phone to confirm", is_confirmed);
@@ -1983,6 +2002,10 @@ fn a_strangers_wrong_nonce_does_not_end_a_live_offer() {
 
     mac.engine.confirm_pairing(true);
     mac.inbox.wait_pairing("the Mac to confirm", is_confirmed);
+    phone
+        .inbox
+        .wait_pairing("the phone to show the Mac it scanned", is_requested);
+    phone.engine.confirm_pairing(true);
     phone
         .inbox
         .wait_pairing("the phone to confirm", is_confirmed);

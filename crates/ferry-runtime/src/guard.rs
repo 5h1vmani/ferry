@@ -233,6 +233,15 @@ impl<S> StopAware<S> {
         Self { inner, stopping }
     }
 
+    /// Take the stream back out of the wrapper.
+    ///
+    /// Used when a stream is put away to wait rather than read. Pairing
+    /// holds a scanned session across the person's confirm, and nothing
+    /// reads it while it waits, so the stopping check has nothing to do.
+    pub(crate) fn into_inner(self) -> S {
+        self.inner
+    }
+
     /// An error that says the engine asked this stream to stop.
     ///
     /// The kind is part of the contract. `Read::read_exact` and

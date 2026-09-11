@@ -1059,7 +1059,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_cancel_pairing() and 0xFFFF) != 50742) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() and 0xFFFF) != 48275) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_confirm_pairing() and 0xFFFF) != 57704) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_delete() and 0xFFFF) != 25057) {
@@ -1086,7 +1086,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_mount_stop() and 0xFFFF) != 21724) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_offer_scanned() and 0xFFFF) != 59759) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_offer_scanned() and 0xFFFF) != 29500) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pick_candidate() and 0xFFFF) != 19467) {
@@ -1699,10 +1699,15 @@ public interface EngineInterface {
     /**
      * Accept or reject the device whose code, or scan, is showing.
      *
-     * Accepting stores the peer and exchanges names. That takes a round
-     * trip, so it runs on its own thread and reports through the listener.
-     * Works the same way for both pairing methods: whichever of `held`
-     * (code) or `requested` (QR) is holding a connection is the one taken.
+     * Accepting stores the peer, and on most paths exchanges names first.
+     * That takes a round trip, so it runs on its own thread and reports
+     * through the listener. Works the same way for both pairing methods
+     * and for both sides of a scan: whichever of `held` (code) or
+     * `requested` (QR) is holding a connection is the one taken.
+     *
+     * This answers for this device only. The other device answers its own
+     * question on its own screen, and neither answer stores anything on
+     * the other. `docs/engine-contract.md` item 12.
      */
     fun `confirmPairing`(`accept`: kotlin.Boolean)
     
@@ -1824,8 +1829,11 @@ public interface EngineInterface {
      * three refuses at once, before a single byte reaches the network.
      * Past that point the dial and the `IK` handshake run on their own
      * thread, as `pick_candidate` runs its dial, and the outcome arrives
-     * through the listener: `Confirmed` or `Failed`. This device asks no
-     * question of its own; scanning the code was the answer.
+     * through the listener. Once the names cross, this device publishes
+     * `Requested` with the other device's name and waits for
+     * `confirm_pairing`, the same as the offering Mac does. The scan proves
+     * the key came from a screen; it does not show whose screen, so this
+     * side asks that question before it stores anything.
      *
      * # Errors
      *
@@ -2408,10 +2416,15 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
     /**
      * Accept or reject the device whose code, or scan, is showing.
      *
-     * Accepting stores the peer and exchanges names. That takes a round
-     * trip, so it runs on its own thread and reports through the listener.
-     * Works the same way for both pairing methods: whichever of `held`
-     * (code) or `requested` (QR) is holding a connection is the one taken.
+     * Accepting stores the peer, and on most paths exchanges names first.
+     * That takes a round trip, so it runs on its own thread and reports
+     * through the listener. Works the same way for both pairing methods
+     * and for both sides of a scan: whichever of `held` (code) or
+     * `requested` (QR) is holding a connection is the one taken.
+     *
+     * This answers for this device only. The other device answers its own
+     * question on its own screen, and neither answer stores anything on
+     * the other. `docs/engine-contract.md` item 12.
      */override fun `confirmPairing`(`accept`: kotlin.Boolean)
         = 
     callWithHandle {
@@ -2643,8 +2656,11 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
      * three refuses at once, before a single byte reaches the network.
      * Past that point the dial and the `IK` handshake run on their own
      * thread, as `pick_candidate` runs its dial, and the outcome arrives
-     * through the listener: `Confirmed` or `Failed`. This device asks no
-     * question of its own; scanning the code was the answer.
+     * through the listener. Once the names cross, this device publishes
+     * `Requested` with the other device's name and waits for
+     * `confirm_pairing`, the same as the offering Mac does. The scan proves
+     * the key came from a screen; it does not show whose screen, so this
+     * side asks that question before it stores anything.
      *
      * # Errors
      *
@@ -5032,22 +5048,23 @@ sealed class PairingState {
     }
     
     /**
-     * The Mac read a scan's hello and is waiting for `confirm_pairing`. QR
-     * method. The phone never shows this: it asks no question of its own.
+     * A scan's names have crossed, and this side is waiting for
+     * `confirm_pairing`. QR method. Both sides show it: the Mac names the
+     * phone that scanned, and the phone names the Mac it scanned.
      */
     data class Requested(
         /**
-         * The scanning phone's name, from its hello.
+         * The other device's name, from its hello.
          */
         val `name`: kotlin.String, 
         /**
-         * The scanning device's kind, from its hello. Shown as the
-         * device's own icon, rather than assuming every scan is a phone.
+         * The other device's kind, from its hello. Shown as that device's
+         * own icon, rather than assuming every scan is a phone.
          */
         val `kind`: uniffi.ferry_runtime.DeviceKind, 
         /**
-         * How the phone reached this Mac. Always `Wifi`: QR pairing only
-         * dials the Wi-Fi addresses in the offer.
+         * How the two devices reached each other. Always `Wifi`: QR
+         * pairing only dials the Wi-Fi addresses in the offer.
          */
         val `transport`: uniffi.ferry_runtime.Transport) : PairingState()
         

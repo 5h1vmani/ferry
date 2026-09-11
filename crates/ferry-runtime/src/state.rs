@@ -161,27 +161,35 @@ pub(crate) struct HeldPairing {
 
 /// A QR pairing handshake that finished and is waiting for `confirm_pairing`.
 ///
-/// The QR method's counterpart to [`HeldPairing`]. There is no code to
-/// compare, so nothing plays the part [`HeldPairing::accepted`] plays for the
-/// code method: the Mac is always the side that accepted this connection,
-/// per `docs/engine-contract.md` item 12, so `finish_pairing` is always told
-/// `accepted: true` for one of these.
+/// The QR method's counterpart to [`HeldPairing`]. Both sides of a scan use
+/// it, because both sides now confirm by name, per
+/// `docs/engine-contract.md` item 12. There is no code to compare, so
+/// nothing plays the part [`HeldPairing::accepted`] plays for the code
+/// method: the offering Mac always accepted its connection, and the
+/// scanning side always dialed its own.
 ///
-/// `name` and `kind` are message one's hello, kept so `finish_pairing` can
-/// check its own, later hello exchange against them: the two must agree on
-/// who this is, or the pairing fails the same way a bad hello anywhere else
-/// does.
+/// `name` and `kind` are the other device's, and they are what
+/// `PairingState::Requested` shows the person.
 pub(crate) struct RequestedPairing {
-    /// The encrypted channel, ready for `finish_pairing`'s hello exchange.
+    /// The encrypted channel, held open across the confirm.
     pub(crate) stream: SecureStream,
-    /// The phone's static public key, from the handshake.
+    /// The other device's static public key, from the handshake.
     pub(crate) peer: PublicKey,
-    /// The address the phone dialed from.
+    /// The address this connection runs over.
     pub(crate) addr: SocketAddr,
-    /// The name message one's hello carried.
+    /// The other device's name, as shown in `Requested`.
     pub(crate) name: String,
-    /// The kind message one's hello carried.
+    /// The other device's kind, as shown in `Requested`.
     pub(crate) kind: CoreDeviceKind,
+    /// True when the names already crossed before this was held.
+    ///
+    /// The scanning side dials, exchanges names, and only then asks its own
+    /// person, so its confirm has nothing left to say on the wire. The
+    /// offering Mac holds message one's hello instead, and exchanges names
+    /// after its own confirm; `finish_pairing` then checks that later
+    /// exchange against `name` and `kind`, because the identity a person
+    /// confirmed must be the identity the pairing finishes with.
+    pub(crate) hello_done: bool,
 }
 
 /// Where pairing is, and what it is holding.

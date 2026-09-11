@@ -397,8 +397,20 @@ impl Shared {
     /// Wait up to `how_long`, or until `stop` wakes every thread.
     ///
     /// Returns false when the engine is stopping, so a loop can end.
+    ///
+    /// `stop` notifies `wake` without holding this lock, so a thread that
+    /// reaches this call after that notify would wait out the whole of
+    /// `how_long` with nobody left to wake it, while `stop` joins it. The
+    /// pairing watchdog passes two minutes, so `stop` would take that long.
+    /// `stop` also sets `state.stopped` under this same lock, before it
+    /// notifies. Reading that flag here, while the lock is held and before
+    /// the wait begins, closes the window: `stop` cannot have passed its
+    /// own first block without this seeing the flag set there.
     pub(crate) fn rest(&self, how_long: Duration) -> bool {
         let guard = lock(&self.state);
+        if guard.stopped {
+            return false;
+        }
         let (guard, _) = self
             .wake
             .wait_timeout(guard, how_long)
@@ -1506,8 +1518,11 @@ impl Engine {
     /// three refuses at once, before a single byte reaches the network.
     /// Past that point the dial and the `IK` handshake run on their own
     /// thread, as `pick_candidate` runs its dial, and the outcome arrives
-    /// through the listener: `Confirmed` or `Failed`. This device asks no
-    /// question of its own; scanning the code was the answer.
+    /// through the listener. Once the names cross, this device publishes
+    /// `Requested` with the other device's name and waits for
+    /// `confirm_pairing`, the same as the offering Mac does. The scan proves
+    /// the key came from a screen; it does not show whose screen, so this
+    /// side asks that question before it stores anything.
     ///
     /// # Errors
     ///
@@ -1580,59 +1595,39 @@ impl Engine {
 
     /// Accept or reject the device whose code, or scan, is showing.
     ///
-    /// Accepting stores the peer and exchanges names. That takes a round
-    /// trip, so it runs on its own thread and reports through the listener.
-    /// Works the same way for both pairing methods: whichever of `held`
-    /// (code) or `requested` (QR) is holding a connection is the one taken.
+    /// Accepting stores the peer, and on most paths exchanges names first.
+    /// That takes a round trip, so it runs on its own thread and reports
+    /// through the listener. Works the same way for both pairing methods
+    /// and for both sides of a scan: whichever of `held` (code) or
+    /// `requested` (QR) is holding a connection is the one taken.
+    ///
+    /// This answers for this device only. The other device answers its own
+    /// question on its own screen, and neither answer stores anything on
+    /// the other. `docs/engine-contract.md` item 12.
     pub fn confirm_pairing(&self, accept: bool) {
-        let held = {
+        let taken = {
             let mut state = lock(&self.shared.state);
             state
                 .pairing
                 .held
                 .take()
-                .map(|held| {
-                    (
-                        held.connection.paired.peer,
-                        held.connection.paired.stream,
-                        held.addr,
-                        held.accepted,
-                        None,
-                    )
-                })
-                .or_else(|| {
-                    state.pairing.requested.take().map(|requested| {
-                        (
-                            requested.peer,
-                            requested.stream,
-                            requested.addr,
-                            true,
-                            Some((requested.name, requested.kind)),
-                        )
-                    })
-                })
+                .map(Confirming::Code)
+                .or_else(|| state.pairing.requested.take().map(Confirming::Scan))
         };
-        let Some((peer_key, stream, addr, accepted, expected_hello)) = held else {
+        let Some(taken) = taken else {
             if !accept {
                 self.shared.set_pairing(&PairingState::Idle);
             }
             return;
         };
         if !accept {
-            drop(stream);
+            drop(taken);
             self.shared.set_pairing(&PairingState::Idle);
             return;
         }
         let shared = Arc::clone(&self.shared);
         self.shared.keep(std::thread::spawn(move || {
-            finish_pairing(
-                &shared,
-                peer_key,
-                stream,
-                addr,
-                accepted,
-                expected_hello.as_ref(),
-            );
+            pair_after_confirm(&shared, taken);
         }));
     }
 
@@ -2988,6 +2983,7 @@ fn hold_qr_pairing(
             addr,
             name: accepted.name,
             kind,
+            hello_done: false,
         });
     }
     shared.set_pairing(&PairingState::Requested {
@@ -2996,6 +2992,95 @@ fn hold_qr_pairing(
         transport: Transport::Wifi,
     });
     Ok(())
+}
+
+/// Show `Requested` on the side that scanned, and hold the session open.
+///
+/// The counterpart to [`hold_qr_pairing`], on the other end of the same
+/// handshake. The scan proved the static key came from a screen. It did not
+/// show the person whose screen, and a person who scanned the wrong code
+/// has no way to tell from the handshake alone. The names cross in
+/// `exchange_hello`, so this runs after that exchange and publishes the
+/// name it carried. `confirm_pairing` then stores the peer, or drops it.
+///
+/// The session waits in `requested` meanwhile, unread, the same way the
+/// offering side's does. Nothing reads it, so the stopping wrapper
+/// `hello_with_deadline` put around it has no more work to do and comes off
+/// here.
+///
+/// Does nothing when pairing has already moved on, which is what the
+/// watchdog does once the two minute deadline passes.
+fn hold_scanned_pairing(
+    shared: &Arc<Shared>,
+    peer_key: PublicKey,
+    stream: StopAware<SecureStream>,
+    addr: SocketAddr,
+    name: String,
+    kind: CoreDeviceKind,
+) {
+    {
+        let mut state = lock(&shared.state);
+        if state.pairing.requested.is_some() || !state.pairing.is_running() {
+            return;
+        }
+        state.pairing.requested = Some(RequestedPairing {
+            stream: stream.into_inner(),
+            peer: peer_key,
+            addr,
+            name: name.clone(),
+            kind,
+            hello_done: true,
+        });
+    }
+    shared.set_pairing(&PairingState::Requested {
+        name,
+        kind: kind.into(),
+        transport: Transport::Wifi,
+    });
+}
+
+/// What `confirm_pairing` took out of the pairing state.
+enum Confirming {
+    /// A code method connection. The names have not crossed yet.
+    Code(HeldPairing),
+    /// A QR method connection, on either side of the scan.
+    Scan(RequestedPairing),
+}
+
+/// Carry out an accepted confirm on whichever connection was held.
+fn pair_after_confirm(shared: &Arc<Shared>, taken: Confirming) {
+    match taken {
+        Confirming::Code(held) => finish_pairing(
+            shared,
+            held.connection.paired.peer,
+            held.connection.paired.stream,
+            held.addr,
+            held.accepted,
+            None,
+        ),
+        Confirming::Scan(RequestedPairing {
+            stream,
+            peer,
+            addr,
+            name,
+            kind,
+            hello_done,
+        }) => {
+            if hello_done {
+                // The scanning side. The names crossed before `Requested`
+                // was shown, so there is nothing left to ask. This side
+                // dialed, so it does not serve on this stream either, and
+                // letting it go is all that is left to do with it.
+                drop(stream);
+                store_paired_peer(shared, peer, addr, &name, kind);
+            } else {
+                // The offering side. Message one carried the other device's
+                // hello, and the exchange `finish_pairing` runs must agree
+                // with it.
+                finish_pairing(shared, peer, stream, addr, true, Some(&(name, kind)));
+            }
+        }
+    }
 }
 
 /// Report a failed pairing, unless pairing has already moved on.
@@ -3023,21 +3108,76 @@ fn trust_current_network(shared: &Arc<Shared>) {
     drop(save_networks(shared, |list| list.add(&name)));
 }
 
+/// Store the peer, trust the network, and report the new device.
+///
+/// The second half of every pairing: both methods, both sides. Each side
+/// reaches it only after its own person confirmed, so a confirm on one
+/// device never stores anything on the other.
+///
+/// Returns true when it reported `Confirmed`. False means pairing had
+/// already ended, or storing failed, and the caller must go no further.
+fn store_paired_peer(
+    shared: &Arc<Shared>,
+    peer_key: PublicKey,
+    addr: SocketAddr,
+    name: &str,
+    kind: CoreDeviceKind,
+) -> bool {
+    // The watchdog may have given up while the names crossed, or while the
+    // person was reading the name. A pairing that already reported Failed
+    // must not store a device or report Confirmed after it.
+    if !lock(&shared.state).pairing.is_running() {
+        return false;
+    }
+
+    let key_hex = hex_of(&peer_key);
+    if let Err(error) = save_peers(shared, |store| {
+        store.add(Peer {
+            key: peer_key,
+            name: name.to_owned(),
+            paired_unix_secs: now_unix_secs(),
+            kind,
+        })
+    }) {
+        fail_pairing(shared, error);
+        return false;
+    }
+    trust_current_network(shared);
+
+    let device = {
+        let mut state = lock(&shared.state);
+        let live = state.live_mut(&key_hex);
+        live.last_addr = Some(addr);
+        live.last_seen_unix_secs = Some(now_unix_secs());
+        state.device(&key_hex)
+    };
+
+    let Some(device) = device else {
+        fail_pairing(shared, failed("Runtime::NotPaired"));
+        return false;
+    };
+    if !lock(&shared.state).pairing.is_running() {
+        return false;
+    }
+    shared.set_pairing(&PairingState::Confirmed { device });
+    notify(shared, Change::Devices);
+    true
+}
+
 /// Exchange names, store the peer, and report the new device.
 ///
-/// Shared by both pairing methods: `confirm_pairing` calls this with
-/// whichever of `HeldPairing` (code) or `RequestedPairing` (QR) it took,
-/// already unwrapped to the fields this needs, and `dial_offer` calls it
-/// directly, with `accepted: false`, since the QR method's phone side asks
-/// no question of its own before this runs.
+/// Every path that still has a hello to run: the code method on both sides,
+/// and the offering side of a scan. The scanning side ran its hello before
+/// it asked its own person, so `pair_after_confirm` calls
+/// [`store_paired_peer`] directly for it instead.
 ///
-/// `expected_hello` is the QR method's own message-one hello, from
-/// `RequestedPairing`, when a scan is what `confirm_pairing` took; `None`
-/// for the code method and for `dial_offer`'s own call, neither of which
-/// has an earlier hello to check against. When it is `Some`, the hello
-/// this function exchanges here must agree with it, or the pairing fails:
-/// the name and kind shown in `Requested`, that a person already confirmed
-/// against, must be the same identity this finishes pairing with.
+/// `expected_hello` is the scan's message-one hello, from
+/// `RequestedPairing`, when the offering side is what `confirm_pairing`
+/// took; `None` for the code method, which has no earlier hello to check
+/// against. When it is `Some`, the hello this function exchanges here must
+/// agree with it, or the pairing fails: the name and kind shown in
+/// `Requested`, that a person already confirmed against, must be the same
+/// identity this finishes pairing with.
 fn finish_pairing(
     shared: &Arc<Shared>,
     peer_key: PublicKey,
@@ -3064,44 +3204,10 @@ fn finish_pairing(
         return;
     }
 
-    // The watchdog may have given up while the names crossed. A pairing that
-    // already reported Failed must not store a device or report Confirmed
-    // after it.
-    if !lock(&shared.state).pairing.is_running() {
+    if !store_paired_peer(shared, peer_key, addr, &name, kind) {
         return;
     }
-
     let key_hex = hex_of(&peer_key);
-    if let Err(error) = save_peers(shared, |store| {
-        store.add(Peer {
-            key: peer_key,
-            name: name.clone(),
-            paired_unix_secs: now_unix_secs(),
-            kind,
-        })
-    }) {
-        fail_pairing(shared, error);
-        return;
-    }
-    trust_current_network(shared);
-
-    let device = {
-        let mut state = lock(&shared.state);
-        let live = state.live_mut(&key_hex);
-        live.last_addr = Some(addr);
-        live.last_seen_unix_secs = Some(now_unix_secs());
-        state.device(&key_hex)
-    };
-
-    let Some(device) = device else {
-        fail_pairing(shared, failed("Runtime::NotPaired"));
-        return;
-    };
-    if !lock(&shared.state).pairing.is_running() {
-        return;
-    }
-    shared.set_pairing(&PairingState::Confirmed { device });
-    notify(shared, Change::Devices);
 
     if accepted {
         // The side that accepted keeps serving on this stream. The side that
@@ -3331,11 +3437,11 @@ fn start_offering(shared: &Arc<Shared>, expires_unix_secs: i64) {
     });
 }
 
-/// Dial a scanned offer's addresses in order, run `IK` as the initiator, and
-/// finish exactly as the code method's dialing side does: straight into
-/// `finish_pairing`, with no local confirm step. `docs/engine-contract.md`
-/// item 12: the phone asks no question of its own; scanning the code was
-/// its answer.
+/// Dial a scanned offer's addresses in order, run `IK` as the initiator,
+/// exchange names, and then ask this side's own person about the name that
+/// came back, through [`hold_scanned_pairing`]. `docs/engine-contract.md`
+/// item 12: both sides confirm by name, and each stores only after its own
+/// confirm.
 ///
 /// `offer.addresses` came from a scanned QR code, so it is not trusted as
 /// bounded or ordered: it is filtered the same way `local_wifi_addresses`
@@ -3375,9 +3481,16 @@ fn dial_offer(shared: &Arc<Shared>, offer: &Offer) {
             shared.kind,
         ) {
             Ok(stream) => {
-                // The phone dialed, so it lets the stream go once names are
-                // exchanged; see `finish_pairing`.
-                finish_pairing(shared, offer.static_key, stream, *addr, false, None);
+                // Names cross, and then this side asks its own person about
+                // the name it got; see `hold_scanned_pairing`.
+                let (name, kind, stream) = match hello_with_deadline(shared, stream) {
+                    Ok(triple) => triple,
+                    Err(error) => {
+                        fail_pairing(shared, error);
+                        return;
+                    }
+                };
+                hold_scanned_pairing(shared, offer.static_key, stream, *addr, name, kind);
                 return;
             }
             Err(error) => last_error = Some(error),
