@@ -87,24 +87,18 @@
 //! above, is what actually bounds those cuts, and is what the sweep checks
 //! against.
 
-use std::io::{Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+mod common;
+
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ferry_core::chunk::{ChunkSize, Manifest, manifest_from_bytes};
-use ferry_core::noise::{PublicKey, StaticKey};
 use ferry_core::ops::{Entry, FileKind, OpError};
 use ferry_core::path::RemotePath;
-use ferry_core::peers::DeviceKind;
-use ferry_core::rpc::{FileOps, exchange_hello, serve};
-use ferry_core::tcp::{Listener, Pending};
-use ferry_runtime::{
-    Config, DeviceKind as RuntimeDeviceKind, Engine, EngineListener, KeyPair, PairingMethod,
-    PairingState, Root, TransferState, generate_key,
-};
+use ferry_core::rpc::FileOps;
+use ferry_runtime::TransferState;
+
+use common::paths::{Peer, Side, build, pair_with_peer, pull_big, sample_bytes, start_peer_with};
 
 // ---------------------------------------------------------------------------
 // The wire arithmetic. See the module documentation for the derivation.
@@ -114,10 +108,12 @@ use ferry_runtime::{
 /// has a fixed input.
 const ENGINE_NAME: &str = "Sweep";
 
-/// The fake peer's name in `hello`.
+/// The fake peer's name in `hello`. Matches `tests/common/paths.rs`'s
+/// `serve_one`, which is what actually sends it now.
 const PEER_NAME: &str = "Fake";
 
-/// The one file the fake peer serves, and its name on both sides.
+/// The one file the fake peer serves, and its name on both sides. Matches
+/// `tests/common/paths.rs`'s `pull_big`, which hardcodes this same name.
 const FILE_NAME: &str = "big.bin";
 
 /// The chunk size this test asks the engine to use.
@@ -256,9 +252,11 @@ fn chunk_boundaries() -> Vec<u64> {
 // ---------------------------------------------------------------------------
 // A minimal harness: one engine, one hand-built peer, paired.
 //
-// This mirrors the shape `tests/common/paths.rs` uses (a peer built from
-// `ferry-core`'s own `tcp`, `noise`, and `rpc` primitives), trimmed to what
-// this file needs: no slow reads, no capped reads, and a single fixed file.
+// `Side`, `build`, `Peer`, `start_peer_with`, `pair_with_peer`, `pull_big`,
+// and `sample_bytes` all come from `tests/common/paths.rs` now. Only
+// `poll_until` stays here, with its own tick: the sweep runs hundreds of
+// pulls and the poll granularity is on its critical path, which
+// `tests/common/paths.rs`'s own ten millisecond tick is too coarse for.
 // ---------------------------------------------------------------------------
 
 /// How long any wait may take before the test gives up.
@@ -267,138 +265,6 @@ const PATIENCE: Duration = Duration::from_secs(10);
 /// How often a poll looks again. Kept small, because the fast sweep runs
 /// hundreds of pulls and the poll granularity is on its critical path.
 const POLL_TICK: Duration = Duration::from_micros(200);
-
-/// Bytes that are easy to check and hard to get right by accident.
-fn sample_bytes(len: usize) -> Vec<u8> {
-    (0..len)
-        .map(|i| u8::try_from((i * 31 + 7) % 251).unwrap_or(0))
-        .collect()
-}
-
-/// What one engine has told the app so far.
-#[derive(Default)]
-struct Notes {
-    pairings: Vec<PairingState>,
-}
-
-/// Collects callbacks and lets the test wait for one.
-#[derive(Default)]
-struct Inbox {
-    notes: Mutex<Notes>,
-    ready: Condvar,
-}
-
-impl Inbox {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Notes> {
-        self.notes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn pairing(&self, state: PairingState) {
-        self.lock().pairings.push(state);
-        self.ready.notify_all();
-    }
-
-    fn wait_pairing(&self, what: &str, want: impl Fn(&PairingState) -> bool) -> PairingState {
-        let deadline = Instant::now() + PATIENCE;
-        let mut notes = self.lock();
-        loop {
-            if let Some(found) = notes.pairings.iter().find(|state| want(state)) {
-                return found.clone();
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "waited {PATIENCE:?} for {what}");
-            let (next, _) = self
-                .ready
-                .wait_timeout(notes, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            notes = next;
-        }
-    }
-}
-
-/// The listener the one engine under test is given.
-struct Recorder {
-    inbox: Arc<Inbox>,
-}
-
-impl EngineListener for Recorder {
-    fn devices_changed(&self) {}
-    fn transfers_changed(&self) {}
-    fn pairing_changed(&self, state: PairingState) {
-        self.inbox.pairing(state);
-    }
-    fn access_log_changed(&self) {}
-}
-
-/// The one engine under test, and the folders it owns.
-struct Side {
-    engine: Arc<Engine>,
-    inbox: Arc<Inbox>,
-    key: KeyPair,
-    #[allow(dead_code)] // Held so the folder is not deleted while used.
-    data: tempfile::TempDir,
-    #[allow(dead_code)] // Held so the folder is not deleted while used.
-    shared: tempfile::TempDir,
-    download: tempfile::TempDir,
-}
-
-impl Side {
-    /// Where a pull lands. Never the same folder as the served root.
-    fn download_root(&self) -> &Path {
-        self.download.path()
-    }
-}
-
-/// Build and start one engine on fresh folders.
-fn build() -> Side {
-    let data = tempfile::tempdir().expect("a temporary folder for engine files");
-    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
-    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
-    let key = generate_key().expect("a fresh key pair");
-    let inbox = Arc::new(Inbox::default());
-    let engine = Engine::new(
-        Config {
-            data_dir: data.path().to_string_lossy().into_owned(),
-            shared_roots: vec![Root {
-                name: "Root".to_owned(),
-                path: shared.path().to_string_lossy().into_owned(),
-                writable: true,
-            }],
-            download_dir: download.path().to_string_lossy().into_owned(),
-            display_name: ENGINE_NAME.to_owned(),
-            listen_port: 0,
-            key: key.clone(),
-            kind: RuntimeDeviceKind::Mac,
-        },
-        Box::new(Recorder {
-            inbox: Arc::clone(&inbox),
-        }),
-    )
-    .expect("the engine should build from a good config");
-    engine.start().expect("the engine should start");
-    Side {
-        engine,
-        inbox,
-        key,
-        data,
-        shared,
-        download,
-    }
-}
-
-fn is_found(state: &PairingState) -> bool {
-    matches!(state, PairingState::Found { .. })
-}
-
-fn is_code(state: &PairingState) -> bool {
-    matches!(state, PairingState::Code { .. })
-}
-
-fn is_confirmed(state: &PairingState) -> bool {
-    matches!(state, PairingState::Confirmed { .. })
-}
 
 /// A filesystem that serves one fixed file, and nothing else.
 struct OneFile {
@@ -471,144 +337,6 @@ impl FileOps for OneFile {
     }
 }
 
-/// A fake peer: listens, pairs once, then serves `OneFile` on every
-/// connection after that until it is closed.
-///
-/// The engine dials it fresh on every retry. Its accept loop keeps running
-/// across connections, so it is already ready for a new one once an earlier
-/// one ends: this is the same shape `tests/common/paths.rs`'s `Peer` uses, and
-/// `a_transfer_pauses_when_the_link_breaks_and_finishes_when_it_returns`
-/// there already confirms it works. Nothing here breaks the peer's own side
-/// of the link; the cut lives entirely on the engine's dialed stream.
-struct Peer {
-    addr: SocketAddr,
-    key: KeyPair,
-    expect_pair: Arc<AtomicBool>,
-    closing: Arc<AtomicBool>,
-}
-
-fn static_key(key: &KeyPair) -> StaticKey {
-    StaticKey::from_stored(&key.private, &key.public).expect("a stored key pair should load")
-}
-
-fn public_key(key: &KeyPair) -> PublicKey {
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&key.public);
-    PublicKey(out)
-}
-
-fn key_hex(key: &KeyPair) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(64);
-    for byte in &key.public {
-        write!(out, "{byte:02x}").expect("a string always accepts more text");
-    }
-    out
-}
-
-fn start_peer(engine_key: &KeyPair) -> Peer {
-    let listener = Listener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-        .expect("the fake peer should bind a port");
-    let addr = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        listener.local_addr().port(),
-    );
-    let key = generate_key().expect("a fresh key pair for the peer");
-    let fs = Arc::new(OneFile {
-        bytes: sample_bytes(FILE_LEN),
-    });
-    let peer = Peer {
-        addr,
-        key: key.clone(),
-        expect_pair: Arc::new(AtomicBool::new(false)),
-        closing: Arc::new(AtomicBool::new(false)),
-    };
-
-    let engine_public = public_key(engine_key);
-    let expect_pair = Arc::clone(&peer.expect_pair);
-    let closing = Arc::clone(&peer.closing);
-    drop(std::thread::spawn(move || {
-        while !closing.load(Ordering::SeqCst) {
-            let Ok(pending) = listener.accept() else {
-                continue;
-            };
-            if closing.load(Ordering::SeqCst) {
-                return;
-            }
-            let key = static_key(&key);
-            let fs = Arc::clone(&fs);
-            let pairing = expect_pair.swap(false, Ordering::SeqCst);
-            drop(std::thread::spawn(move || {
-                serve_one(pending, &key, engine_public, &fs, pairing);
-            }));
-        }
-    }));
-    peer
-}
-
-fn serve_one(
-    pending: Pending,
-    key: &StaticKey,
-    engine: PublicKey,
-    fs: &Arc<OneFile>,
-    pairing: bool,
-) {
-    let Ok(negotiated) = pending.negotiate() else {
-        return;
-    };
-    let mut stream: Box<dyn ReadWrite> = if pairing {
-        let Ok(paired) = negotiated.pair(key) else {
-            return;
-        };
-        Box::new(paired.paired.stream)
-    } else {
-        let Ok(connection) = negotiated.connect(key, &[engine]) else {
-            return;
-        };
-        Box::new(connection.stream)
-    };
-    if exchange_hello(&mut stream, PEER_NAME, DeviceKind::Phone).is_err() {
-        return;
-    }
-    drop(serve(&mut stream, fs.as_ref()));
-}
-
-trait ReadWrite: Read + Write {}
-impl<T: Read + Write> ReadWrite for T {}
-
-impl Peer {
-    fn close(&self) {
-        self.closing.store(true, Ordering::SeqCst);
-        drop(TcpStream::connect_timeout(
-            &self.addr,
-            Duration::from_secs(2),
-        ));
-    }
-}
-
-fn pair_with_peer(side: &Side, peer: &Peer) {
-    side.engine.start_pairing_with(PairingMethod::Code);
-    side.engine.offer_candidate(peer.addr);
-    side.inbox.wait_pairing("a candidate", is_found);
-    peer.expect_pair.store(true, Ordering::SeqCst);
-    side.engine
-        .pick_candidate(format!("wifi:{}", peer.addr))
-        .expect("the injected candidate should be pickable");
-    side.inbox.wait_pairing("a code", is_code);
-    side.engine.confirm_pairing(true);
-    side.inbox.wait_pairing("a confirm", is_confirmed);
-}
-
-fn pull_to(side: &Side, peer: &Peer, local_name: &str) -> String {
-    side.engine
-        .pull(
-            key_hex(&peer.key),
-            FILE_NAME.to_owned(),
-            local_name.to_owned(),
-        )
-        .expect("the pull should be accepted")
-}
-
 /// Wait until `check` is true, looking again every [`POLL_TICK`].
 fn poll_until(what: &str, check: impl Fn() -> bool) {
     let deadline = Instant::now() + PATIENCE;
@@ -638,9 +366,9 @@ fn wait_done(side: &Side, id: &str) {
 
 /// Run one pull to `local_name`, wait for it to finish, and return the wire
 /// bytes it cost and the landed file's bytes.
-fn timed_pull(side: &Side, peer: &Peer, local_name: &str) -> (u64, Vec<u8>) {
+fn timed_pull(side: &Side, peer: &Peer<OneFile>, local_name: &str) -> (u64, Vec<u8>) {
     let before = side.engine.wire_bytes();
-    let id = pull_to(side, peer, local_name);
+    let id = pull_big(side, peer, local_name);
     wait_done(side, &id);
     let used = side.engine.wire_bytes() - before;
     let landed =
@@ -651,9 +379,14 @@ fn timed_pull(side: &Side, peer: &Peer, local_name: &str) -> (u64, Vec<u8>) {
 /// Set up one paired engine and peer, with the chunk size and backoff this
 /// sweep needs. The caller is responsible for `side.engine.stop()` and
 /// `peer.close()`.
-fn setup(backoff: Duration) -> (Side, Peer, Vec<u8>) {
-    let side = build();
-    let peer = start_peer(&side.key);
+fn setup(backoff: Duration) -> (Side, Peer<OneFile>, Vec<u8>) {
+    let side = build(ENGINE_NAME);
+    let peer = start_peer_with(
+        &side.key,
+        Arc::new(OneFile {
+            bytes: sample_bytes(FILE_LEN),
+        }),
+    );
     pair_with_peer(&side, &peer);
     side.engine.set_backoff(backoff);
     side.engine
@@ -665,7 +398,14 @@ fn setup(backoff: Duration) -> (Side, Peer, Vec<u8>) {
 
 /// Cut at `n`, pull to a fresh name, and assert it lands correctly and
 /// within `bound` wire bytes. Prints `n` and the bytes used on failure.
-fn assert_cut_resumes(side: &Side, peer: &Peer, source: &[u8], n: u64, bound: u64, name: &str) {
+fn assert_cut_resumes(
+    side: &Side,
+    peer: &Peer<OneFile>,
+    source: &[u8],
+    n: u64,
+    bound: u64,
+    name: &str,
+) {
     side.engine.set_cut(n);
     let (used, landed) = timed_pull(side, peer, name);
     assert_eq!(landed, source, "cut at N={n} landed the wrong bytes");

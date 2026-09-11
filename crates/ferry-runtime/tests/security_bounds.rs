@@ -2,9 +2,10 @@
 //! findings 1, 2, 4, 5, 6 and 7.
 //!
 //! One file, per `docs/agent-runs.md` rule 3: every test this fix pass adds
-//! lives here, not appended to a shared file. The helpers below are
-//! copied from `tests/common/paths.rs` and trimmed to what
-//! these tests use.
+//! lives here, not appended to a shared file. The peer-and-engine harness
+//! comes from `tests/common/paths.rs`; `build_with_peers`, `is_waiting`,
+//! and `pair_by_code` below are specific to what these tests need beyond
+//! it.
 //!
 //! Finding 2's own test is not here. `AccessLog`, the type its per-device
 //! day cap lives on, is `pub(crate)` in `ferry-runtime`, so an external test
@@ -25,165 +26,22 @@
 mod common;
 
 use std::io::Read;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex};
+use std::net::{SocketAddr, TcpStream};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ferry_core::noise::{PublicKey, StaticKey};
 use ferry_core::peers::DeviceKind as CoreDeviceKind;
 use ferry_core::rpc::exchange_hello;
 use ferry_core::tcp;
 use ferry_runtime::{
-    Config, DeviceKind as RuntimeDeviceKind, Engine, EngineListener, FerryError, KeyPair,
-    PairingMethod, PairingState, Root, generate_key,
+    DeviceKind as RuntimeDeviceKind, KeyPair, PairingMethod, PairingState, generate_key,
 };
 
+use common::paths::{
+    Inbox, Side, build, is_code, is_confirmed, is_found, loopback_addr, make_engine, public_key,
+    static_key,
+};
 use common::{TestClient, build_side, loopback_addr as dav_loopback_addr, port_of};
-
-/// How long any wait may take before the test gives up.
-const PATIENCE: Duration = Duration::from_secs(5);
-
-// ---------------------------------------------------------------------------
-// The listener one engine is given. Copied from `tests/common/paths.rs`.
-// ---------------------------------------------------------------------------
-
-/// What one engine has told the app so far.
-#[derive(Default)]
-struct Notes {
-    /// Every pairing state, in the order it arrived.
-    pairings: Vec<PairingState>,
-}
-
-/// Collects callbacks and lets the test wait for one.
-#[derive(Default)]
-struct Inbox {
-    notes: Mutex<Notes>,
-    ready: Condvar,
-}
-
-impl Inbox {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Notes> {
-        self.notes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    fn pairing(&self, state: PairingState) {
-        let mut notes = self.lock();
-        notes.pairings.push(state);
-        drop(notes);
-        self.ready.notify_all();
-    }
-
-    /// Wait until a pairing state that `want` accepts has arrived.
-    fn wait_pairing(&self, what: &str, want: impl Fn(&PairingState) -> bool) -> PairingState {
-        let deadline = Instant::now() + PATIENCE;
-        let mut notes = self.lock();
-        loop {
-            if let Some(found) = notes.pairings.iter().find(|state| want(state)) {
-                return found.clone();
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "waited {PATIENCE:?} for {what}");
-            let (next, _) = self
-                .ready
-                .wait_timeout(notes, left)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            notes = next;
-        }
-    }
-}
-
-/// The listener one engine is given.
-struct Recorder {
-    inbox: Arc<Inbox>,
-}
-
-impl EngineListener for Recorder {
-    fn devices_changed(&self) {}
-    fn transfers_changed(&self) {}
-
-    fn pairing_changed(&self, state: PairingState) {
-        self.inbox.pairing(state);
-    }
-
-    fn access_log_changed(&self) {}
-}
-
-// ---------------------------------------------------------------------------
-// Engines under test. Copied from `tests/common/paths.rs`.
-// ---------------------------------------------------------------------------
-
-/// One engine, its inbox, and the folders it owns.
-///
-/// None of the tests below reads `_data`, `_shared`, or `_download`
-/// directly; each field only has to outlive the engine, so its temporary
-/// folder is not deleted while the engine still serves from it.
-struct Side {
-    engine: Arc<Engine>,
-    inbox: Arc<Inbox>,
-    key: KeyPair,
-    _data: tempfile::TempDir,
-    _shared: tempfile::TempDir,
-    _download: tempfile::TempDir,
-}
-
-/// Build an engine on the given folders. It is not started.
-fn make_engine(
-    name: &str,
-    key: KeyPair,
-    data: &Path,
-    shared: &Path,
-    download: &Path,
-    inbox: &Arc<Inbox>,
-) -> Result<Arc<Engine>, FerryError> {
-    Engine::new(
-        Config {
-            data_dir: data.to_string_lossy().into_owned(),
-            shared_roots: vec![Root {
-                name: "Root".to_owned(),
-                path: shared.to_string_lossy().into_owned(),
-                writable: true,
-            }],
-            download_dir: download.to_string_lossy().into_owned(),
-            display_name: name.to_owned(),
-            listen_port: 0,
-            key,
-            kind: RuntimeDeviceKind::Mac,
-        },
-        Box::new(Recorder {
-            inbox: Arc::clone(inbox),
-        }),
-    )
-}
-
-/// Build and start one engine on fresh folders.
-fn build(name: &str) -> Side {
-    let data = tempfile::tempdir().expect("a temporary folder for engine files");
-    let shared = tempfile::tempdir().expect("a temporary folder for shared files");
-    let download = tempfile::tempdir().expect("a temporary folder for downloaded files");
-    let key = generate_key().expect("a fresh key pair");
-    let inbox = Arc::new(Inbox::default());
-    let engine = make_engine(
-        name,
-        key.clone(),
-        data.path(),
-        shared.path(),
-        download.path(),
-        &inbox,
-    )
-    .expect("the engine should build from a good config");
-    engine.start().expect("the engine should start");
-    Side {
-        engine,
-        inbox,
-        key,
-        _data: data,
-        _shared: shared,
-        _download: download,
-    }
-}
 
 /// As [`build`], but seeds the engine's own peer store with `peer_keys`
 /// first, so each is already paired without running the pairing handshake.
@@ -217,46 +75,14 @@ fn build_with_peers(name: &str, peer_keys: &[KeyPair]) -> Side {
         engine,
         inbox,
         key,
-        _data: data,
-        _shared: shared,
-        _download: download,
+        data,
+        shared,
+        download,
     }
-}
-
-/// The address another engine, or a raw client, in this process can dial.
-fn loopback_addr(side: &Side) -> SocketAddr {
-    let bound = side.engine.listen_addr().expect("a bound listener");
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), bound.port())
 }
 
 fn is_waiting(state: &PairingState) -> bool {
     matches!(state, PairingState::Waiting { .. })
-}
-
-fn is_found(state: &PairingState) -> bool {
-    matches!(state, PairingState::Found { .. })
-}
-
-fn is_code(state: &PairingState) -> bool {
-    matches!(state, PairingState::Code { .. })
-}
-
-fn is_confirmed(state: &PairingState) -> bool {
-    matches!(state, PairingState::Confirmed { .. })
-}
-
-/// Rebuild the Noise key from the bytes the app would have stored. Copied
-/// from `tests/common/paths.rs`.
-fn static_key(key: &KeyPair) -> StaticKey {
-    StaticKey::from_stored(&key.private, &key.public).expect("a stored key pair should load")
-}
-
-/// The public half, as `ferry-core` names it. Copied from
-/// `tests/common/paths.rs`.
-fn public_key(key: &KeyPair) -> PublicKey {
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&key.public);
-    PublicKey(out)
 }
 
 /// Pair `a` and `b` by code, over their real listeners, with `a` as the side
