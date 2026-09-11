@@ -105,12 +105,12 @@ pub fn wifi_presence_rule(
 /// True when this device should browse for other devices over Wi-Fi.
 ///
 /// The one place [`browse_allowed_rule`] is read off the engine's state.
-/// `engine::apply_presence` is what turns the answer into a browse loop that
+/// [`apply_presence`] is what turns the answer into a browse loop that
 /// holds a `Browser`. Unlike [`wifi_presence`], this does not gate on
 /// `reachable`, so the person's own switch never silences browsing.
 ///
 /// A stopped engine browses on no network and is present on none. `stop`
-/// turns both off itself, and `engine::apply_presence` refuses to act once
+/// turns both off itself, and [`apply_presence`] refuses to act once
 /// `stopped` is set, so this is what keeps `Engine::status` from reporting a
 /// presence that nothing is running.
 pub(crate) fn browse_allowed(state: &State) -> bool {
@@ -125,7 +125,7 @@ pub(crate) fn browse_allowed(state: &State) -> bool {
 /// True when this device should advertise and accept over Wi-Fi.
 ///
 /// The one place the rule is read off the engine's state. Everything that
-/// acts on presence calls this, and `engine::apply_presence` is what turns
+/// acts on presence calls this, and [`apply_presence`] is what turns
 /// the answer into a running advertiser.
 ///
 /// "Pairing is in progress" is `Pairing::is_running`, which is every pairing
