@@ -11,8 +11,13 @@ Wi-Fi, a file copied, and the cable all work. On 11 September 2026 the Mac
 app took its designed screens, and the engine gained named shared folders,
 folder copies as one batch, and an access log on both sides. The fifteen
 engine changes behind the screens are in `docs/engine-contract.md`, with
-their status. Phase 2 is next: photo import, then the Finder mount. Nothing
-is packaged for install yet. To build and run it, follow
+their status. Later that day the engine gained a manifest request so every
+pull verifies from its first byte, automatic photo import, push, the
+Finder mount over WebDAV with saves that send only changed chunks, and
+QR pairing on the Mac side. Each was audited and the findings fixed. None
+of it has run on real devices yet; `docs/manual-checks.md` task 4 is the
+list. The phone's screens for the new features wait for a Kotlin design
+pass. Nothing is packaged for install yet. To build and run it, follow
 `docs/manual-checks.md` task 3.
 
 ## The problem

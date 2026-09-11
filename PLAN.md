@@ -444,6 +444,13 @@ Before phase 2:
    acceptance criteria. Measure the pull speed over Wi-Fi and over the
    cable once, because nothing has measured it yet.
 
+Built on 11 September 2026, in the second run of that day, each audited
+and the findings fixed: phase 2 items 1, 2, 3, 5, 6 and 8, and the QR
+pairing from phase 3. `docs/engine-contract.md` items 16, 14, 6, 5 and 12
+state what each is and decides. Nothing from that run has been used on
+real devices; `docs/manual-checks.md` task 4 lists what a person checks.
+What is left of phase 2 is items 4, 7 and 9 below.
+
 Phase 2, in order:
 
 1. The runtime limits: a manifest request so the first pass of a pull
