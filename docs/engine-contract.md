@@ -40,7 +40,8 @@ to built in the same commit that removes its `TODO(engine N)` markers.
 | C | 15, 11 | Both change the wire. One protocol bump covers both. |
 | D | 2 | Batches need roots, because a batch label is a path. |
 | E | 13 | The access log records paths, so it comes after roots. |
-| later | 14, 12, 5, 6 | Deferred to a later session. See the end of this file. |
+| later | 14, 12, 5, 6 | Built in the second run. See "The second run" below. |
+| third | 17, 18, 19 | Phase 2 items 4, 7 and 9. See "The third run" below. |
 
 ## Batch B: the small fields
 
@@ -685,3 +686,235 @@ The adapter maps `Offering` and `Requested`. `startPairing(method:)` calls
 `start_pairing_with`. The phone's camera screen is not built now; the
 engine half is tested engine to engine, with one engine calling
 `offer_scanned` on the other's payload.
+
+## The third run: items 17, 18 and 19
+
+Added 11 September 2026 for the third run, after the phone took its
+designed screens. These are PLAN phase 2 items 4, 7 and 9. Each engine
+half is built by one builder in its own worktree. The app halves follow
+once the bindings are regenerated. `Status` and `DeviceInfo` gain fields
+here, so every builder runs `scripts/gate.sh mac` and `scripts/gate.sh
+android` once before it reports, as rule 3 requires.
+
+### 17. Thumbnail prefetch, PLAN phase 2 item 4: open
+
+Finder opens a folder of 500 photos and asks for the head of every file
+to draw its thumbnails. Today each of those asks costs one `Stat` and one
+`Read` on the wire, four at a time through the bridge pool. After this
+item a listing is followed by the bridge reading the heads itself, and a
+thumbnail request then costs nothing on the wire.
+
+**The head cache.** `crates/ferry-runtime/src/dav/heads.rs` holds the
+first `HEAD_LEN = 64 KiB` of a file, keyed by the DAV target together
+with the size and modified time the listing reported. A saved or replaced
+file has a new size or time, so it misses on its own; nothing invalidates
+by hand. The cache holds at most `HEAD_CACHE_BYTES = 32 MiB`, first in
+first out. It lives on `Bridge` beside `cache`, so it dies with the mount.
+
+**The prefetch.** After `propfind` at depth 1 has written its response,
+it hands the children to one prefetch thread per bridge, started in
+`MountRegistry::start` and ended by the same `running` flag. The thread
+holds a queue of at most `PREFETCH_MAX_FILES = 512` targets. A new
+listing replaces the queue: Finder shows one folder at a time, and the
+folder a person left is not worth the wire. The thread skips a child
+whose head is already cached, skips a child that is not an image by
+extension, and reads `min(size, HEAD_LEN)` bytes of each other child
+through the ordinary pool borrow, so it competes fairly with Finder's own
+requests and can hold at most one of the four connections. The image
+extensions are the constant `IMAGE_EXTENSIONS`: jpg, jpeg, png, heic,
+heif, gif, webp, tif, tiff, bmp, dng, cr2, nef, arw. Compared without
+case.
+
+**Serving.** `get_file` and `HEAD` take the file's size and modified time
+from the listing cache when the parent listing is within its two second
+TTL, and stat on the wire only otherwise. A `GET` whose range starts
+inside a cached head, or a `GET` with no range, is served from the head
+for as many bytes as the head holds, and streams the rest from the wire
+as today. So a thumbnail request for a prefetched file makes no wire
+call at all.
+
+**The access log.** The prefetch of one listing is one `Read` entry on
+this side through `record_this`: the folder path, the total bytes read,
+and `files` set to the count. Five hundred heads are one line, and the
+line is true. The phone records what it served as it does today.
+
+**Not the transfer workers.** PLAN phase 2 item 4 said the prefetch runs
+through the transfer worker pool. That pool takes transfer records and
+runs whole-file pulls, and the bridge now has its own connection pool.
+The prefetch uses the bridge pool. PLAN section 12 says so after this.
+
+**Tests.** `tests/item_17_prefetch.rs`. The HTTP test client that
+`tests/dav.rs` holds moves to `tests/common/mod.rs` in its own commit so
+this file and `dav.rs` share it. One test lists a folder holding three
+images and one text file over PROPFIND, waits until the phone's access
+log shows three reads, then requests the first kilobyte of one image
+with a `Range` header and proves the phone's log gains no new read. A
+second test proves the head cache misses after the file is written
+again with a new size. A pure test covers the extension check and the
+first in first out bound.
+
+### 18. Trusted networks, PLAN phase 2 item 7: open
+
+Job 5 gets stronger. A device that paired at home stays silent in a
+café, and the phone saves the battery the advertiser and the browser
+spend. The app reads the Wi-Fi network name, because only the app can.
+The engine decides what to do with it.
+
+```rust
+/// The app reports the name of the Wi-Fi network it is on, or None when
+/// it cannot read one: Wi-Fi off, the location permission refused, or
+/// the name unknown. Called after start and on every change. Idempotent.
+fn set_network(&self, name: Option<String>);
+/// Adds a name to the trusted list. An empty name, a name over 32
+/// bytes, or a 33rd name is refused with `Runtime::NetworkName`.
+fn trust_network(&self, name: String) -> Result<(), FerryError>;
+fn forget_network(&self, name: String) -> Result<(), FerryError>;
+fn trusted_networks(&self) -> Vec<String>;
+
+// Status gains
+/// The name the app last set. None when unknown.
+pub network: Option<String>,
+/// True while this device advertises, browses, and accepts over Wi-Fi.
+pub wifi_presence: bool,
+```
+
+**The rule, in one place.** `state.rs` gains one function,
+`wifi_presence(&State) -> bool`, and nothing else decides. Wi-Fi presence
+is on when `reachable` is on and one of three things holds: the trusted
+list is empty; the current network is in the list; pairing is in
+progress, which is any state but `Idle`, `Confirmed`, and `Failed`. An
+unknown network with a non-empty list is off. So a person who never
+granted the location permission sees no change from today, and a person
+who granted it once is quiet on every network they did not pair on or
+trust by hand.
+
+**Applying it.** One function, `apply_presence(shared)`, compares the
+rule to what is running and starts or stops the advertiser and the
+browser. Every site that changes an input calls it: `set_reachable`,
+`set_network`, `trust_network`, `forget_network`, every pairing start,
+every pairing end, and `stop`. `set_reachable` no longer starts the
+advertiser itself; there is one start site and it is `apply_presence`.
+The browse loop keeps its thread and drops its `Browser` while presence
+is off, because a browse query is a sound on the network. The
+`accept_loop` welcome check refuses a connection from a non-loopback
+address while presence is off. Loopback is the adb tunnel, so the cable
+always works, which is job 2.
+
+**Recording.** `finish_pairing` adds the current network to the trusted
+list when it is known, on both methods and on both sides. The first
+pairing at home trusts home. The list lives in `data_dir/networks`, one
+name per line in UTF-8, written through the temporary name and rename
+that `record.rs` uses, read at start. A missing file is an empty list.
+
+**Reporting.** A change to `wifi_presence`, `network`, or the trusted
+list fires `devices_changed`. Both apps already re-read `status()` on
+that callback.
+
+**The Mac.** `EngineModel` reads the name with CoreWLAN and hands it to
+`set_network` after start and on every `ssidDidChange` event, through
+`CWWiFiClient.startMonitoringEvent`, never by polling. On macOS 14 and
+later CoreWLAN returns no name until the app is authorised for location,
+so `project.yml` gains `NSLocationUsageDescription` and the app asks
+`CLLocationManager` for authorisation the first time pairing starts. A
+refusal is not an error; the name stays unknown. Settings gains a
+"Networks" section: the current network with a "Trust this network"
+control when it is known and not trusted, the trusted names each with a
+Remove control, and one line when `reachable` is on and `wifi_presence`
+is off saying Ferry is quiet on this network and why, with a control that
+opens Location in System Settings when the name is unknown. The
+presence control and the menu bar show the same line in that state.
+Every word is a key in `Strings.swift`.
+
+**The phone.** `Permissions` gains the fine location permission, asked
+the first time pairing starts, with the reason in the request. The name
+comes from a `ConnectivityManager` network callback registered for the
+Wi-Fi transport with location info included, reading the `WifiInfo` from
+the network capabilities; the quotes are stripped, and the unknown
+placeholder is None. One object owns the callback and calls
+`FerryEngine.setNetwork`. Settings gains the same "Networks" section as
+the Mac and a "Location" row under Permissions. The presence row and the
+notification show the quiet-on-this-network line in that state. Every
+word is in `strings.xml`.
+
+**Errors.** `Runtime::NetworkName`, one row.
+
+**Tests.** `tests/item_18_networks.rs`. The rule as a pure function, one
+case per branch. Trust, forget, and the list surviving an engine restart.
+`set_network` turning `wifi_presence` off and on in `status()`. A pairing
+between two engines recording the network both set. The welcome decision
+as a pure function with a loopback and a non-loopback address. No test
+sends a packet off this machine.
+
+### 19. The Mac in the phone's file picker, job 8: open
+
+PLAN phase 2 item 9. The phone's `DocumentsProvider` maps onto the file
+operations layer almost one to one, so the Mac's shared folders appear
+in the Files app and in every app's open dialog. It is the mirror of the
+Finder mount on the same layer, and it reuses the mount's decisions.
+
+**One pool.** The DAV bridge's per-device connection pool moves from
+`dav/pool.rs` to `crates/ferry-runtime/src/pool.rs`, owned by `Shared`
+as one pool per device key, made on first use and dropped by `forget`
+and by `stop`. `Bridge` borrows from it instead of owning one. The
+`take`, `Borrowed`, `client`, and `mark_unhealthy` API does not change.
+`Engine::list` borrows from it too, instead of dialling fresh. The
+constants keep their values: four connections, and a thirty second wait
+for a slot. The doc comment in `pool.rs` that says two seconds is wrong
+and is corrected.
+
+```rust
+/// One entry. Refuses a path that names no file with the code the
+/// wire reports, as `list` does today.
+fn stat(&self, device_key_hex: String, remote_path: String) -> Result<Entry, FerryError>;
+/// At most `MAX_READ_LEN` bytes, 1 MiB. A longer ask is clamped, not
+/// refused: a short read is an ordinary read result.
+fn read_at(&self, device_key_hex: String, remote_path: String, offset: u64, len: u32) -> Result<Vec<u8>, FerryError>;
+/// Creates the file when it does not exist. More than 1 MiB in one
+/// call is refused with `Runtime::WriteTooLarge`.
+fn write_at(&self, device_key_hex: String, remote_path: String, offset: u64, bytes: Vec<u8>) -> Result<(), FerryError>;
+fn truncate(&self, device_key_hex: String, remote_path: String, len: u64) -> Result<(), FerryError>;
+fn mkdir(&self, device_key_hex: String, remote_path: String) -> Result<(), FerryError>;
+/// A file, or an empty folder. The wire has no recursive delete.
+fn delete(&self, device_key_hex: String, remote_path: String) -> Result<(), FerryError>;
+/// Within one root, as the bridge allows.
+fn rename(&self, device_key_hex: String, from: String, to: String) -> Result<(), FerryError>;
+```
+
+Every call borrows from the pool, maps wire errors exactly as `list`
+and the bridge map them today, and records itself through `record_this`
+with its verb, `bytes` for a read or a write, so the phone's own access
+log shows what it did to the Mac, as the Mac's log shows the bridge.
+
+**The provider.** `android/app/src/main/kotlin/app/ferry/provider/
+FerryDocumentsProvider.kt`, declared in the manifest with the
+`MANAGE_DOCUMENTS` permission, the `DOCUMENTS_PROVIDER` action, exported,
+and URI grants, under the authority `app.ferry.documents`. A document id
+is the device key hex, a slash, and the root-relative path; a root's
+document id is the key hex alone, and its children are `list("")`, the
+Mac's shared roots. `queryRoots` lists every paired Mac with its name as
+the title and its reachability as the summary, and lists nothing while
+the engine is not started, which is before all files access is granted.
+`queryChildDocuments` is `list`. `queryDocument` is `stat`. `openDocument`
+returns a proxy file descriptor from `StorageManager` whose callback
+reads through `readAt`, writes through `writeAt`, sizes through `stat`,
+and truncates to zero on open in a truncating mode, on one handler thread
+the provider owns. `createDocument` is `mkdir` for a folder and a zero
+byte `writeAt` for a file. `deleteDocument`, `renameDocument`, and
+`isChildDocument` map by name. The Mac's shared roots carry no delete,
+rename, or write flag; everything under them carries write, delete, and
+rename, and folders carry create. Mime types come from the extension
+through the platform table. `FerryEngine` gains one passthrough per
+engine call above, and calls `notifyChange` on the roots URI from
+`devicesChanged`, so the summary follows reachability. Nothing in the
+provider formats English; the summary words are in `strings.xml`.
+
+**Errors.** `Runtime::WriteTooLarge`, one row.
+
+**Tests.** `tests/item_19_remote_ops.rs`, with the two-engine helpers
+copied as every test file does today. One test walks stat, write at
+zero, read back, truncate, rename, mkdir, and delete against the peer
+and checks the phone-side access log holds one entry per verb with the
+bytes. One test proves `list` reuses a pooled connection: two lists in a
+row leave the peer's connection count at one. One test proves a
+write over 1 MiB is refused with the row and writes nothing. The
+provider is compile-checked only; the Files app is a manual check.
