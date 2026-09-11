@@ -56,7 +56,7 @@ final class EngineModel: ObservableObject {
     private var pairingState: PairingState = .idle
     /// Which way in a person chose. A view concern, held here because the
     /// engine is told about it and the sheet may be rebuilt at any moment.
-    private var pairingMethod: PairingMethod?
+    private var pairingMethod: PairingEntryMethod?
     /// Devices this run has already tried to mount since they last became
     /// reachable. Cleared when a device stops being reachable, so the next
     /// reachable moment gets its own try. `docs/engine-contract.md`, item
@@ -336,13 +336,9 @@ final class EngineModel: ObservableObject {
 
     /// Enters pairing by one method. Called when the sheet opens and again
     /// if a person switches methods.
-    func startPairing(method: PairingMethod) {
+    func startPairing(method: PairingEntryMethod) {
         pairingMethod = method
-        // TODO(engine 12): `start_pairing_with(method)` does not exist, so
-        // both methods start the same engine-side flow. The scan method
-        // then shows a placeholder code, which is why it is not the only
-        // way in.
-        engine?.startPairing()
+        engine?.startPairingWith(method: method == .scan ? .qr : .code)
         refreshPairing()
     }
 
@@ -355,8 +351,8 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    /// Answers the six digits, and — once item 12 lands — the Mac's Pair or
-    /// Refuse on a scanned request.
+    /// Answers the six digits, or the Mac's Pair or Refuse on a scanned
+    /// request.
     func confirmPairing(accept: Bool) {
         engine?.confirmPairing(accept: accept)
     }

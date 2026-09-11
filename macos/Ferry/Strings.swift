@@ -329,11 +329,6 @@ enum S {
             String(format: expiresInFormat, countdown)
         }
 
-        /// TODO(engine 12): shown while the payload is a placeholder, so
-        /// nobody tries to scan a code that cannot work.
-        static let placeholderNote = "This code cannot be scanned yet. Use a pairing code."
-        static let placeholderPayload = "ferry:placeholder"
-
         static let wantsToPairFormat = "%@ wants to pair."
         static func wantsToPair(name: String) -> String {
             String(format: wantsToPairFormat, name)

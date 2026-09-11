@@ -616,7 +616,7 @@ peer, auth and `Host` refusals, the cache, and the lock table. Nothing
 automated proves Finder itself mounts and lists; the spike proved the
 route and a person checks the rest with `docs/manual-checks.md`.
 
-### 12. QR pairing: open
+### 12. QR pairing: built
 
 The scan method proves possession earlier than six digits: the phone
 learns the Mac's static key from the screen, so the handshake is `IK` and

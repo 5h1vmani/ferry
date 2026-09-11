@@ -249,7 +249,13 @@ struct AccessDaySnapshot: Equatable, Identifiable {
 
 /// Which way in a person chose. Pairing is a once-ever job, so two ways is
 /// one screen more, not two things to maintain.
-enum PairingMethod: Equatable {
+///
+/// Named apart from the engine's own `PairingMethod` (`Code`/`Qr`, in
+/// `Generated/ferry_runtime.swift`), which this maps to only at the one
+/// call into the engine, `EngineModel.startPairing(method:)`. The two do
+/// not merge: this one is UI state that exists before the sheet has called
+/// the engine at all, such as the moment `.choosing` shows both buttons.
+enum PairingEntryMethod: Equatable {
     case scan
     case code
 }
@@ -262,9 +268,6 @@ struct PairingOfferSnapshot: Equatable {
     /// (docs/engine-contract.md, item 10). Nil only for the moment before
     /// any pairing state has arrived.
     let expiresIn: String?
-    /// False while the engine has no Offering state and this payload is a
-    /// placeholder (docs/engine-contract.md, item 12).
-    let isReal: Bool
 }
 
 /// One device the Mac could pair with, in the code method's Found state.

@@ -31,22 +31,11 @@ struct PairingQRView: View {
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.text)
 
-                // The expiry is a count, not "soon". Left out entirely
-                // while the engine does not publish the deadline.
+                // The expiry is a count, not "soon".
                 if let expiresIn = offer.expiresIn {
                     Text(S.pairing.expiresIn(expiresIn))
                         .font(FerryFont.caption)
                         .foregroundStyle(FerryColor.textSecondary)
-                }
-
-                // TODO(engine 12): until the engine serialises a real
-                // payload, this code cannot be scanned. Said plainly
-                // rather than letting a person try and fail.
-                if !offer.isReal {
-                    Text(S.pairing.placeholderNote)
-                        .font(FerryFont.caption)
-                        .foregroundStyle(FerryColor.textSecondary)
-                        .multilineTextAlignment(.center)
                 }
             }
 

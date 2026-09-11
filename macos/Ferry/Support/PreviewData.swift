@@ -159,12 +159,11 @@ enum PreviewData {
         isSupported: true
     )
 
-    /// A placeholder pairing offer. TODO(engine 12): the real payload is
-    /// serialised by the engine.
+    /// Sample data for the pairing preview only. A real offer's payload
+    /// comes from the engine, in `EngineAdapter.offerSnapshot`.
     static let offer = PairingOfferSnapshot(
         payload: Data("ferry:preview".utf8),
-        expiresIn: FerryFormat.countdown(seconds: 108),
-        isReal: false
+        expiresIn: FerryFormat.countdown(seconds: 108)
     )
 
     /// Access log entries for previews and screenshots, shaped like what

@@ -6,11 +6,11 @@
 // PairingState. A view that needed a new engine field would change this
 // file and its own body, and nothing in between.
 //
-// One item in docs/engine-contract.md has no field in the engine yet: 12.
-// It is marked `TODO(engine 12)`, and has a default here that is honest: a
-// missing count is absent, not zero, and a missing sentence is left out, not
-// guessed. That is the three-part rule from docs/voice.md applied to the
-// boundary rather than to prose.
+// Every item in docs/engine-contract.md that a screen reads is built. The
+// items still marked deferred there (none today) would carry a default here
+// that is honest: a missing count is absent, not zero, and a missing
+// sentence is left out, not guessed. That is the three-part rule from
+// docs/voice.md applied to the boundary rather than to prose.
 //
 //   grep -rn "TODO(engine" macos/
 //
@@ -297,35 +297,31 @@ enum EngineAdapter {
     /// person chose. One function, so the sheet switches on one value
     /// instead of two.
     ///
-    /// TODO(engine 12): two states are missing from `PairingState` and so
-    /// cannot be produced here. `Offering { offer }` would replace the
-    /// placeholder below, and `Requested { name, transport }` is what the
-    /// Mac answers with Pair or Refuse. Until they land, the scan method
-    /// shows a code nothing can scan, which is why `isReal` is false and
-    /// why the sheet always offers the code method as well.
-    static func pairing(_ state: PairingState, method: PairingMethod?) -> PairingScreen {
+    /// `Waiting` and `Found` belong to the code method; `start_pairing_with`
+    /// never reports either while pairing by scan, so `method` decides
+    /// nothing here any more except what `.idle` shows before the engine's
+    /// first real state arrives.
+    static func pairing(_ state: PairingState, method: PairingEntryMethod?) -> PairingScreen {
         switch state {
         case .idle:
-            guard let method else { return .choosing }
-            return method == .scan ? .offering(offer(expiresUnixSecs: nil)) : .waiting
-
-        case let .waiting(expiresUnixSecs):
-            // TODO(engine 12): the engine has no Offering state, so the
-            // scan method borrows Waiting and shows a placeholder payload.
-            // When `start_pairing_with(Qr)` lands, Offering carries the
-            // real bytes and their expiry.
-            if method == .scan {
-                return .offering(offer(expiresUnixSecs: expiresUnixSecs))
-            }
+            guard method != nil else { return .choosing }
+            // A brief gap between choosing a method and the engine's first
+            // real state, for either method: `.waiting` states that
+            // honestly, rather than guessing at a payload or a code that do
+            // not exist yet.
             return .waiting
 
-        case let .found(candidates, expiresUnixSecs):
-            // A scan needs nothing to browse: the phone already knows which
-            // Mac it scanned. Candidates only reach the code method.
-            if method == .scan {
-                return .offering(offer(expiresUnixSecs: expiresUnixSecs))
-            }
+        case .waiting:
+            return .waiting
+
+        case let .found(candidates, _):
             return .found(candidates.map(candidate))
+
+        case let .offering(offer):
+            return .offering(offerSnapshot(offer))
+
+        case let .requested(name, transport):
+            return .requested(name: name, transport: transport)
 
         case let .code(code, _):
             return .code(digits: FerryFormat.pairingCode(code))
@@ -338,18 +334,14 @@ enum EngineAdapter {
         }
     }
 
-    /// The bytes the Mac renders as a square code.
-    ///
-    /// TODO(engine 12): a placeholder until the engine serialises the real
-    /// payload. `isReal` is false so the view can say so rather than
-    /// present an unusable code as usable.
-    private static func offer(expiresUnixSecs: Int64?) -> PairingOfferSnapshot {
+    /// The bytes the Mac renders as a square code, and when it stops
+    /// accepting a scan.
+    private static func offerSnapshot(_ offer: PairingOffer) -> PairingOfferSnapshot {
         PairingOfferSnapshot(
-            payload: Data(S.pairing.placeholderPayload.utf8),
-            expiresIn: expiresUnixSecs.map {
-                FerryFormat.countdown(seconds: $0 - Int64(Date().timeIntervalSince1970))
-            },
-            isReal: false
+            payload: offer.payload,
+            expiresIn: FerryFormat.countdown(
+                seconds: offer.expiresUnixSecs - Int64(Date().timeIntervalSince1970)
+            )
         )
     }
 
