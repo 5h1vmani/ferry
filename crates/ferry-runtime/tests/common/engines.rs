@@ -15,7 +15,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use ferry_core::noise::StaticKey;
 
 use ferry_runtime::{
     Config, DeviceKind, Engine, EngineListener, KeyPair, PairingMethod, PairingState, Root,
@@ -256,4 +258,40 @@ pub(crate) fn pair(mac: &Side, phone: &Side) -> String {
 pub(crate) fn code_of_error(error: &ferry_runtime::FerryError) -> String {
     let ferry_runtime::FerryError::Failed { code, .. } = error;
     code.clone()
+}
+
+/// How big the file the Mac pulls is.
+pub(crate) const FILE_BYTES: usize = 300 * 1024;
+
+/// Bytes that are easy to check and hard to get right by accident.
+pub(crate) fn sample_bytes() -> Vec<u8> {
+    (0..FILE_BYTES)
+        .map(|i| u8::try_from((i * 31 + 7) % 251).unwrap_or(0))
+        .collect()
+}
+
+/// A `Side`'s key, as `ferry-core` names it. For a raw connection built by
+/// hand, bypassing `Engine::list`, so a test can issue more than one
+/// operation on the very same connection.
+pub(crate) fn static_key(key: &KeyPair) -> StaticKey {
+    StaticKey::from_stored(&key.private, &key.public).expect("a stored key pair should load")
+}
+
+/// Now, in Unix seconds, for checking a reported deadline is plausible.
+pub(crate) fn now_unix_secs() -> i64 {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock should be after the epoch")
+        .as_secs();
+    i64::try_from(secs).expect("the current time fits in an i64")
+}
+
+/// The pairing timeout is two minutes. A little slack either side covers the
+/// time a test itself takes to reach the point it checks a deadline.
+pub(crate) fn assert_expires_about_two_minutes_out(expires_unix_secs: i64) {
+    let now = now_unix_secs();
+    assert!(
+        (0..=130).contains(&(expires_unix_secs - now)),
+        "the deadline should be about two minutes out, got {expires_unix_secs}, now is {now}"
+    );
 }
