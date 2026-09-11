@@ -67,6 +67,18 @@ class ReachableService : Service() {
         // advertises when it does not. Once started, a repeat call is a
         // no-op that returns true.
         if (!FerryEngine.start()) {
+            // A service started with startForegroundService must call
+            // startForeground before it may stop, or Android kills the
+            // whole process. Show the off notification for the instant
+            // it takes to stop, then remove it.
+            createChannel()
+            advertising = false
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
