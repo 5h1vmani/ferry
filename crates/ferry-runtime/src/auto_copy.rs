@@ -218,12 +218,32 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), FerryError> {
 }
 
 fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+    let mut file = open_new_private_file(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+// G4: create `path` in mode `0o600` on Unix, the same private mode
+// `ferry-core`'s `peers.rs` gives its own file, set as part of the same
+// syscall that creates it so there is no moment where the file exists with
+// a wider mode. `create_new` already refuses to touch anything already
+// there, temporary name or not.
+#[cfg(unix)]
+fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
@@ -772,5 +792,26 @@ mod tests {
         let loaded = AutoCopyStore::load(&path);
         assert!(loaded.get("anything").is_none());
         assert!(MAX_DEVICES < usize::try_from(u32::MAX).unwrap_or(usize::MAX));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn on_unix_the_file_is_created_with_mode_0o600() {
+        // G4: `ferry-core`'s `peers.rs` creates its own file this way. This
+        // file names every paired device's automatic copy setting, which
+        // deserves the same privacy.
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_dir("permissions").join("auto_copy");
+        let mut store = AutoCopyStore::load(&path);
+        store.set_enabled("device", true);
+        store.save().expect("the store should save");
+
+        let mode = fs::metadata(&path)
+            .expect("the file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
     }
 }

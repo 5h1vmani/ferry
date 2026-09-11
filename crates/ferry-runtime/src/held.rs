@@ -340,13 +340,32 @@ fn append_row(path: &Path, row: &HeldRow) -> Result<(), FerryError> {
     }
     frame.bytes(&encode_row(row));
     (|| -> std::io::Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(path)?;
+        let mut file = open_private_append(path)?;
         file.write_all(&frame.finish())
     })()
     .map_err(|_| failed("TransferError::Local"))
+}
+
+// G4: open `path` for append, creating it in mode `0o600` on Unix if it is
+// not there yet, the same private mode `ferry-core`'s `peers.rs` gives its
+// own file. The mode is set as part of the same syscall that creates the
+// file, so there is no moment where a fresh file exists with a wider mode.
+// Reopening an existing file leaves its mode exactly as it was, which is
+// what an append needs; this only ever narrows what a *new* file starts
+// as.
+#[cfg(unix)]
+fn open_private_append(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_private_append(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new().append(true).create(true).open(path)
 }
 
 // Cut `path` back to its first `good_len` bytes. Called only when `load`
@@ -387,12 +406,32 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), FerryError> {
 }
 
 fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
+    let mut file = open_new_private_file(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+// G4: create `path` in mode `0o600` on Unix, the same private mode
+// `ferry-core`'s `peers.rs` gives its own file, set as part of the same
+// syscall that creates it so there is no moment where the file exists with
+// a wider mode. `create_new` already refuses to touch anything already
+// there, temporary name or not.
+#[cfg(unix)]
+fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
@@ -664,5 +703,42 @@ mod tests {
             u64::try_from(good_len).unwrap_or(u64::MAX),
             "the torn tail is cut off, not left for the next append to land after"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn on_unix_the_file_is_private_whether_appended_or_rebuilt() {
+        // G4: `ferry-core`'s `peers.rs` creates its own file in mode 0o600.
+        // This file names every source path this device has pulled from a
+        // paired peer, so it deserves the same privacy, both the first time
+        // `record` appends to it and the one time it rebuilds it compact.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("permissions");
+        let path = dir.join("held");
+        let mut store = HeldStore::load(&path);
+        store
+            .record(row("device", "DCIM/a.jpg", 1024, 0, 1))
+            .expect("the first record should append");
+
+        let appended_mode = fs::metadata(&path)
+            .expect("the file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(appended_mode, 0o600, "an appended file is private");
+
+        for i in 0..MAX_ROWS {
+            let byte = u8::try_from(i % 256).unwrap_or(0);
+            store
+                .record(row("device", &format!("DCIM/{i}.jpg"), 1, 0, byte))
+                .expect("filling to and past the bound should append or rebuild");
+        }
+        let rebuilt_mode = fs::metadata(&path)
+            .expect("the file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(rebuilt_mode, 0o600, "a rebuilt file is still private");
     }
 }
