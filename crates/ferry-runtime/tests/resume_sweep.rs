@@ -559,7 +559,7 @@ fn serve_one(
         };
         Box::new(paired.paired.stream)
     } else {
-        let Ok(connection) = pending.connect(key, &engine) else {
+        let Ok(connection) = pending.connect(key, &[engine]) else {
             return;
         };
         Box::new(connection.stream)

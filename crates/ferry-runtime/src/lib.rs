@@ -170,23 +170,19 @@
 //! The side that dialed lets the stream go and dials again when it needs to.
 //! Two servers on one stream would each wait for the other to speak.
 //!
-//! # Known limitation: picking the peer for an inbound connection
+//! # Picking the peer for an inbound connection
 //!
 //! Every connection after pairing runs Noise KK, and KK needs the caller's
 //! static public key before the handshake starts. The wire carries nothing
-//! that says who is calling, and a handshake cannot be tried twice on one
-//! stream: the version exchange and the first Noise message are already read
-//! by then, and `Pending::connect` consumes the connection.
+//! that says who is calling, and a handshake message can only be read once:
+//! the stream is not rewound to try a second guess.
 //!
-//! So this build guesses, and never weakens the handshake to avoid guessing.
-//! With one stored peer it uses that peer. With more it uses the peer whose
-//! last known address matches the caller's address, and otherwise the first
-//! peer in key order. A wrong guess fails the handshake and the connection is
-//! dropped, which is safe but costs the caller a retry.
-//!
-//! The real fix is a responder that reads the first KK message, then tries
-//! each stored key against it. That needs a change in `tcp.rs` and `noise.rs`,
-//! so it is phase 2 work.
+//! So the responder never guesses. It reads the first KK message once, with
+//! `noise.rs`'s `read_kk_message_one`, then tries every stored peer against
+//! that same read in turn, the one whose last known address matches the
+//! caller's address first, then the rest, and binds the first that
+//! authenticates. `docs/engine-contract.md` item 16b; see `candidate_peers`
+//! in `engine.rs` and `Pending::connect` in `tcp.rs`.
 //!
 //! # Known limitation: a serving thread cannot be woken
 //!

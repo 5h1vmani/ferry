@@ -1956,15 +1956,16 @@ fn handle_inbound(shared: &Arc<Shared>, pending: Pending) {
         return;
     }
 
-    // With no stored peer there is nobody this connection could be. The
-    // handshake still runs, against a key nobody holds, so that a device
-    // with no peer and a device with one peer look the same from outside.
-    // Dropping the connection here instead would tell a stranger which of
-    // the two this device is.
-    let peer = choose_peer(shared, remote).unwrap_or_else(|| nobody(shared));
+    // With no stored peer there is nobody this connection could be, and
+    // `candidate_peers` still returns one candidate nobody holds, so a
+    // device with no peer and a device with one peer look the same from
+    // outside. Dropping the connection here instead would tell a stranger
+    // which of the two this device is.
+    let candidates = candidate_peers(shared, remote);
     // A refused handshake is the design working: whoever called does not
     // hold a key this device paired with. Nothing to report.
-    if let Ok(connection) = pending.connect(&shared.key, &peer) {
+    if let Ok(connection) = pending.connect(&shared.key, &candidates) {
+        let peer = connection.peer;
         serve_connection(shared, connection, peer);
     }
 }
@@ -2229,25 +2230,35 @@ fn pairing_watchdog(shared: &Arc<Shared>) {
     }
 }
 
-/// Which stored peer an inbound connection is most likely to be.
+/// The stored peers to offer `Pending::connect` as candidates, in the order
+/// a responder should try them: the one whose last known address matches
+/// `remote` first, then the rest.
 ///
-/// The wire says nothing about who is calling before the handshake, and a
-/// handshake cannot be retried on one stream. See the crate documentation for
-/// what this costs and what the real fix is.
-fn choose_peer(shared: &Arc<Shared>, remote: SocketAddr) -> Option<PublicKey> {
+/// The wire says nothing about who is calling before the handshake, so every
+/// stored peer is a candidate; `Pending::connect` reads message one once and
+/// tries each in turn (`docs/engine-contract.md` item 16b). Storage already
+/// refuses more than `peers::MAX_PEERS` (64) peers, which already bounds how
+/// many are ever tried here.
+///
+/// A device with no stored peer gets exactly one candidate, a key nobody
+/// holds, so a stranger sees the same shape of failure whether or not this
+/// device has ever paired.
+fn candidate_peers(shared: &Arc<Shared>, remote: SocketAddr) -> Vec<PublicKey> {
     let state = lock(&shared.state);
-    let peers = state.peers.all();
-    if peers.len() == 1 {
-        return peers.first().map(|p| p.key);
+    let mut peers = state.peers.all();
+    if peers.is_empty() {
+        return vec![nobody(shared)];
     }
-    let by_address = peers.iter().find(|peer| {
-        state
+    peers.sort_by_key(|peer| {
+        let matches_address = state
             .live
             .get(&hex_of(&peer.key))
             .and_then(|live| live.last_addr)
-            .is_some_and(|addr| addr.ip() == remote.ip())
+            .is_some_and(|addr| addr.ip() == remote.ip());
+        // `false` sorts before `true`, so a matching address comes first.
+        !matches_address
     });
-    by_address.or_else(|| peers.first()).map(|peer| peer.key)
+    peers.into_iter().map(|peer| peer.key).collect()
 }
 
 /// A connection arriving on the loopback address came through an `adb`

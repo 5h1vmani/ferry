@@ -112,6 +112,17 @@ impl Inbox {
         self.lock().pairings.iter().filter(|s| want(s)).count()
     }
 
+    /// Forget every pairing state seen so far.
+    ///
+    /// `wait_pairing` finds the first recorded state `want` accepts, and
+    /// never forgets one on its own. Pairing a second peer with the same
+    /// engine needs this first, or `wait_pairing` matches the first
+    /// pairing's own `Found`, `Code`, or `Confirmed` state instead of
+    /// waiting for the second one's.
+    fn clear_pairings(&self) {
+        self.lock().pairings.clear();
+    }
+
     /// Wait until a pairing state that `want` accepts has arrived.
     fn wait_pairing(&self, what: &str, want: impl Fn(&PairingState) -> bool) -> PairingState {
         let deadline = Instant::now() + PATIENCE;
@@ -589,7 +600,7 @@ fn serve_one<F: FileOps + Send + Sync>(
         };
         Box::new(paired.paired.stream)
     } else {
-        let Ok(connection) = pending.connect(key, &engine) else {
+        let Ok(connection) = pending.connect(key, &[engine]) else {
             return;
         };
         Box::new(connection.stream)
@@ -2356,6 +2367,43 @@ fn a_stranger_cannot_tell_whether_the_device_has_a_peer() {
     );
     alone.engine.stop();
     paired.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// docs/engine-contract.md item 16b: the responder tries every stored key in
+// turn, so a second paired peer is not left unable to connect.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_engine_with_two_stored_peers_accepts_a_connection_from_the_second_with_no_address_hint() {
+    let side = build("Vamana");
+    side.engine.set_reachable(true);
+
+    let first_peer = start_peer(&side.key, sample_bytes(1));
+    pair_with_peer(&side, &first_peer);
+
+    // `wait_pairing` finds the first matching state ever recorded, so
+    // without this it would see the first pairing's own Found, Code, and
+    // Confirmed states and never actually wait for the second one's.
+    side.inbox.clear_pairings();
+    let second_peer = start_peer(&side.key, sample_bytes(1));
+    pair_with_peer(&side, &second_peer);
+
+    // A fresh dial, from a socket the engine has never seen before: nothing
+    // recorded favours the second peer's key over the first's. Before item
+    // 16b, `choose_peer` guessed one candidate and a wrong guess failed the
+    // handshake outright; the responder now tries every stored key against
+    // the one message this dial sends.
+    tcp::connect(
+        loopback_addr(&side),
+        &static_key(&second_peer.key),
+        &public_key(&side.key),
+    )
+    .expect("the responder should try every stored key, not only the first");
+
+    side.engine.stop();
+    first_peer.close();
+    second_peer.close();
 }
 
 // ---------------------------------------------------------------------------

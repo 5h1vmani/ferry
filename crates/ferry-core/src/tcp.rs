@@ -49,12 +49,21 @@
 //!     /// Agree a version, then run Noise XX as responder, both inside one
 //!     /// deadline. Starts the idle timeout on success.
 //!     pub fn pair(self, key: &StaticKey) -> Result<PairedConnection, TcpError>;
-//!     /// Agree a version, then run Noise KK as responder against a known
-//!     /// peer, both inside one deadline. Starts the idle timeout on success.
-//!     pub fn connect(self, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError>;
+//!     /// Agree a version, then run Noise KK as responder, trying each
+//!     /// candidate key in turn against the one message the peer sends, and
+//!     /// binding the first that authenticates. Both inside one deadline.
+//!     /// Starts the idle timeout on success.
+//!     pub fn connect(self, key: &StaticKey, candidates: &[PublicKey]) -> Result<Connection, TcpError>;
 //! }
 //!
-//! pub struct Connection { pub stream: SecureStream, pub remote: SocketAddr, pub version: u16 }
+//! pub struct Connection {
+//!     pub stream: SecureStream,
+//!     pub remote: SocketAddr,
+//!     pub version: u16,
+//!     /// Whichever candidate authenticated: the peer asked for, when this
+//!     /// device dialled, or whichever of `candidates` did, when it accepted.
+//!     pub peer: PublicKey,
+//! }
 //!
 //! /// What a successful `pair` or `Pending::pair` produces. `Paired` has no
 //! /// room for a version field and this crate does not own that type, so
@@ -436,16 +445,27 @@ impl Pending {
         )
     }
 
-    /// Agree a version, then run Noise KK as responder against a known peer,
-    /// both inside one deadline. Starts the idle timeout on success.
+    /// Agree a version, then run Noise KK as responder, trying each of
+    /// `candidates` in turn against the one message the peer sends, and
+    /// binding the first that authenticates, both inside one deadline.
+    /// Starts the idle timeout on success.
+    ///
+    /// The wire says nothing about who is calling before the handshake, and
+    /// message one can only be read once, so every candidate the caller
+    /// might be is tried against that same read. `docs/engine-contract.md`
+    /// item 16b.
     ///
     /// # Errors
     ///
     /// Returns [`TcpError::Version`] when version negotiation fails,
-    /// [`TcpError::Noise`] when the peer does not hold the private key
-    /// matching `peer`, and [`TcpError::Timeout`] when the two together do
-    /// not finish before the deadline.
-    pub fn connect(self, key: &StaticKey, peer: &PublicKey) -> Result<Connection, TcpError> {
+    /// [`TcpError::Noise`] when no candidate authenticates, and
+    /// [`TcpError::Timeout`] when the two together do not finish before the
+    /// deadline.
+    pub fn connect(
+        self,
+        key: &StaticKey,
+        candidates: &[PublicKey],
+    ) -> Result<Connection, TcpError> {
         let Pending {
             stream,
             remote,
@@ -459,13 +479,14 @@ impl Pending {
             deadline,
             idle_timeout,
             |s, agreed| {
-                noise::connect_as_responder(s, key, peer, &agreed.prologue).map(|stream| {
-                    Connection {
+                noise::connect_as_responder_any(s, key, candidates, &agreed.prologue).map(
+                    |(stream, peer)| Connection {
                         stream,
                         remote,
                         version: agreed.version,
-                    }
-                })
+                        peer,
+                    },
+                )
             },
         )
     }
@@ -481,6 +502,11 @@ pub struct Connection {
     /// The protocol version both sides agreed on, before the Noise handshake
     /// ran.
     pub version: u16,
+    /// The peer this connection authenticated as. For [`connect`], the peer
+    /// the caller asked for. For [`Pending::connect`], whichever of its
+    /// candidates actually authenticated. `docs/engine-contract.md` item
+    /// 16b.
+    pub peer: PublicKey,
 }
 
 /// What a successful [`pair`] or [`Pending::pair`] produces.
@@ -525,6 +551,7 @@ pub fn connect(
                 stream,
                 remote,
                 version: agreed.version,
+                peer: *peer,
             })
         },
     )
@@ -602,7 +629,7 @@ mod tests {
 
         let server = thread::spawn(move || {
             let pending = listener.accept().unwrap();
-            let mut connection = pending.connect(&key_b, &public_a).unwrap();
+            let mut connection = pending.connect(&key_b, &[public_a]).unwrap();
             let mut buf = [0u8; 5];
             connection.stream.read_exact(&mut buf).unwrap();
             connection.stream.write_all(b"world").unwrap();
@@ -691,7 +718,7 @@ mod tests {
 
         let server = thread::spawn(move || {
             let pending = listener.accept().unwrap();
-            pending.connect(&key_server, &public_client).map(|_| ())
+            pending.connect(&key_server, &[public_client]).map(|_| ())
         });
 
         // The stranger dials in, but does not hold the private key the
@@ -744,7 +771,7 @@ mod tests {
         let pending = listener.accept().unwrap();
 
         let start = Instant::now();
-        let result = pending.connect(&key, &key.public());
+        let result = pending.connect(&key, &[key.public()]);
         let elapsed = start.elapsed();
 
         assert!(

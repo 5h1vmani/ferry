@@ -393,15 +393,30 @@ pub fn pair_as_responder(
 /// Returns [`NoiseError::Crypto`] when the peer does not hold the matching
 /// private key, which is what makes an unpaired device unable to connect.
 pub fn connect_as_initiator(
-    stream: impl Read + Write + Send + 'static,
+    mut stream: impl Read + Write + Send + 'static,
     key: &StaticKey,
     peer: &PublicKey,
     prologue: &[u8],
 ) -> Result<SecureStream, NoiseError> {
-    run_kk(stream, key, peer, prologue, true)
+    let mut state = kk_state(key, peer, prologue, true)?;
+    let mut buf = vec![0u8; MAX_HANDSHAKE_MESSAGE];
+    let n = state.write_message(&[], &mut buf)?;
+    send_handshake(&mut stream, &buf[..n])?;
+    let incoming = receive_handshake(&mut stream)?;
+    state.read_message(&incoming, &mut buf)?;
+    let transport = state.into_transport_mode()?;
+    Ok(SecureStream::new(stream, transport))
 }
 
-/// Accept a connection from a device that has already been paired.
+/// Accept a connection from a device that has already been paired, checked
+/// against exactly one candidate key.
+///
+/// A responder with more than one stored peer cannot use this directly: `KK`
+/// needs the initiator's static key before it can even read message one, and
+/// the stream cannot be read twice to try a second guess. See
+/// [`read_kk_message_one`] and [`KkMessageOne::try_candidate`], which split
+/// that read from the guess so more than one candidate can be tried against
+/// it. `docs/engine-contract.md` item 16b.
 ///
 /// # Errors
 ///
@@ -412,44 +427,135 @@ pub fn connect_as_responder(
     peer: &PublicKey,
     prologue: &[u8],
 ) -> Result<SecureStream, NoiseError> {
-    run_kk(stream, key, peer, prologue, false)
+    let (stream, _peer) =
+        connect_as_responder_any(stream, key, std::slice::from_ref(peer), prologue)?;
+    Ok(stream)
 }
 
-fn run_kk(
+/// Accept a connection from a device that has already been paired, trying
+/// each of `candidates` in turn against the one message the peer sends, and
+/// binding the first that authenticates.
+///
+/// `docs/engine-contract.md` item 16b: a responder with more than one stored
+/// peer previously guessed a single candidate, and a wrong guess failed the
+/// handshake outright. Reading message one once and trying every candidate
+/// against it fixes that.
+///
+/// # Errors
+///
+/// Returns [`NoiseError::Crypto`] when no candidate authenticates. The error
+/// is the last candidate's; none of the earlier failures can be singled out
+/// as more informative than the others.
+pub fn connect_as_responder_any(
     mut stream: impl Read + Write + Send + 'static,
     key: &StaticKey,
-    peer: &PublicKey,
+    candidates: &[PublicKey],
+    prologue: &[u8],
+) -> Result<(SecureStream, PublicKey), NoiseError> {
+    let first = read_kk_message_one(&mut stream)?;
+    let mut last_error = NoiseError::MissingPeerKey;
+    for candidate in candidates {
+        match first.try_candidate(key, candidate, prologue) {
+            Ok(bound) => return Ok((bound.finish(stream)?, *candidate)),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+/// Build the `KK` handshake state for one candidate key.
+fn kk_state(
+    key: &StaticKey,
+    candidate: &PublicKey,
     prologue: &[u8],
     initiator: bool,
-) -> Result<SecureStream, NoiseError> {
+) -> Result<snow::HandshakeState, NoiseError> {
     let params = PATTERN_CONNECT
         .parse()
         .map_err(|_| NoiseError::BadPattern)?;
     let builder = snow::Builder::new(params)
         .local_private_key(key.private_bytes())?
-        .remote_public_key(peer.as_bytes())?
+        .remote_public_key(candidate.as_bytes())?
         .prologue(prologue)?;
-    let mut state = if initiator {
+    Ok(if initiator {
         builder.build_initiator()?
     } else {
         builder.build_responder()?
-    };
+    })
+}
 
-    let mut buf = vec![0u8; MAX_HANDSHAKE_MESSAGE];
-    if initiator {
-        let n = state.write_message(&[], &mut buf)?;
-        send_handshake(&mut stream, &buf[..n])?;
-        let incoming = receive_handshake(&mut stream)?;
-        state.read_message(&incoming, &mut buf)?;
-    } else {
-        let incoming = receive_handshake(&mut stream)?;
-        state.read_message(&incoming, &mut buf)?;
-        let n = state.write_message(&[], &mut buf)?;
-        send_handshake(&mut stream, &buf[..n])?;
+/// A `KK` responder's first handshake message, read once.
+///
+/// The stream cannot be rewound and a handshake cannot be retried on it, so
+/// trying more than one stored key means building a fresh handshake state
+/// for each candidate and replaying these same bytes into it, rather than
+/// reading the stream again. `KK` needs the initiator's static key to
+/// decrypt message one at all, so the wrong candidate simply fails to
+/// authenticate instead of silently accepting. `docs/engine-contract.md`
+/// item 16b.
+pub struct KkMessageOne {
+    incoming: Vec<u8>,
+}
+
+/// Read a `KK` responder's first handshake message.
+///
+/// Call this once; try as many candidates as needed against the value it
+/// returns, with [`KkMessageOne::try_candidate`].
+///
+/// # Errors
+///
+/// Returns [`NoiseError::Io`] when the stream fails, and
+/// [`NoiseError::HandshakeMessageTooLarge`] when the peer claims a message
+/// over [`MAX_HANDSHAKE_MESSAGE`] bytes.
+pub fn read_kk_message_one(stream: &mut impl Read) -> Result<KkMessageOne, NoiseError> {
+    Ok(KkMessageOne {
+        incoming: receive_handshake(stream)?,
+    })
+}
+
+impl KkMessageOne {
+    /// Try one candidate key against the message [`read_kk_message_one`]
+    /// read.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoiseError::Crypto`] when `candidate` is not the device
+    /// that sent message one.
+    pub fn try_candidate(
+        &self,
+        key: &StaticKey,
+        candidate: &PublicKey,
+        prologue: &[u8],
+    ) -> Result<BoundKk, NoiseError> {
+        let mut state = kk_state(key, candidate, prologue, false)?;
+        let mut buf = vec![0u8; MAX_HANDSHAKE_MESSAGE];
+        state.read_message(&self.incoming, &mut buf)?;
+        Ok(BoundKk { state })
     }
+}
 
-    let transport = state.into_transport_mode()?;
-    Ok(SecureStream::new(stream, transport))
+/// A `KK` responder handshake whose candidate has authenticated. Sending
+/// message two and switching to transport mode are the only steps left.
+pub struct BoundKk {
+    state: snow::HandshakeState,
+}
+
+impl BoundKk {
+    /// Send message two and move to transport mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NoiseError::Io`] when the stream fails.
+    pub fn finish(
+        mut self,
+        mut stream: impl Read + Write + Send + 'static,
+    ) -> Result<SecureStream, NoiseError> {
+        let mut buf = vec![0u8; MAX_HANDSHAKE_MESSAGE];
+        let n = self.state.write_message(&[], &mut buf)?;
+        send_handshake(&mut stream, &buf[..n])?;
+        let transport = self.state.into_transport_mode()?;
+        Ok(SecureStream::new(stream, transport))
+    }
 }
 
 /// An encrypted byte stream.
@@ -554,7 +660,7 @@ mod tests {
     use super::{
         MAX_HANDSHAKE_MESSAGE, NoiseError, PATTERN_PAIR, Paired, PublicKey, StaticKey, commitment,
         connect_as_initiator, connect_as_responder, pair_as_initiator, pair_as_responder,
-        random_nonce, receive_handshake, send_handshake,
+        random_nonce, read_kk_message_one, receive_handshake, send_handshake,
     };
     use crate::frame::{Frame, FrameKind, read_frame, write_frame};
     use crate::transport::{Endpoint, loopback};
@@ -718,6 +824,38 @@ mod tests {
             s.read_exact(&mut buf).unwrap();
             buf
         });
+        let mut client = connect_as_initiator(ea, &key_a, &public_b, PROLOGUE).unwrap();
+        client.write_all(b"again").unwrap();
+        assert_eq!(&server.join().unwrap(), b"again");
+    }
+
+    #[test]
+    fn a_responder_with_two_candidates_authenticates_the_second() {
+        // docs/engine-contract.md item 16b: the first candidate tried is a
+        // decoy, standing in for a stored peer that is not the one calling.
+        // Message one is read once, on this one stream, and both candidates
+        // are tried against that same read.
+        let (key_a, public_a, key_b, public_b) = stored_pair();
+        let decoy_public = StaticKey::generate().unwrap().public();
+        let (ea, mut eb) = loopback();
+
+        let server = std::thread::spawn(move || {
+            let first = read_kk_message_one(&mut eb).unwrap();
+            assert!(
+                first
+                    .try_candidate(&key_b, &decoy_public, PROLOGUE)
+                    .is_err(),
+                "a candidate that never sent message one must not authenticate"
+            );
+            let bound = first
+                .try_candidate(&key_b, &public_a, PROLOGUE)
+                .expect("the second candidate is the one that actually connected");
+            let mut secure = bound.finish(eb).unwrap();
+            let mut buf = [0u8; 5];
+            secure.read_exact(&mut buf).unwrap();
+            buf
+        });
+
         let mut client = connect_as_initiator(ea, &key_a, &public_b, PROLOGUE).unwrap();
         client.write_all(b"again").unwrap();
         assert_eq!(&server.join().unwrap(), b"again");
