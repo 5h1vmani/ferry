@@ -38,6 +38,7 @@ use crate::errors::{
 };
 use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::{AccessLogHandle, GuardedFs, RootsHandle, RootsState, StopAware};
+use crate::networks;
 use crate::notify::{Change, Notify};
 use crate::push;
 use crate::record::{Record, read_record};
@@ -344,6 +345,14 @@ pub(crate) struct Shared {
     /// Which devices have an automatic copy run in flight right now. One run
     /// per device at a time.
     pub(crate) auto_copy_running: Mutex<std::collections::HashSet<String>>,
+    // ---- Item 18: trusted networks. See `networks.rs`. ----
+    /// What [`apply_presence`] last decided about Wi-Fi presence.
+    ///
+    /// The `Browser` is created and owned by [`browse_loop`]'s own thread,
+    /// so nothing else can drop it. This flag is how that loop sees the
+    /// rule: it reads it on every pass, and drops its `Browser` while the
+    /// flag is false, because a browse query is a sound on the network.
+    pub(crate) presence: AtomicBool,
 }
 
 impl Shared {
@@ -435,6 +444,11 @@ impl Shared {
                 state.pairing.requested = None;
             }
         }
+        // docs/engine-contract.md item 18: pairing in progress is one of the
+        // three things that turn Wi-Fi presence on, and this is the one
+        // place every pairing state is written, so every pairing start and
+        // every pairing end reaches the rule from here.
+        apply_presence(self);
         self.notify.pairing(next);
     }
 }
@@ -708,6 +722,9 @@ impl Engine {
         // not a startup failure. See `auto_copy.rs` and `held.rs`.
         let auto_copy = crate::auto_copy::AutoCopyStore::load(&data_dir.join("auto_copy"));
         let held = crate::held::HeldStore::load(&data_dir.join("held"));
+        // docs/engine-contract.md item 18: a missing or unreadable file here
+        // is an empty list, which trusts every network. See `networks.rs`.
+        let trusted = crate::networks::TrustedNetworks::load(&data_dir);
 
         // Last, because nothing below it can fail and leave the claim behind.
         let dir_lock = DirLock::take(data_dir.join("lock"))?;
@@ -721,7 +738,7 @@ impl Engine {
             transfers_dir,
             batches_dir,
             listen_port: config.listen_port,
-            state: Mutex::new(State::new(peers)),
+            state: Mutex::new(State::new(peers, trusted)),
             wake: Condvar::new(),
             stopping: Arc::new(AtomicBool::new(false)),
             roots: Arc::new(Mutex::new(None)),
@@ -747,6 +764,7 @@ impl Engine {
             auto_copy: Mutex::new(auto_copy),
             held: Mutex::new(held),
             auto_copy_running: Mutex::new(std::collections::HashSet::new()),
+            presence: AtomicBool::new(false),
         });
 
         load_saved_transfers(&shared);
@@ -883,7 +901,10 @@ impl Engine {
             drop(socket.shutdown(Shutdown::Both));
         }
 
-        *lock(&self.shared.advertiser) = None;
+        // `stopped` and `reachable` were both set above, so the rule is
+        // already false here: this drops the advertiser and turns the browse
+        // loop's `Browser` off. docs/engine-contract.md item 18.
+        apply_presence(&self.shared);
         self.shared.wake.notify_all();
 
         // A serving thread cannot be woken, so it is taken from instead:
@@ -936,17 +957,12 @@ impl Engine {
     /// Turning this off does not close connections that are already serving.
     /// New ones are refused as soon as they are accepted.
     pub fn set_reachable(&self, on: bool) {
-        let port = lock(&self.shared.state).listen_addr.map(|a| a.port());
-        if on {
-            if let Some(port) = port {
-                // A network that refuses multicast still allows the cable and
-                // a known address, so this failure does not stop the switch.
-                *lock(&self.shared.advertiser) = Advertiser::start(port).ok();
-            }
-        } else {
-            *lock(&self.shared.advertiser) = None;
-        }
         lock(&self.shared.state).reachable = on;
+        // docs/engine-contract.md item 18: this no longer starts the
+        // advertiser itself. There is one start site and it is
+        // [`apply_presence`], which also decides whether this device may be
+        // present on the network it is currently on.
+        apply_presence(&self.shared);
         notify(&self.shared, Change::Devices);
     }
 
@@ -983,6 +999,66 @@ impl Engine {
             listen_port: state.listen_addr.map_or(0, |addr| addr.port()),
             adb_present: self.shared.adb.is_some(),
         }
+    }
+
+    /// The app reports the name of the Wi-Fi network it is on, or `None`
+    /// when it cannot read one: Wi-Fi off, the location permission refused,
+    /// or the name unknown.
+    ///
+    /// Called after [`Engine::start`] and on every change. Idempotent: the
+    /// same name twice writes nothing and reports nothing.
+    ///
+    /// `docs/engine-contract.md`, item 18.
+    pub fn set_network(&self, name: Option<String>) {
+        {
+            let mut state = lock(&self.shared.state);
+            if state.network == name {
+                return;
+            }
+            state.network = name;
+        }
+        apply_presence(&self.shared);
+        notify(&self.shared, Change::Devices);
+    }
+
+    /// Add a Wi-Fi network name to the trusted list.
+    ///
+    /// A name already trusted is not an error and changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::NetworkName` for an empty name, a name over 32
+    /// bytes, or a 33rd name. Returns `TransferError::Local` when local
+    /// storage refuses the write.
+    pub fn trust_network(&self, name: String) -> Result<(), FerryError> {
+        let changed = lock(&self.shared.state).trusted.add(&name)?;
+        if changed {
+            apply_presence(&self.shared);
+            notify(&self.shared, Change::Devices);
+        }
+        Ok(())
+    }
+
+    /// Remove a Wi-Fi network name from the trusted list.
+    ///
+    /// A name that is not trusted is not an error and changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TransferError::Local` when local storage refuses the write.
+    pub fn forget_network(&self, name: String) -> Result<(), FerryError> {
+        let changed = lock(&self.shared.state).trusted.remove(&name)?;
+        if changed {
+            apply_presence(&self.shared);
+            notify(&self.shared, Change::Devices);
+        }
+        Ok(())
+    }
+
+    /// Every trusted Wi-Fi network name, oldest first.
+    #[must_use]
+    pub fn trusted_networks(&self) -> Vec<String> {
+        lock(&self.shared.state).trusted.names().to_vec()
     }
 
     /// The roots currently served, as last set by `new` or `set_roots`.
@@ -2176,6 +2252,78 @@ fn load_saved_batches(shared: &Arc<Shared>) {
     }
 }
 
+/// Compare the Wi-Fi presence rule to what is running, and start or stop
+/// the advertiser and the browser to match.
+///
+/// `docs/engine-contract.md`, item 18. This is the only place the advertiser
+/// is started. Every site that changes an input calls it: `set_reachable`,
+/// `set_network`, `trust_network`, `forget_network`, `Shared::set_pairing`,
+/// which covers every pairing start and every pairing end, and `stop`.
+///
+/// An advertiser that is already running is left alone. Restarting one gives
+/// it a fresh random instance name, and [`Engine::short_code`] shows the last
+/// four characters of that name next to this device in the other side's
+/// pairing list, so a restart during pairing would change the code a person
+/// is reading off two screens.
+pub(crate) fn apply_presence(shared: &Shared) {
+    let (present, port) = {
+        let state = lock(&shared.state);
+        (
+            networks::wifi_presence(&state),
+            state.listen_addr.map(|addr| addr.port()),
+        )
+    };
+    shared.presence.store(present, Ordering::SeqCst);
+    {
+        let mut advertiser = lock(&shared.advertiser);
+        if present {
+            if advertiser.is_none()
+                && let Some(port) = port
+            {
+                // A network that refuses multicast still allows the cable and
+                // a known address, so this failure does not stop the switch.
+                *advertiser = Advertiser::start(port).ok();
+            }
+        } else {
+            *advertiser = None;
+        }
+    }
+    // The browse loop rests between passes, so this is what makes it read
+    // the flag now rather than at the end of its current wait.
+    shared.wake.notify_all();
+}
+
+/// True when an inbound connection from `remote` is welcome.
+///
+/// `docs/engine-contract.md`, item 18. A non-loopback address is refused
+/// while Wi-Fi presence is off: that is what a device staying silent in a
+/// café means for a peer that already knows its address. Loopback is the
+/// `adb` tunnel, so the cable still works on a network this device is quiet
+/// on, which is job 2.
+///
+/// The loopback term needs `reachable`, not presence. `reachable` is the
+/// person's own switch, and off means off: `set_reachable(false)` refuses
+/// every connection, over the cable as well. What loopback survives is the
+/// network half of the rule, which is the half a person never set.
+///
+/// `pairing_accepts_inbound` is `Pairing::accepts_inbound`, which was half
+/// of this check before item 18 and still is. Presence needs `reachable`,
+/// and a Mac running the QR method never turns `reachable` on, so dropping
+/// this term would refuse the phone that scans the Mac's code.
+///
+/// Pure: every input is an argument, so a test can run each branch without
+/// opening a socket.
+#[doc(hidden)]
+#[must_use]
+pub fn welcomes_inbound(
+    reachable: bool,
+    wifi_presence: bool,
+    pairing_accepts_inbound: bool,
+    remote: SocketAddr,
+) -> bool {
+    wifi_presence || pairing_accepts_inbound || (reachable && remote.ip().is_loopback())
+}
+
 /// Accept connections until the engine stops.
 fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
     while !shared.stopping() {
@@ -2188,14 +2336,20 @@ fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
             drop(pending);
             continue;
         }
+        let remote = pending.remote();
         let welcome = {
             let state = lock(&shared.state);
-            state.reachable || state.pairing.accepts_inbound()
+            welcomes_inbound(
+                state.reachable,
+                networks::wifi_presence(&state),
+                state.pairing.accepts_inbound(),
+                remote,
+            )
         };
         if !welcome {
-            // This is what `set_reachable(false)` means. The connection is
-            // dropped after accept, not before, because a listener cannot
-            // refuse before accepting.
+            // This is what `set_reachable(false)`, and an untrusted network,
+            // mean. The connection is dropped after accept, not before,
+            // because a listener cannot refuse before accepting.
             drop(pending);
             continue;
         }
@@ -2409,6 +2563,24 @@ fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
     shared.set_pairing(&PairingState::Failed { error });
 }
 
+/// Add the network this device is on now to the trusted list.
+///
+/// `docs/engine-contract.md`, item 18: the first pairing at home trusts
+/// home. Called from [`finish_pairing`], which is the one place both pairing
+/// methods store a peer, so this covers both methods and both sides.
+///
+/// An unknown network adds nothing. A full list, or a name this build would
+/// refuse, adds nothing either: pairing succeeded, and a list that cannot
+/// grow is not a reason to fail it. `Shared::set_pairing` reapplies the rule
+/// right after this, when it reports `Confirmed`.
+fn trust_current_network(shared: &Arc<Shared>) {
+    let mut state = lock(&shared.state);
+    let Some(name) = state.network.clone() else {
+        return;
+    };
+    drop(state.trusted.add(&name));
+}
+
 /// Exchange names, store the peer, and report the new device.
 ///
 /// Shared by both pairing methods: `confirm_pairing` calls this with
@@ -2469,6 +2641,7 @@ fn finish_pairing(
         fail_pairing(shared, error);
         return;
     }
+    trust_current_network(shared);
 
     let device = {
         let mut state = lock(&shared.state);
@@ -2984,27 +3157,54 @@ fn release_serving(shared: &Arc<Shared>, key_hex: &str, allowed: &Arc<AtomicBool
     live.serving.retain(|switch| !Arc::ptr_eq(switch, allowed));
 }
 
-/// Watch mDNS for the whole session.
+/// Watch mDNS for the whole session, while Wi-Fi presence is on.
+///
+/// `docs/engine-contract.md`, item 18. The thread runs for the whole session
+/// as it always did, but the `Browser` only exists while `Shared::presence`
+/// is true, because a browse query is a sound on the network and a device in
+/// a café makes none. A `Browser` this loop drops shuts its own mDNS daemon
+/// down, so nothing is left querying.
 fn browse_loop(shared: &Arc<Shared>) {
-    let Ok(browser) = Browser::start() else {
-        // A network that refuses multicast leaves the cable and a known
-        // address, both of which work without this loop.
-        return;
-    };
+    let mut browser: Option<Browser> = None;
     while !shared.stopping() {
-        match browser.next(BROWSE_TICK) {
-            Some(Event::Found {
-                instance,
-                addr,
-                version: _,
-            }) => on_discovered(shared, &instance, addr),
-            Some(Event::Lost { instance }) => {
-                lock(&shared.state)
-                    .pairing
-                    .candidates
-                    .remove(&format!("wifi:{instance}"));
+        if !shared.presence.load(Ordering::SeqCst) {
+            browser = None;
+            if !shared.rest(BROWSE_TICK) {
+                break;
             }
-            None => {}
+            continue;
+        }
+        if browser.is_none() {
+            let Ok(started) = Browser::start() else {
+                // A network that refuses multicast leaves the cable and a
+                // known address, both of which work without this loop. Trying
+                // again on the next pass costs one daemon start per
+                // `BROWSE_TICK`, which is what a healthy loop spends on one
+                // `next` call anyway, and it is what lets a browser appear
+                // when presence comes back on a network that does allow
+                // multicast.
+                if !shared.rest(BROWSE_TICK) {
+                    break;
+                }
+                continue;
+            };
+            browser = Some(started);
+        }
+        if let Some(found) = browser.as_ref() {
+            match found.next(BROWSE_TICK) {
+                Some(Event::Found {
+                    instance,
+                    addr,
+                    version: _,
+                }) => on_discovered(shared, &instance, addr),
+                Some(Event::Lost { instance }) => {
+                    lock(&shared.state)
+                        .pairing
+                        .candidates
+                        .remove(&format!("wifi:{instance}"));
+                }
+                None => {}
+            }
         }
     }
 }

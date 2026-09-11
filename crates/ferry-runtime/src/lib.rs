@@ -91,6 +91,15 @@
 //!     /// and whether `adb` was found.
 //!     pub fn status(&self) -> Status;
 //!
+//!     /// The app reports the name of the Wi-Fi network it is on, or None
+//!     /// when it cannot read one. Called after start and on every change.
+//!     pub fn set_network(&self, name: Option<String>);
+//!     /// Adds a name to the trusted list. An empty name, a name over 32
+//!     /// bytes, or a 33rd name is refused with `Runtime::NetworkName`.
+//!     pub fn trust_network(&self, name: String) -> Result<(), FerryError>;
+//!     pub fn forget_network(&self, name: String) -> Result<(), FerryError>;
+//!     pub fn trusted_networks(&self) -> Vec<String>;
+//!
 //!     pub fn devices(&self) -> Vec<DeviceInfo>;
 //!     /// Forget a device: remove its key and every transfer record for it.
 //!     pub fn forget(&self, key_hex: String) -> Result<(), FerryError>;
@@ -242,13 +251,15 @@ pub mod errors;
 mod folder;
 mod guard;
 mod held;
+mod networks;
 mod notify;
 mod push;
 mod record;
 mod state;
 mod transfer;
 
-pub use engine::{Engine, FERRY_PHONE_PORT, generate_key};
+pub use engine::{Engine, FERRY_PHONE_PORT, generate_key, welcomes_inbound};
+pub use networks::wifi_presence_rule;
 
 use std::fmt;
 

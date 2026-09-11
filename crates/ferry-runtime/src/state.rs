@@ -17,6 +17,7 @@ use ferry_core::path::RemotePath;
 use ferry_core::peers::{DeviceKind as CoreDeviceKind, PeerStore};
 use ferry_core::tcp::PairedConnection;
 
+use crate::networks::TrustedNetworks;
 use crate::{
     DeviceInfo, DeviceKind, Direction, FerryError, Origin, PairingCandidate, PairingState,
     TransferState, Transport,
@@ -560,11 +561,19 @@ pub(crate) struct State {
     /// An mDNS record carries no key, so an address here is only a place to
     /// try. A wrong guess fails the handshake and costs nothing.
     pub(crate) discovered: Vec<SocketAddr>,
+    /// The Wi-Fi network name the app last reported, or `None` while it is
+    /// unknown: Wi-Fi off, the location permission refused, or the name
+    /// unreadable. `docs/engine-contract.md` item 18.
+    pub(crate) network: Option<String>,
+    /// The Wi-Fi networks this device is willing to be present on, as
+    /// stored in `data_dir/networks`. An empty list trusts every network.
+    pub(crate) trusted: TrustedNetworks,
 }
 
 impl State {
-    /// A fresh state around a loaded peer store.
-    pub(crate) fn new(peers: PeerStore) -> Self {
+    /// A fresh state around a loaded peer store and a loaded trusted
+    /// network list.
+    pub(crate) fn new(peers: PeerStore, trusted: TrustedNetworks) -> Self {
         Self {
             started: false,
             stopped: false,
@@ -579,6 +588,8 @@ impl State {
             workers: 0,
             forwards: Vec::new(),
             discovered: Vec::new(),
+            network: None,
+            trusted,
         }
     }
 

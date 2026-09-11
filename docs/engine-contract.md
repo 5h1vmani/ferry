@@ -778,8 +778,13 @@ pub network: Option<String>,
 pub wifi_presence: bool,
 ```
 
-**The rule, in one place.** `state.rs` gains one function,
-`wifi_presence(&State) -> bool`, and nothing else decides. Wi-Fi presence
+**The rule, in one place.** A new module,
+`crates/ferry-runtime/src/networks.rs`, gains one function,
+`wifi_presence(&State) -> bool`, and nothing else decides. That module owns
+the trusted list file, this rule, and nothing else. It holds one constant,
+`NETWORK_LIMIT`, which is 32: the list holds at most 32 names, and each name
+holds at most 32 bytes. `State` gains the two fields the rule reads, the
+current network name and the trusted list. Wi-Fi presence
 is on when `reachable` is on and one of three things holds: the trusted
 list is empty; the current network is in the list; pairing is in
 progress, which is any state but `Idle`, `Confirmed`, and `Failed`. An
@@ -797,8 +802,15 @@ advertiser itself; there is one start site and it is `apply_presence`.
 The browse loop keeps its thread and drops its `Browser` while presence
 is off, because a browse query is a sound on the network. The
 `accept_loop` welcome check refuses a connection from a non-loopback
-address while presence is off. Loopback is the adb tunnel, so the cable
-always works, which is job 2.
+address while presence is off and no pairing is open to an inbound
+handshake. Loopback is the adb tunnel, so the cable still works on a network
+this device is quiet on, which is job 2. The loopback term needs `reachable`,
+not presence: `reachable` is the person's own switch, and off refuses every
+connection, over the cable as well. What loopback survives is the network
+half of the rule, which is the half a person never set. The pairing term is
+the half of the check that was there before this item. Presence needs
+`reachable`, and a Mac running the QR method never turns `reachable` on, so
+dropping that term would refuse the very phone that scanned the Mac's code.
 
 **Recording.** `finish_pairing` adds the current network to the trusted
 list when it is known, on both methods and on both sides. The first
