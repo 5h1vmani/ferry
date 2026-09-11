@@ -158,6 +158,20 @@ impl SidecarStore {
         std::fs::rename(from_path, to_path).is_ok()
     }
 
+    /// Sets the sidecar at `path`'s modified time. Returns whether one was
+    /// there to set it on. `docs/engine-contract.md`, item 6, I2: a
+    /// `PROPPATCH` of a sidecar touches only this store, never the peer.
+    pub(crate) fn set_mtime(&self, path: &str, modified_unix_secs: i64) -> bool {
+        let Some(disk_path) = self.disk_path(path) else {
+            return false;
+        };
+        let Ok(file) = std::fs::OpenOptions::new().write(true).open(&disk_path) else {
+            return false;
+        };
+        file.set_modified(unix_secs_to_system_time(modified_unix_secs))
+            .is_ok()
+    }
+
     /// Counts every file under this store's base folder, recursively.
     /// Nothing here tracks the count between calls; a store this small
     /// (bounded at [`MAX_SIDECARS`]) is cheap enough to walk fresh each
@@ -190,6 +204,21 @@ fn modified_time(path: &Path) -> Option<i64> {
         .ok()?
         .as_secs();
     i64::try_from(secs).ok()
+}
+
+/// The inverse of [`modified_time`]'s conversion, for
+/// [`SidecarStore::set_mtime`].
+fn unix_secs_to_system_time(secs: i64) -> SystemTime {
+    let magnitude = std::time::Duration::from_secs(secs.unsigned_abs());
+    if secs >= 0 {
+        SystemTime::UNIX_EPOCH
+            .checked_add(magnitude)
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    } else {
+        SystemTime::UNIX_EPOCH
+            .checked_sub(magnitude)
+            .unwrap_or(SystemTime::UNIX_EPOCH)
+    }
 }
 
 #[cfg(test)]
@@ -324,5 +353,22 @@ mod tests {
     fn rename_of_a_name_never_written_reports_it_was_not_there() {
         let store = TempStore::new("rename-missing");
         assert!(!store.rename("DCIM/.DS_Store", "Camera/.DS_Store"));
+    }
+
+    #[test]
+    fn set_mtime_changes_a_sidecars_reported_time() {
+        let store = TempStore::new("set-mtime");
+        store.write("DCIM/.DS_Store", b"hello").unwrap();
+        assert!(store.set_mtime("DCIM/.DS_Store", 12345));
+        assert_eq!(
+            store.read("DCIM/.DS_Store").unwrap().modified_unix_secs,
+            12345
+        );
+    }
+
+    #[test]
+    fn set_mtime_of_a_name_never_written_reports_it_was_not_there() {
+        let store = TempStore::new("set-mtime-missing");
+        assert!(!store.set_mtime("DCIM/.DS_Store", 12345));
     }
 }

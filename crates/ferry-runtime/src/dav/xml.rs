@@ -68,6 +68,124 @@ pub(crate) fn requested_props(body: &[u8]) -> PropSet {
     }
 }
 
+/// One `PROPPATCH` request body, tolerantly read.
+pub(crate) struct Proppatch {
+    /// The local name (namespace prefix stripped) of every property inside
+    /// the request's `<D:set><D:prop>` block, in the order they appear.
+    pub(crate) names: Vec<String>,
+    /// The text the first of `getlastmodified` or `Win32LastModifiedTime`
+    /// carried, whichever appears. Both use the `rfc1123` shape
+    /// `http::parse_rfc1123` reads.
+    pub(crate) mtime_text: Option<String>,
+}
+
+/// Reads a `PROPPATCH` body for the properties it tries to set.
+///
+/// Not a real XML parser: this walks bare `<tag>` tokens with a small
+/// amount of state (inside `<set>`? inside `<prop>`? which leaf element is
+/// currently open?), the same tolerant approach `requested_props` takes
+/// for a `PROPFIND` body. A `<remove>` block is not read: I2 only ever
+/// sets the modified time, never removes a property.
+pub(crate) fn read_proppatch(body: &[u8]) -> Proppatch {
+    let text = String::from_utf8_lossy(body);
+    let mut names = Vec::new();
+    let mut mtime_text = None;
+    let mut in_set = false;
+    let mut in_prop = false;
+    let mut leaf: Option<String> = None;
+    let mut leaf_text = String::new();
+
+    for chunk in text.split('<').skip(1) {
+        let Some(tag_end) = chunk.find('>') else {
+            continue;
+        };
+        let inner = &chunk[..tag_end];
+        let following = &chunk[tag_end + 1..];
+        let closing = inner.starts_with('/');
+        let self_closing = inner.trim_end().ends_with('/');
+        let body_part = inner.trim_start_matches('/').trim_end_matches('/').trim();
+        let raw_name = body_part.split_whitespace().next().unwrap_or("");
+        let local = raw_name.rsplit(':').next().unwrap_or(raw_name).to_owned();
+        let local_lower = local.to_ascii_lowercase();
+
+        match local_lower.as_str() {
+            "" => {}
+            "set" => in_set = !closing && !self_closing,
+            "remove" => {
+                if !closing {
+                    in_set = false;
+                }
+            }
+            "prop" if in_set || closing => {
+                if closing {
+                    in_prop = false;
+                } else if in_set {
+                    in_prop = !self_closing;
+                }
+            }
+            _ if in_prop && !closing => {
+                names.push(local.clone());
+                leaf = Some(local_lower.clone());
+                leaf_text.clear();
+                if self_closing {
+                    leaf = None;
+                }
+            }
+            _ if closing => {
+                if leaf.as_deref() == Some(local_lower.as_str())
+                    && mtime_text.is_none()
+                    && (local_lower == "getlastmodified" || local_lower == "win32lastmodifiedtime")
+                {
+                    mtime_text = Some(leaf_text.trim().to_owned());
+                }
+                leaf = None;
+            }
+            _ => {}
+        }
+
+        if leaf.is_some() {
+            leaf_text.push_str(following);
+        }
+    }
+
+    Proppatch { names, mtime_text }
+}
+
+/// The `multistatus` body for one `PROPPATCH` answer: one `href`, and a
+/// `propstat` for the properties this bridge accepted (200) and one for
+/// every other property it was asked to set (403).
+/// `docs/engine-contract.md`, item 6, I2.
+pub(crate) fn proppatch_multistatus(
+    path: &str,
+    is_dir: bool,
+    accepted: &[String],
+    refused: &[String],
+) -> String {
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<D:multistatus xmlns:D=\"DAV:\">\n<D:response><D:href>",
+    );
+    xml.push_str(&href_for(path, is_dir));
+    xml.push_str("</D:href>\n");
+    propstat(&mut xml, accepted, "200 OK");
+    propstat(&mut xml, refused, "403 Forbidden");
+    xml.push_str("</D:response>\n</D:multistatus>\n");
+    xml
+}
+
+fn propstat(xml: &mut String, names: &[String], status: &str) {
+    if names.is_empty() {
+        return;
+    }
+    xml.push_str("<D:propstat><D:prop>");
+    for name in names {
+        let _ = write!(xml, "<D:{}/>", escape(name));
+    }
+    let _ = writeln!(
+        xml,
+        "</D:prop><D:status>HTTP/1.1 {status}</D:status></D:propstat>"
+    );
+}
+
 /// One file or directory to render as a `<D:response>`.
 pub(crate) struct Item<'a> {
     /// Root-relative, no leading slash. Empty for the mount root.
@@ -189,7 +307,7 @@ fn escape(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Item, multistatus, requested_props};
+    use super::{Item, multistatus, proppatch_multistatus, read_proppatch, requested_props};
 
     #[test]
     fn an_empty_body_asks_for_everything() {
@@ -266,5 +384,55 @@ mod tests {
             xml.contains("<D:displayname>a&amp;b</D:displayname>"),
             "{xml}"
         );
+    }
+
+    #[test]
+    fn read_proppatch_reads_getlastmodified_and_its_date() {
+        let body = b"<?xml version=\"1.0\"?><D:propertyupdate xmlns:D=\"DAV:\"><D:set><D:prop>\
+<D:getlastmodified>Tue, 09 Sep 2025 12:00:00 GMT</D:getlastmodified>\
+</D:prop></D:set></D:propertyupdate>";
+        let parsed = read_proppatch(body);
+        assert_eq!(parsed.names, vec!["getlastmodified".to_owned()]);
+        assert_eq!(
+            parsed.mtime_text.as_deref(),
+            Some("Tue, 09 Sep 2025 12:00:00 GMT")
+        );
+    }
+
+    #[test]
+    fn read_proppatch_reads_win32lastmodifiedtime_under_its_own_namespace() {
+        let body = b"<D:propertyupdate xmlns:D=\"DAV:\" xmlns:Z=\"urn:schemas-microsoft-com:\">\
+<D:set><D:prop><Z:Win32LastModifiedTime>Tue, 09 Sep 2025 12:00:00 GMT</Z:Win32LastModifiedTime>\
+</D:prop></D:set></D:propertyupdate>";
+        let parsed = read_proppatch(body);
+        assert_eq!(parsed.names, vec!["Win32LastModifiedTime".to_owned()]);
+        assert_eq!(
+            parsed.mtime_text.as_deref(),
+            Some("Tue, 09 Sep 2025 12:00:00 GMT")
+        );
+    }
+
+    #[test]
+    fn read_proppatch_names_an_unrecognised_property_with_no_mtime() {
+        let body = b"<D:propertyupdate xmlns:D=\"DAV:\"><D:set><D:prop>\
+<D:displayname>New Name</D:displayname></D:prop></D:set></D:propertyupdate>";
+        let parsed = read_proppatch(body);
+        assert_eq!(parsed.names, vec!["displayname".to_owned()]);
+        assert!(parsed.mtime_text.is_none());
+    }
+
+    #[test]
+    fn proppatch_multistatus_separates_accepted_and_refused_properties() {
+        let xml = proppatch_multistatus(
+            "Root/a.txt",
+            false,
+            &["getlastmodified".to_owned()],
+            &["displayname".to_owned()],
+        );
+        assert!(xml.contains("<D:href>/Root/a.txt</D:href>"), "{xml}");
+        assert!(xml.contains("<D:getlastmodified/>"), "{xml}");
+        assert!(xml.contains("200 OK"), "{xml}");
+        assert!(xml.contains("<D:displayname/>"), "{xml}");
+        assert!(xml.contains("403 Forbidden"), "{xml}");
     }
 }

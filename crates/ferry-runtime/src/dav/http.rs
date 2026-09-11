@@ -472,11 +472,45 @@ pub(crate) fn iso8601(unix_secs: i64) -> String {
     )
 }
 
+/// The inverse of [`rfc1123`]: `"Tue, 09 Sep 2025 12:00:00 GMT"` back to
+/// Unix seconds. `None` when `text` is not exactly that shape.
+///
+/// `docs/engine-contract.md`, item 6, I2: a `PROPPATCH` sets the modified
+/// time from `getlastmodified` or `Win32LastModifiedTime`, and both carry
+/// this same shape, since a well behaved client only ever echoes back the
+/// date this bridge itself wrote with [`rfc1123`].
+pub(crate) fn parse_rfc1123(text: &str) -> Option<i64> {
+    let (_weekday, rest) = text.trim().split_once(", ")?;
+    let mut parts = rest.split_whitespace();
+    let day: u32 = parts.next()?.parse().ok()?;
+    let month_name = parts.next()?;
+    let month = u32::try_from(MONTHS.iter().position(|m| *m == month_name)?).ok()? + 1;
+    let year: i64 = parts.next()?.parse().ok()?;
+    let time = parts.next()?;
+    let mut time_parts = time.split(':');
+    let hour: i64 = time_parts.next()?.parse().ok()?;
+    let minute: i64 = time_parts.next()?.parse().ok()?;
+    let second: i64 = time_parts.next()?.parse().ok()?;
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// Howard Hinnant's `days_from_civil`: the inverse of `civil_from_unix`'s
+/// date half. Public domain; see that function's own documentation.
+fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400; // [0, 399]
+    let month = i64::from(month);
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + i64::from(day) - 1; // [0, 365]
+    let doe = yoe * 365 + yoe.div_euclid(4) - yoe.div_euclid(100) + doy; // [0, 146096]
+    era * 146_097 + doe - 719_468
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        RangeOutcome, base64_decode, constant_time_eq, destination_path, iso8601,
-        parse_range, percent_decode, read_head, rfc1123,
+        RangeOutcome, base64_decode, constant_time_eq, destination_path, iso8601, parse_range,
+        parse_rfc1123, percent_decode, read_head, rfc1123,
     };
 
     /// Asserts a [`RangeOutcome::Satisfiable`] and returns its span, so a
@@ -524,6 +558,23 @@ mod tests {
         assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
         assert_eq!(iso8601(946_684_800), "2000-01-01T00:00:00Z");
         assert_eq!(iso8601(1_757_419_200), "2025-09-09T12:00:00Z");
+    }
+
+    #[test]
+    fn parse_rfc1123_undoes_rfc1123() {
+        for secs in [0, 946_684_800, 1_757_419_200, 1_500_000_000] {
+            assert_eq!(
+                parse_rfc1123(&rfc1123(secs)),
+                Some(secs),
+                "round trip at {secs}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rfc1123_refuses_nonsense() {
+        assert_eq!(parse_rfc1123("not a date"), None);
+        assert_eq!(parse_rfc1123(""), None);
     }
 
     #[test]

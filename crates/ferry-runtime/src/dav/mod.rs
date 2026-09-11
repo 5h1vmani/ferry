@@ -3,8 +3,9 @@
 //!
 //! `docs/engine-contract.md`, item 6, and ADR 0008. I1: browsing.
 //! `OPTIONS`, `PROPFIND` at depth 0 and 1, `GET`, `HEAD`, `LOCK`, `UNLOCK`,
-//! and a `PUT` of a sidecar name. I2: `PUT` of a real file and its delta
-//! on save, `MKCOL`, `DELETE`, `MOVE`, and `COPY`.
+//! and a `PUT` of a sidecar name. I2: `PUT` of a real file, `MKCOL`,
+//! `DELETE`, `MOVE`, `COPY`, `PROPPATCH`, and the `If` header's lock check
+//! on all of them.
 //!
 //! One [`MountRegistry`] lives in [`crate::engine::Shared`], one entry per
 //! device that has ever had [`MountRegistry::start`] called for it. Each

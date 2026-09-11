@@ -2,8 +2,9 @@
 //!
 //! `docs/engine-contract.md`, item 6. I1: `OPTIONS`; `PROPFIND` at depth 0
 //! and 1; `GET` and `HEAD`, with one `Range`; `LOCK` and `UNLOCK`; and a
-//! `PUT` of a sidecar name. I2: `PUT` of a real file and its delta on
-//! save, `MKCOL`, `DELETE`, `MOVE`, and `COPY`.
+//! `PUT` of a sidecar name. I2 adds `PUT` of a real file, `MKCOL`,
+//! `DELETE`, `MOVE`, `COPY`, and `PROPPATCH`, and the `If` header's lock
+//! check on all of them.
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -284,6 +285,7 @@ fn respond(
         "DELETE" => delete_verb(shared, bridge, target, &request, out),
         "MOVE" => move_verb(shared, bridge, target, &request, out),
         "COPY" => copy_verb(shared, bridge, target, &request, out),
+        "PROPPATCH" => proppatch_verb(shared, bridge, target, &request, out),
         _ => method_not_allowed(out),
     }
     .map(|()| true)
@@ -340,7 +342,7 @@ fn authorized(bridge: &Bridge, header: Option<&str>) -> bool {
 /// The methods this bridge answers at all, I1 and I2 together. Shared by
 /// `OPTIONS` and by a 405's `Allow` header (N3).
 const ALLOWED_METHODS: &str =
-    "OPTIONS, GET, HEAD, PUT, PROPFIND, MKCOL, DELETE, MOVE, COPY, LOCK, UNLOCK";
+    "OPTIONS, GET, HEAD, PUT, PROPFIND, PROPPATCH, MKCOL, DELETE, MOVE, COPY, LOCK, UNLOCK";
 
 fn options(out: &mut impl Write) -> io::Result<()> {
     http::write_head(
@@ -457,6 +459,11 @@ fn put_sidecar(
     request: &http::Request,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    // `docs/engine-contract.md`, item 6, I2: `PUT` honours the `If`
+    // header against the lock table, sidecar or not.
+    if !bridge.locks.allows(target, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
     match bridge.sidecars.write(target, &request.body) {
         Ok(()) => {}
         // S4: a body over the sidecar bound is 413; a store already at
@@ -528,6 +535,9 @@ fn mkcol_verb(
     if path.is_root() {
         return no_body(out, "404 Not Found");
     }
+    if !bridge.locks.allows(target, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
         return unavailable(out);
     };
@@ -560,6 +570,7 @@ fn mkcol_verb(
         }
     }
 }
+
 /// `DELETE`: a file is `delete`; a folder is walked with `folder.rs`'s
 /// bounds and deleted leaves first, then folders deepest first, per
 /// `delete::plan`. The wire stays non-recursive: one `delete` call per
@@ -571,6 +582,9 @@ fn delete_verb(
     request: &http::Request,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    if !bridge.locks.allows(target, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
     if probes::is_probe_name(probes::last_segment(target)) {
         return if bridge.sidecars.delete(target) {
             no_body(out, "204 No Content")
@@ -667,6 +681,7 @@ fn delete_verb(
     );
     no_body(out, "204 No Content")
 }
+
 /// `MOVE` is `rename` within one root. `Overwrite: F` is honoured with
 /// 412; across roots the peer's own refusal answers 502
 /// (`map_write_error`). The destination is read from the `Destination`
@@ -679,6 +694,9 @@ fn move_verb(
     request: &http::Request,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    if !bridge.locks.allows(from_target, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
     let expected_host = format!("127.0.0.1:{}", bridge.port);
     let Some(destination) = http::destination_path(request.header("destination"), &expected_host)
     else {
@@ -742,6 +760,7 @@ fn move_verb(
         }
     }
 }
+
 /// `COPY` of a file reads it from the peer into a fresh spool file, then
 /// pushes it back under the new name through [`put::land_new`], item 5's
 /// landing rule. `COPY` of a folder is 403.
@@ -764,6 +783,9 @@ fn copy_verb(
     let Ok(dest_path) = RemotePath::parse(destination) else {
         return no_body(out, "400 Bad Request");
     };
+    if !bridge.locks.allows(destination, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
 
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
         return unavailable(out);
@@ -837,6 +859,12 @@ fn copy_landing(
     destination: &RemotePath,
     spool_path: &std::path::Path,
     size: u64,
+) -> Result<(), RpcError> {
+    put::fetch_into_spool(borrowed.client(), source, spool_path, size)?;
+    let (fs, leaf, manifest) =
+        put::open_spool(spool_path).ok_or(RpcError::Remote(OpError::Internal))?;
+    put::land_new(borrowed.client(), destination, &fs, &leaf, &manifest)
+}
 
 /// `PUT` of a real file. `docs/engine-contract.md`, item 6, I2: the body
 /// is spooled to disk in pieces as it arrives, never held whole in
@@ -885,6 +913,9 @@ fn put_file(
     };
     if path.is_root() {
         refuse!("404 Not Found");
+    }
+    if !bridge.locks.allows(target, head.header("if")) {
+        refuse!("423 Locked");
     }
     let Some(spool_path) = put::new_spool_path(shared, &bridge.device_key_hex) else {
         refuse!("500 Internal Server Error");
@@ -971,6 +1002,75 @@ fn put_landing(
         }
         Err(error) => Err(error),
     }
+}
+
+/// `PROPPATCH` sets the modified time when `getlastmodified` or the
+/// Apple `Win32LastModifiedTime` property is given, both carrying the
+/// same `rfc1123` shape a well behaved client only ever echoes back. It
+/// answers 200 for that property and 403 for every other, in one
+/// multistatus. `set_mtime` is never logged as its own `This` entry, the
+/// same rule `docs/engine-contract.md`, item 13, states for every other
+/// caller of it: it always follows a write that already is, and here
+/// there is no such write to follow. A sidecar name never reaches the
+/// peer.
+fn proppatch_verb(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    target: &str,
+    request: &http::Request,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    if !bridge.locks.allows(target, request.header("if")) {
+        return no_body(out, "423 Locked");
+    }
+    let parsed = xml::read_proppatch(&request.body);
+    let mtime = parsed.mtime_text.as_deref().and_then(http::parse_rfc1123);
+    let (accepted, refused): (Vec<String>, Vec<String>) =
+        parsed.names.into_iter().partition(|name| {
+            let lower = name.to_ascii_lowercase();
+            lower == "getlastmodified" || lower == "win32lastmodifiedtime"
+        });
+
+    if probes::is_probe_name(probes::last_segment(target)) {
+        if let Some(when) = mtime {
+            bridge.sidecars.set_mtime(target, when);
+        }
+        let body = xml::proppatch_multistatus(target, false, &accepted, &refused);
+        return write_multistatus_xml(out, &body);
+    }
+
+    let Ok(path) = RemotePath::parse(target) else {
+        return no_body(out, "404 Not Found");
+    };
+    if let Some(when) = mtime {
+        let Ok(mut borrowed) = bridge.pool.take(shared) else {
+            return unavailable(out);
+        };
+        if let Err(error) = borrowed.client().set_mtime(&path, when) {
+            let (status, unhealthy) = map_write_error(&error);
+            if unhealthy {
+                borrowed.mark_unhealthy();
+            }
+            return no_body(out, status);
+        }
+    }
+    let body = xml::proppatch_multistatus(target, false, &accepted, &refused);
+    write_multistatus_xml(out, &body)
+}
+
+fn write_multistatus_xml(out: &mut impl Write, body: &str) -> io::Result<()> {
+    http::write_head(
+        out,
+        "207 Multi-Status",
+        &[
+            (
+                "Content-Type",
+                "application/xml; charset=\"utf-8\"".to_owned(),
+            ),
+            ("Content-Length", body.len().to_string()),
+        ],
+    )?;
+    out.write_all(body.as_bytes())
 }
 
 // ---------------------------------------------------------------------------

@@ -101,6 +101,31 @@ impl LockTable {
         Ok(format!("opaquelocktoken:{token}"))
     }
 
+    /// Whether a write to `path` may proceed, given the client's `If`
+    /// header. `docs/engine-contract.md`, item 6, I2: "a locked resource
+    /// without a matching token is 423."
+    ///
+    /// True when `path` holds no unexpired lock at all, or when
+    /// `if_header` contains that lock's token, with or without its
+    /// `opaquelocktoken:` scheme and angle brackets. A token is thirty-two
+    /// random hex characters, so a plain substring search of the whole
+    /// header is unambiguous: nothing else in an ordinary `If` header
+    /// could coincidentally contain it. This is the same tolerance
+    /// `xml::requested_props` uses for a `PROPFIND` body, rather than a
+    /// full parse of the `If` header's own grammar.
+    pub(crate) fn allows(&self, path: &str, if_header: Option<&str>) -> bool {
+        let mut held = self
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        held.retain(|_, held| held.expires > now);
+        let Some(entry) = held.get(path) else {
+            return true;
+        };
+        if_header.is_some_and(|header| header.contains(&entry.token))
+    }
+
     /// Removes `path`'s lock when `token` names it and it has not expired.
     /// Returns whether it did. Accepts the token with or without its
     /// `opaquelocktoken:` scheme and angle brackets, since the `Lock-Token`
@@ -160,6 +185,27 @@ mod tests {
         assert_ne!(first, second);
         assert!(!table.unlock_path("a", &first));
         assert!(table.unlock_path("a", &second));
+    }
+
+    #[test]
+    fn allows_an_unlocked_path() {
+        let table = LockTable::new();
+        assert!(table.allows("a", None));
+    }
+
+    #[test]
+    fn allows_refuses_a_locked_path_with_no_token() {
+        let table = LockTable::new();
+        table.lock_path("a").unwrap();
+        assert!(!table.allows("a", None));
+        assert!(!table.allows("a", Some("(<opaquelocktoken:not-it>)")));
+    }
+
+    #[test]
+    fn allows_accepts_the_matching_token_inside_an_if_header() {
+        let table = LockTable::new();
+        let token = table.lock_path("a").unwrap();
+        assert!(table.allows("a", Some(&format!("(<{token}>)"))));
     }
 
     #[test]
