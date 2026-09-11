@@ -47,6 +47,9 @@ final class EngineModel: ObservableObject {
     @Published var actionError: ThreePartError?
     /// Where pulled files land.
     @Published private(set) var downloadPath: String
+    /// The Wi-Fi networks this Mac trusts. `docs/engine-contract.md`,
+    /// item 18.
+    @Published private(set) var trustedNetworks: [String] = []
 
     /// The engine's own values, kept so a change notification can rebuild
     /// snapshots without asking the engine twice.
@@ -68,6 +71,10 @@ final class EngineModel: ObservableObject {
 
     private var engine: Engine?
     private var events: EngineEvents?
+    /// Reads the Wi-Fi network name and hands every change to the engine.
+    /// `docs/engine-contract.md`, item 18. Created after `start`, dropped
+    /// in `stop`.
+    private var networkName: NetworkName?
 
     /// One stored root: its own keys under `rootsKey`, encoded as JSON so
     /// UserDefaults holds one value rather than three parallel arrays.
@@ -120,6 +127,7 @@ final class EngineModel: ObservableObject {
             roots = EngineAdapter.roots(engine.roots())
             reloadDevices()
             reloadTransfers()
+            startNetworkReader()
         } catch {
             built?.stop()
             startError = ThreePartError.from(error, canRetry: true)
@@ -139,10 +147,12 @@ final class EngineModel: ObservableObject {
         engine?.stop()
         engine = nil
         events = nil
+        networkName = nil
         deviceInfos = []
         transferInfos = []
         batchInfos = []
         devices = []
+        trustedNetworks = []
         pairingState = .idle
         pairingMethod = nil
         pairing = .choosing
@@ -159,6 +169,10 @@ final class EngineModel: ObservableObject {
         deviceInfos = engine?.devices() ?? []
         clearEjectedMounts()
         devices = EngineAdapter.devices(deviceInfos)
+        // The trusted list changes fire the same callback as a device
+        // change (docs/engine-contract.md, item 18), so this is read back
+        // here rather than on a callback of its own.
+        trustedNetworks = engine?.trustedNetworks() ?? []
         refreshPresence()
         mountNewlyReachableDevices(from: previous, to: deviceInfos)
     }
@@ -281,6 +295,47 @@ final class EngineModel: ObservableObject {
         refreshPresence()
     }
 
+    // MARK: - Networks, item 18
+
+    /// Creates the Wi-Fi network name reader and hands the engine its
+    /// first reading. Called once, right after `start`; every later
+    /// change the reader reports is handed to `setNetwork` the same way,
+    /// off the main actor, hopped back onto it.
+    private func startNetworkReader() {
+        let reader = NetworkName { [weak self] name in
+            Task { @MainActor in
+                self?.engine?.setNetwork(name: name)
+            }
+        }
+        networkName = reader
+        engine?.setNetwork(name: reader.currentName)
+    }
+
+    /// Trusts a Wi-Fi network name: Wi-Fi presence stays on there without
+    /// a pairing in progress. `docs/engine-contract.md`, item 18.
+    func trustNetwork(_ name: String) {
+        guard let engine else { return }
+        do {
+            try engine.trustNetwork(name: name)
+            trustedNetworks = engine.trustedNetworks()
+            refreshPresence()
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Removes a name from the trusted list.
+    func forgetNetwork(_ name: String) {
+        guard let engine else { return }
+        do {
+            try engine.forgetNetwork(name: name)
+            trustedNetworks = engine.trustedNetworks()
+            refreshPresence()
+        } catch {
+            report(error)
+        }
+    }
+
     // MARK: - Automatic, job 7
 
     /// Turns job 7's switch on or off for one device.
@@ -362,6 +417,10 @@ final class EngineModel: ObservableObject {
     /// Enters pairing by one method. Called when the sheet opens and again
     /// if a person switches methods.
     func startPairing(method: PairingEntryMethod) {
+        // `docs/engine-contract.md`, item 18: asked here so the system
+        // prompt has a reason a person is already acting on. Idempotent,
+        // so calling it on every pairing start is safe.
+        networkName?.requestAuthorization()
         pairingMethod = method
         engine?.startPairingWith(method: method == .scan ? .qr : .code)
         refreshPairing()
