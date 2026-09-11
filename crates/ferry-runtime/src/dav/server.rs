@@ -1449,7 +1449,7 @@ fn get_file(
         return no_body(out, "404 Not Found");
     }
 
-    let (entry, borrowed) = match file_entry(shared, bridge, target, &path) {
+    let (entry, borrowed) = match file_entry(shared, bridge, target, &path, method, request) {
         Ok(found) => found,
         Err(status) => return no_body(out, status),
     };
@@ -1533,10 +1533,14 @@ fn get_file(
 /// What `GET` and `HEAD` need to know about the file: its entry, and the
 /// pooled connection the answer already holds, if it took one.
 ///
-/// Item 17: the parent folder's listing is taken first, so a thumbnail
-/// request that follows its own listing costs no `Stat` on the wire. Only
-/// a miss borrows a connection and stats, and that borrow is handed back
-/// to the caller, which still needs it for the body.
+/// Item 17: an answer whose body comes entirely from the head cache takes
+/// the file's size and modified time from the parent folder's listing, so
+/// a thumbnail request that follows its own listing touches the wire for
+/// nothing. An answer that needs any byte from the wire stats on the wire
+/// first, and that borrow is handed back to the caller, which still needs
+/// it for the body. So the head is used only when the fresh size and time
+/// match the head's key, and a file replaced since the listing is streamed
+/// whole from the wire as it was before item 17.
 ///
 /// # Errors
 ///
@@ -1547,8 +1551,12 @@ fn file_entry<'a>(
     bridge: &'a Bridge,
     target: &str,
     path: &RemotePath,
+    method: &str,
+    request: &http::Request,
 ) -> Result<(Entry, Option<pool::Borrowed<'a>>), &'static str> {
-    if let Some(entry) = listed_entry(bridge, target) {
+    if let Some(entry) = listed_entry(bridge, target)
+        && !needs_the_wire(bridge, target, &entry, method, request)
+    {
         return Ok((entry, None));
     }
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
@@ -1564,6 +1572,44 @@ fn file_entry<'a>(
             Err(status)
         }
     }
+}
+
+/// True when the answer this request asks for needs at least one byte the
+/// cached head does not hold, so the listing's size and time cannot be
+/// trusted for it.
+///
+/// `docs/engine-contract.md`, item 17. `entry` is the listing's own entry,
+/// which may be up to two seconds old. A `HEAD`, an empty file, and a range
+/// this side cannot satisfy all send no body, so none of them needs the
+/// wire. Everything else needs the wire unless the head holds the last byte
+/// the response promises.
+fn needs_the_wire(
+    bridge: &Bridge,
+    target: &str,
+    entry: &Entry,
+    method: &str,
+    request: &http::Request,
+) -> bool {
+    if method == "HEAD" || entry.size == 0 {
+        return false;
+    }
+    let outcome = request
+        .header("range")
+        .map_or(http::RangeOutcome::Absent, |value| {
+            http::parse_range(value, entry.size)
+        });
+    // The last byte the response promises. The head always starts at zero,
+    // so the head holds the whole answer exactly when it reaches this byte.
+    let end = match outcome {
+        http::RangeOutcome::Unsatisfiable => return false,
+        http::RangeOutcome::Absent => entry.size.saturating_sub(1),
+        http::RangeOutcome::Satisfiable(_, end) => end,
+    };
+    let cached_bytes = bridge
+        .heads
+        .get(target, entry.size, entry.modified_unix_secs)
+        .map_or(0, |head| u64::try_from(head.len()).unwrap_or(0));
+    end >= cached_bytes
 }
 
 /// Writes `[start, end]` of the file, and answers how many bytes went out.

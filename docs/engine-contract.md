@@ -730,13 +730,16 @@ extensions are the constant `IMAGE_EXTENSIONS`: jpg, jpeg, png, heic,
 heif, gif, webp, tif, tiff, bmp, dng, cr2, nef, arw. Compared without
 case.
 
-**Serving.** `get_file` and `HEAD` take the file's size and modified time
-from the listing cache when the parent listing is within its two second
-TTL, and stat on the wire only otherwise. A `GET` whose range starts
-inside a cached head, or a `GET` with no range, is served from the head
-for as many bytes as the head holds, and streams the rest from the wire
-as today. So a thumbnail request for a prefetched file makes no wire
-call at all.
+**Serving.** A response whose body comes entirely from the head cache may
+take its size and modified time from the listing cache, when the parent
+listing is within its two second TTL, and touch the wire for nothing. That
+covers a thumbnail request for a prefetched file, a `HEAD`, and an empty
+file. A response that needs any byte from the wire stats on the wire first,
+and uses the head only when the fresh size and time match the head's key.
+Otherwise it streams the whole body from the wire, as it did before item
+17. So one response never carries bytes from two versions of a file: a file
+replaced since the listing has a new size or time, which is a new key, so
+its stale head is not used at all.
 
 **The access log.** The prefetch of one listing is one `Read` entry on
 this side through `record_this`: the folder path, the total bytes read,

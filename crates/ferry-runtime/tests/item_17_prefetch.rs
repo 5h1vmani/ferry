@@ -147,6 +147,23 @@ impl Mounted {
         response.body
     }
 
+    /// One `GET` with no `Range`, which must answer 200 with the whole
+    /// file.
+    fn whole_get(&mut self, path: &str) -> Vec<u8> {
+        let host = self.host.clone();
+        let auth = (self.user.clone(), self.password.clone());
+        let response = self.client.request(
+            "GET",
+            path,
+            &host,
+            Some((auth.0.as_str(), auth.1.as_str())),
+            &[],
+            None,
+        );
+        assert_eq!(response.status, 200, "GET {path} with no range");
+        response.body
+    }
+
     /// How many reads the phone has served and finalised so far.
     fn peer_reads(&self) -> usize {
         count_entries(
@@ -286,6 +303,60 @@ fn a_file_written_again_with_a_new_size_misses_its_cached_head() {
         body,
         second[..1_024],
         "a new size is a new key, so the stale head must not be served"
+    );
+
+    it.mac.engine.stop();
+    it.phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// Audit `docs/audits/third-run-engine.md`, finding 4: one body, two versions.
+// ---------------------------------------------------------------------------
+
+/// A `GET` that needs a byte the cached head does not hold must stat on the
+/// wire first, and may use the head only when the fresh size and time match
+/// the head's key.
+///
+/// Before this, the listing cache supplied the size and the head supplied
+/// its first 65536 bytes, while the rest was read live from a file that had
+/// since changed. Finder received one file made of two versions, with the
+/// declared length met, so nothing reported an error.
+#[test]
+fn a_get_that_needs_the_wire_never_mixes_two_versions_of_a_file() {
+    // Larger than HEAD_LEN, which is 64 KiB, so the whole body cannot come
+    // from the head and the wire is needed for the rest.
+    let first = vec![0x11u8; 100_000];
+    let second = vec![0x22u8; 120_000];
+    let mut it = Mounted::new(&[("Photos/a.jpg", first.as_slice())]);
+
+    it.propfind("/Root/Photos", "1");
+    wait_until("the Mac records the prefetch of Root/Photos", || {
+        it.prefetch_of("Root/Photos").is_some()
+    });
+    let entry = it
+        .prefetch_of("Root/Photos")
+        .expect("the entry was just seen");
+    assert_eq!(
+        entry.bytes,
+        Some(65_536),
+        "the head holds the first HEAD_LEN bytes of the file, not all of it"
+    );
+
+    // The phone's own file changes under the bridge, inside the listing
+    // cache's two second window, the way a person saving over a photo
+    // changes it.
+    let on_disk = it.phone.shared.path().join("Root/Photos/a.jpg");
+    std::fs::write(&on_disk, &second).expect("the replacement should write");
+
+    let body = it.whole_get("/Root/Photos/a.jpg");
+    assert_eq!(
+        body.len(),
+        second.len(),
+        "the length must come from a fresh stat, not from the stale listing"
+    );
+    assert_eq!(
+        body, second,
+        "every byte must come from one version of the file"
     );
 
     it.mac.engine.stop();
