@@ -35,6 +35,7 @@
 //! device that is not marked reachable instead of refusing it. An app call
 //! is what learns a device is reachable in the first place.
 
+use std::collections::HashSet;
 use std::net::Shutdown;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -79,9 +80,30 @@ impl Drop for Pooled {
 struct Inner {
     idle: Vec<Pooled>,
     outstanding: usize,
+    /// The id of every connection currently borrowed out, so
+    /// [`Pool::shutdown_open`] can find their sockets in `Shared::sockets`
+    /// without a `Pooled` of its own to read the id from. An idle
+    /// connection's id needs no separate bookkeeping: it is read straight
+    /// off the `Pooled` sitting in `idle`.
+    outstanding_ids: HashSet<u64>,
     /// True once [`Pool::close`] has run. A closed pool never dials again
     /// and never hands out an idle connection again.
     closed: bool,
+    /// True for exactly as long as [`Pool::pause`] and [`Pool::unpause`]
+    /// bracket a call: `MountRegistry::stop` holds this across its own
+    /// join. `docs/audits/fable-lifecycle.md`, finding 2: without it, a
+    /// waiter [`Pool::shutdown_open`] just woke by shutting down the
+    /// connection someone else was holding would dial straight back into
+    /// the peer this call is trying to stop talking to. Unlike `closed`,
+    /// this is lifted again once the call it guards returns, so
+    /// `Engine::list` and a later `mount_start` are unaffected once the
+    /// mount has actually stopped.
+    paused: bool,
+    /// The engine this pool dials through, learned from its first dial and
+    /// used only by [`Pool::shutdown_open`] to reach `Shared::sockets`.
+    /// Every dial this pool ever makes is for the one engine that built it,
+    /// so the first one learned is the only one there ever is.
+    shared_for_shutdown: Option<Arc<Shared>>,
 }
 
 pub(crate) struct Pool {
@@ -97,7 +119,10 @@ impl Pool {
             inner: Mutex::new(Inner {
                 idle: Vec::new(),
                 outstanding: 0,
+                outstanding_ids: HashSet::new(),
                 closed: false,
+                paused: false,
+                shared_for_shutdown: None,
             }),
             slot_freed: Condvar::new(),
         }
@@ -156,24 +181,44 @@ impl Pool {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Learned once, from whichever call dials first. `shutdown_open`
+        // reads it back to find this pool's own sockets in
+        // `Shared::sockets`; every other call after the first is a no-op.
+        inner
+            .shared_for_shutdown
+            .get_or_insert_with(|| Arc::clone(shared));
         loop {
             // `docs/engine-contract.md`, item 19: a device this engine has
             // forgotten has no connection left to borrow, and no dial to
             // make. A bridge connection Finder still holds is refused here.
-            if inner.closed {
+            //
+            // `docs/audits/fable-lifecycle.md`, finding 2: `paused` is the
+            // same refusal, held only for as long as `MountRegistry::stop`
+            // is tearing this device's bridge down, so a waiter
+            // `Pool::shutdown_open` just woke does not dial straight back
+            // into the peer that call is trying to stop talking to.
+            if inner.closed || inner.paused {
                 return Err(failed("Runtime::NotReachable"));
             }
             if let Some(client) = inner.idle.pop() {
                 inner.outstanding += 1;
+                inner.outstanding_ids.insert(client.id);
                 return Ok(Borrowed::new(self, client));
             }
             if inner.idle.len() + inner.outstanding < MAX_CONNECTIONS {
                 inner.outstanding += 1;
                 drop(inner);
                 return match self.dial(shared, require_reachable) {
-                    Ok(client) => Ok(Borrowed::new(self, client)),
+                    Ok(client) => {
+                        self.inner
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .outstanding_ids
+                            .insert(client.id);
+                        Ok(Borrowed::new(self, client))
+                    }
                     Err(error) => {
-                        self.give_back(None);
+                        self.give_back(None, false);
                         Err(error)
                     }
                 };
@@ -185,6 +230,11 @@ impl Pool {
             if timeout.timed_out() {
                 return Err(failed("Runtime::NotReachable"));
             }
+            // A woken, not timed out, wait loops back to the top, where
+            // `closed` and `paused` are checked before anything else: this
+            // is what stops a waiter `Pool::shutdown_open` just woke, by
+            // shutting down the connection someone else was holding, from
+            // dialing straight back into a peer this call is stopping.
             inner = next;
         }
     }
@@ -220,23 +270,30 @@ impl Pool {
         })
     }
 
-    /// Takes back a borrowed connection. `None` means it was found broken
-    /// and is dropped rather than reused.
-    ///
-    /// A connection given back to a closed pool is dropped too: the device
-    /// is forgotten, so there is nothing left to keep it for.
-    fn give_back(&self, client: Option<Pooled>) {
+    /// Takes back a borrowed connection. `client` is `None` when the dial
+    /// that would have produced one failed instead; `healthy` is
+    /// meaningless in that case. A connection found broken, or given back
+    /// to a closed pool, is dropped rather than reused.
+    fn give_back(&self, client: Option<Pooled>, healthy: bool) {
         let mut inner = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         inner.outstanding = inner.outstanding.saturating_sub(1);
-        if let Some(client) = client
-            && !inner.closed
-        {
-            inner.idle.push(client);
+        let mut to_drop = None;
+        if let Some(client) = client {
+            inner.outstanding_ids.remove(&client.id);
+            if healthy && !inner.closed {
+                inner.idle.push(client);
+            } else {
+                // Dropped outside the lock below: `Pooled::drop` unregisters
+                // the socket, which takes `Shared::sockets`, a different
+                // lock than this one.
+                to_drop = Some(client);
+            }
         }
         drop(inner);
+        drop(to_drop);
         self.slot_freed.notify_one();
     }
 
@@ -270,6 +327,68 @@ impl Pool {
             }
         }
         drop(idle);
+        self.slot_freed.notify_all();
+    }
+
+    /// Refuses every `take` and `take_dialing` until [`Pool::unpause`] lifts
+    /// it, without touching any connection or making the refusal permanent
+    /// the way [`Pool::close`] does.
+    ///
+    /// `docs/audits/fable-lifecycle.md`, finding 2: `MountRegistry::stop`
+    /// calls this, then [`Pool::shutdown_open`], then joins the bridge's
+    /// threads, then calls [`Pool::unpause`]. Pausing first is what stops a
+    /// waiter `shutdown_open` wakes by shutting down the connection someone
+    /// else was holding from dialing straight back into the peer that call
+    /// is trying to stop talking to.
+    pub(crate) fn pause(&self) {
+        lock_mutex(&self.inner).paused = true;
+        self.slot_freed.notify_all();
+    }
+
+    /// Lifts [`Pool::pause`]. Safe to call on a pool that was never paused.
+    pub(crate) fn unpause(&self) {
+        lock_mutex(&self.inner).paused = false;
+    }
+
+    /// Shuts down every socket this pool currently holds open, idle and
+    /// borrowed, without closing or pausing the pool itself: a caller must
+    /// call [`Pool::pause`] first if a waiter must not dial straight back
+    /// in. A later `take` or `take_dialing`, once unpaused, still works,
+    /// dialing fresh as needed.
+    ///
+    /// `docs/audits/fable-lifecycle.md`, finding 2: `MountRegistry::stop`
+    /// used to join the bridge's prefetch thread with nothing to end its
+    /// blocked read of a peer that stopped answering, or its own wait
+    /// inside `take` for a free slot, so either could hold the join for as
+    /// long as the wire's own idle timeout. This reuses the same shutdown
+    /// [`Pool::close`] already does for its idle connections, extended to
+    /// a connection borrowed out right now: [`Pooled`] registers its raw
+    /// socket the same way every other transport in this engine does
+    /// (`docs/engine-contract.md` item 16c), so the id recorded in
+    /// `outstanding_ids` at borrow time is enough to find and shut it down
+    /// here, the same call `Engine::stop` makes on its own registered
+    /// sockets.
+    ///
+    /// A no-op if this pool has never dialed: there is nothing open yet,
+    /// and so nothing yet to have learned `Shared` from.
+    pub(crate) fn shutdown_open(&self) {
+        let inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(shared) = inner.shared_for_shutdown.clone() else {
+            return;
+        };
+        let mut ids: Vec<u64> = inner.idle.iter().map(|pooled| pooled.id).collect();
+        ids.extend(inner.outstanding_ids.iter().copied());
+        drop(inner);
+        let sockets = lock_mutex(&shared.sockets);
+        for id in ids {
+            if let Some(socket) = sockets.get(&id) {
+                drop(socket.shutdown(Shutdown::Both));
+            }
+        }
+        drop(sockets);
         self.slot_freed.notify_all();
     }
 }
@@ -337,11 +456,6 @@ impl<'a> Borrowed<'a> {
 
 impl Drop for Borrowed<'_> {
     fn drop(&mut self) {
-        let client = if self.healthy {
-            self.client.take()
-        } else {
-            None
-        };
-        self.pool.give_back(client);
+        self.pool.give_back(self.client.take(), self.healthy);
     }
 }

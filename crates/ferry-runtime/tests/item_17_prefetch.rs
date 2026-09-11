@@ -14,12 +14,23 @@
 
 mod common;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use ferry_runtime::{AccessEntry, AccessVerb, Actor, DeviceKind, generate_key};
+use ferry_core::chunk::Manifest;
+use ferry_core::noise::{PublicKey, StaticKey};
+use ferry_core::ops::{Entry, FileKind, OpError};
+use ferry_core::path::RemotePath;
+use ferry_core::peers::DeviceKind as CoreDeviceKind;
+use ferry_core::rpc::{FileOps, exchange_hello, serve};
+use ferry_core::tcp::Listener;
+use ferry_runtime::{AccessEntry, AccessVerb, Actor, DeviceKind, KeyPair, generate_key};
 
-use common::{PATIENCE, Side, TestClient, build_side, count_entries, loopback_addr, port_of};
+use common::{
+    PATIENCE, Side, TestClient, build_side, count_entries, loopback_addr, port_of, public_key_of,
+};
 
 /// The Mac's own log entry for one prefetched listing, if it has been
 /// written: actor `This`, verb `Read`, and the folder's path.
@@ -361,4 +372,258 @@ fn a_get_that_needs_the_wire_never_mixes_two_versions_of_a_file() {
 
     it.mac.engine.stop();
     it.phone.engine.stop();
+}
+
+// ---------------------------------------------------------------------------
+// `docs/audits/fable-lifecycle.md`, finding 2: `mount_stop` must not wait
+// for a peer that has gone silent.
+// ---------------------------------------------------------------------------
+
+/// Rebuild the Noise key from the bytes the app would have stored. Copied
+/// from `tests/engine_paths.rs`, which needs the same conversion for the
+/// same reason: a hand rolled peer speaks `ferry-core`'s wire types
+/// directly, not `ferry_runtime::KeyPair`.
+fn static_key(key: &KeyPair) -> StaticKey {
+    StaticKey::from_stored(&key.private, &key.public).expect("a stored key pair should load")
+}
+
+/// Answers `list` and `stat` for one folder holding one image honestly, but
+/// never answers a `read`. No two real engines can be made to do this to
+/// each other: one peer stopping closes its socket, which the other side
+/// sees as an error at once, not silence. This is what finding 2 means by
+/// "a phone that stopped answering": the connection stays open and nothing
+/// ever arrives.
+struct SilentPeerFs {
+    /// Flips to true the moment a `read` call arrives, so the test can wait
+    /// until the prefetch thread is genuinely inside it before it calls
+    /// `mount_stop`, rather than racing a fixed sleep against it.
+    entered_read: Arc<AtomicBool>,
+}
+
+impl FileOps for SilentPeerFs {
+    fn list(&self, path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        if path.as_str() == "Root/Photos" {
+            Ok((
+                vec![Entry {
+                    name: "img0.jpg".to_owned(),
+                    kind: FileKind::File,
+                    size: 20_000,
+                    modified_unix_secs: 1_000_000,
+                }],
+                None,
+            ))
+        } else {
+            Ok((Vec::new(), None))
+        }
+    }
+
+    fn stat(&self, path: &RemotePath) -> Result<Entry, OpError> {
+        if path.as_str() == "Root/Photos" {
+            Ok(Entry {
+                name: "Photos".to_owned(),
+                kind: FileKind::Directory,
+                size: 0,
+                modified_unix_secs: 1_000_000,
+            })
+        } else {
+            Err(OpError::NotFound)
+        }
+    }
+
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        self.entered_read.store(true, Ordering::SeqCst);
+        // Never answers. The serving thread parks here for the rest of the
+        // test process's life; nothing needs it to return, since what this
+        // test checks is how quickly the Mac's own side gives up.
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
+    fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+
+    fn manifest(&self, _path: &RemotePath) -> Result<Manifest, OpError> {
+        Err(OpError::Unsupported)
+    }
+}
+
+/// A hand rolled peer, built out of the same `ferry-core` parts the real
+/// engine uses (`tcp`, `rpc`), the way `tests/engine_paths.rs` builds one
+/// for the same reason: this behaviour cannot be shown with two real
+/// engines, because both follow the same rules and neither can be made to
+/// go silent without closing its socket.
+struct SilentPeer {
+    addr: SocketAddr,
+    closing: Arc<AtomicBool>,
+}
+
+impl SilentPeer {
+    /// Starts listening as `key`, accepting only connections that
+    /// authenticate as `mac_public`, and serving `fs`.
+    fn start(key: KeyPair, mac_public: PublicKey, fs: Arc<SilentPeerFs>) -> Self {
+        let listener = Listener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .expect("the fake peer should bind a loopback port");
+        let addr = SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            listener.local_addr().port(),
+        );
+        let closing = Arc::new(AtomicBool::new(false));
+        let closing_for_thread = Arc::clone(&closing);
+        drop(std::thread::spawn(move || {
+            while !closing_for_thread.load(Ordering::SeqCst) {
+                let Ok(pending) = listener.accept() else {
+                    continue;
+                };
+                if closing_for_thread.load(Ordering::SeqCst) {
+                    return;
+                }
+                let key = static_key(&key);
+                let fs = Arc::clone(&fs);
+                drop(std::thread::spawn(move || {
+                    let Ok(negotiated) = pending.negotiate() else {
+                        return;
+                    };
+                    let Ok(connection) = negotiated.connect(&key, &[mac_public]) else {
+                        return;
+                    };
+                    let mut stream = connection.stream;
+                    if exchange_hello(&mut stream, "Fake Phone", CoreDeviceKind::Phone).is_err() {
+                        return;
+                    }
+                    drop(serve(&mut stream, fs.as_ref()));
+                }));
+            }
+        }));
+        Self { addr, closing }
+    }
+
+    /// Stops the accept loop, which closes the port. The serving threads
+    /// already parked inside a `read` are left running, the same known,
+    /// accepted leak `tests/engine_paths.rs`'s own `NeverAnswersFs` test
+    /// leaves: nothing needs them to end, since the test process does.
+    fn close(&self) {
+        self.closing.store(true, Ordering::SeqCst);
+        drop(TcpStream::connect_timeout(
+            &self.addr,
+            Duration::from_secs(2),
+        ));
+    }
+}
+
+/// Waits until `ready` answers true, or fails the test after [`PATIENCE`].
+fn wait_until_flag(what: &str, flag: &AtomicBool) {
+    let deadline = Instant::now() + PATIENCE;
+    while !flag.load(Ordering::SeqCst) {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+// `docs/audits/fable-lifecycle.md`, finding 2: `MountRegistry::stop` used
+// to join the prefetch thread with nothing to end its blocking read or its
+// wait for a pool slot, so a peer that stopped answering, without closing
+// the connection, could hold `mount_stop` (and so `Engine::forget`, from
+// the Mac's main thread) for up to the wire's own 300 second idle timeout.
+fn mount_stop_returns_quickly_when_the_peers_socket_goes_silent() {
+    let mac_key = generate_key().expect("a fresh key pair");
+    let peer_key = generate_key().expect("a fresh key pair for the fake peer's identity");
+    let entered_read = Arc::new(AtomicBool::new(false));
+    let peer = SilentPeer::start(
+        peer_key.clone(),
+        public_key_of(&mac_key),
+        Arc::new(SilentPeerFs {
+            entered_read: Arc::clone(&entered_read),
+        }),
+    );
+
+    let mac = build_side(
+        "Vamana",
+        DeviceKind::Mac,
+        mac_key,
+        &[],
+        &peer_key,
+        "Fake Phone",
+        DeviceKind::Phone,
+    );
+
+    mac.engine.offer_candidate(peer.addr);
+    let phone_key_hex = mac
+        .engine
+        .devices()
+        .first()
+        .expect("the fake peer should already be paired, from the seeded peer store")
+        .key_hex
+        .clone();
+    // This is what marks the device reachable, the same as `Mounted::new`
+    // does for a real phone: a fresh `Pool::dial` calls `mark_reachable` on
+    // success.
+    mac.engine
+        .list(phone_key_hex.clone(), String::new())
+        .expect("listing the fake peer's root should succeed once dialable");
+    let endpoint = mac
+        .engine
+        .mount_start(phone_key_hex.clone())
+        .expect("mount_start should succeed for a paired, reachable device");
+
+    let port = port_of(&endpoint.url);
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("a loopback address");
+    let host = format!("127.0.0.1:{port}");
+    let mut client = TestClient::connect(addr);
+    let response = client.request(
+        "PROPFIND",
+        "/Root/Photos",
+        &host,
+        Some((endpoint.user.as_str(), endpoint.password.as_str())),
+        &[("Depth", "1".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 207, "PROPFIND /Root/Photos at depth 1");
+
+    // The prefetch thread is now inside the fake peer's `read`, on a
+    // connection of its own: the one `PROPFIND` just borrowed and gave
+    // back is idle again, not held.
+    wait_until_flag("the fake peer sees a read call", &entered_read);
+
+    let (tx, rx) = mpsc::channel();
+    let engine = Arc::clone(&mac.engine);
+    let started = Instant::now();
+    std::thread::spawn(move || {
+        engine.mount_stop(phone_key_hex);
+        let _ = tx.send(());
+    });
+    assert!(
+        rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+        "mount_stop must return within five seconds even when the peer's \
+         socket has gone silent mid prefetch, but it was still running \
+         after {:?}",
+        started.elapsed()
+    );
+
+    peer.close();
+    mac.engine.stop();
 }

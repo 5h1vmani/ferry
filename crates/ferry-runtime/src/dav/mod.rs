@@ -54,6 +54,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use crate::errors::{failed, failed_with};
+use crate::pool::Pool;
 use crate::state::lock as lock_mutex;
 use crate::{FerryError, MountEndpoint};
 
@@ -87,6 +88,11 @@ struct Mount {
     /// Both are needed to end it, so `stop` holds both.
     bridge: Arc<server::Bridge>,
     prefetch: Option<JoinHandle<()>>,
+    /// The same pool [`server::Bridge::new`] was given, below in
+    /// [`MountRegistry::start`], kept here too so `stop` can shut its open
+    /// connections down without reaching through `Bridge`'s own private
+    /// field. `docs/audits/fable-lifecycle.md`, finding 2.
+    pool: Arc<Pool>,
 }
 
 /// Every device's `WebDAV` bridge, by device key hex.
@@ -181,6 +187,12 @@ impl MountRegistry {
             password: password.clone(),
         };
 
+        // Item 19: the engine's pool for this device, not one of the
+        // bridge's own, so `Engine::list` and this bridge share it. A
+        // device that is not paired has no pool, so no bridge is built for
+        // one. Kept here, not only inside `Bridge`, so `stop` can reach it;
+        // see `Mount::pool`. `docs/audits/fable-lifecycle.md`, finding 2.
+        let pool = shared.pool_for(device_key_hex)?;
         let running = Arc::new(AtomicBool::new(true));
         let bridge = Arc::new(server::Bridge::new(
             device_key_hex.to_owned(),
@@ -189,11 +201,7 @@ impl MountRegistry {
             password,
             port,
             shared.data_dir.join("dav_sidecars").join(device_key_hex),
-            // Item 19: the engine's pool for this device, not one of the
-            // bridge's own, so `Engine::list` and this bridge share it. A
-            // device that is not paired has no pool, so no bridge is built
-            // for one.
-            shared.pool_for(device_key_hex)?,
+            Arc::clone(&pool),
         ));
 
         let shared_for_thread = Arc::clone(shared);
@@ -231,6 +239,7 @@ impl MountRegistry {
                 handle: Some(handle),
                 bridge,
                 prefetch: Some(prefetch),
+                pool,
             },
         );
         Ok(endpoint)
@@ -253,6 +262,20 @@ impl MountRegistry {
         // own port is the only way to bring it back, the same trick
         // `engine::wake_the_listener` uses for the peer-facing listener.
         drop(std::net::TcpStream::connect(("127.0.0.1", mount.port)));
+        // `docs/audits/fable-lifecycle.md`, finding 2: the prefetch thread
+        // below may be inside a blocked read of a peer that stopped
+        // answering, or inside its own wait for a free connection, either
+        // of which could otherwise hold this call, and so `Engine::forget`
+        // and `Engine::mount_stop` on the app's main thread, for as long as
+        // the wire's own idle timeout. `pause` first, so a waiter the
+        // shutdown below wakes does not dial straight back into the peer
+        // this call is stopping; `shutdown_open` then ends the read and the
+        // wait at once, the same way `Engine::stop` ends one on every
+        // socket it has registered. `unpause`, once the join below has
+        // returned, is what leaves `Engine::list` and a later `mount_start`
+        // unaffected: this device may still be paired.
+        mount.pool.pause();
+        mount.pool.shutdown_open();
         // The prefetch thread is either waiting for a listing or between
         // two files. Ending its queue covers the first case; the `running`
         // flag above covers the second (item 17).
@@ -263,6 +286,7 @@ impl MountRegistry {
         if let Some(prefetch) = mount.prefetch.take() {
             drop(prefetch.join());
         }
+        mount.pool.unpause();
     }
 
     /// Stop every bridge. Called by `Engine::stop`.
