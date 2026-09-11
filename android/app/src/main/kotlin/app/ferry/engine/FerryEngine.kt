@@ -259,6 +259,9 @@ object FerryEngine {
     // Job 5's only control. ReachableService calls this, so the switch and
     // the notification always say the same thing.
     fun setReachable(on: Boolean) {
+        if (!_started.value) {
+            return
+        }
         val current = engine ?: return
         current.setReachable(on)
         readStatus(current)

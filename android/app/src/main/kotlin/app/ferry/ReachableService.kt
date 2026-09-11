@@ -35,6 +35,14 @@ class ReachableService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        // A restarted service has no activity to call start() for it. If
+        // the engine cannot start, most likely because all files access is
+        // not granted, this must stop rather than post a notification that
+        // says the phone advertises when it does not.
+        if (!FerryEngine.start()) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         createChannel()
         startForeground(
             NOTIFICATION_ID,
