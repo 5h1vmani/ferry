@@ -442,12 +442,19 @@ impl FileOps for LocalFs {
             return Err(OpError::IsADirectory);
         }
 
+        // The length comes from the open handle, not from reading the file,
+        // so a file too large to describe is refused before the first byte
+        // is read. `manifest_chunk_size` also picks a chunk size larger than
+        // the one mebibyte default when the length needs it, so the chunk
+        // count never overflows `MAX_MANIFEST_CHUNKS`.
+        let length = file.metadata().map_err(|e| map_io(&e))?.len();
+        let chunk_size = manifest_chunk_size(length)?;
+
         // One pass over the file, in chunk sized pieces, through the same
         // `ManifestBuilder` a transfer's first pass uses. Every piece but
         // the last is a whole chunk; `read_to_end` on a bounded `take`
         // hands back a short final piece on its own, with no extra check
         // needed here.
-        let chunk_size = ChunkSize::one_mebibyte();
         let mut builder = ManifestBuilder::new(chunk_size);
         loop {
             let mut piece = Vec::new();
@@ -511,6 +518,28 @@ const O_NONBLOCK: i32 = i32::from_ne_bytes(OFlags::NONBLOCK.bits().to_ne_bytes()
 // needs `libc` or `rustix` as a direct dependency (neither is one, see the
 // constant above) or a hand-written FFI declaration, which the workspace's
 // `unsafe_code = "deny"` lint forbids outright.
+// The largest file a manifest can describe at all: `MAX_MANIFEST_CHUNKS`
+// chunks of the largest chunk size BLAKE3 accepts. Above this, no chunk
+// size keeps the chunk count within the limit, so `manifest` refuses the
+// file outright, before it opens it for reading.
+const MAX_MANIFEST_FILE_LEN: u64 = limits::MAX_MANIFEST_CHUNKS as u64 * ChunkSize::MAX as u64;
+
+// Picks the smallest chunk size that keeps a file of `length` bytes at or
+// under `MAX_MANIFEST_CHUNKS` chunks, starting from the one mebibyte
+// default. A file at or below 32 GiB keeps that default; a larger file
+// (up to 512 GiB) steps up to the next power of two chunk size as needed.
+fn manifest_chunk_size(length: u64) -> Result<ChunkSize, OpError> {
+    if length > MAX_MANIFEST_FILE_LEN {
+        return Err(OpError::RangeTooLarge);
+    }
+    let mut chunk_size = ChunkSize::one_mebibyte();
+    while length.div_ceil(chunk_size.as_u64()) > u64::from(limits::MAX_MANIFEST_CHUNKS) {
+        chunk_size = ChunkSize::new(chunk_size.get() * 2)
+            .expect("doubling a valid chunk size below MAX stays a valid power of two");
+    }
+    Ok(chunk_size)
+}
+
 fn open_checked(
     root: &Dir,
     path: &str,
@@ -861,6 +890,53 @@ mod tests {
         let served = fs.manifest(&path("a.bin")).unwrap();
         let expected = manifest_from_bytes(&bytes, ChunkSize::one_mebibyte());
         assert_eq!(served, expected);
+    }
+
+    #[test]
+    #[ignore = "runs on demand: hashes a 32 GiB sparse file"]
+    fn manifest_of_a_file_just_over_32_gib_uses_a_larger_chunk_size() {
+        // F1: at the one mebibyte default, a file over 32 GiB would need
+        // more than `MAX_MANIFEST_CHUNKS` chunks. `manifest` must pick a
+        // larger chunk size instead of overflowing the limit. The file is
+        // sparse: `set_len` alone never writes a byte of it.
+        let root = TempRoot::new("manifest-32gib");
+        let over_32_gib = 32 * 1024 * 1024 * 1024 + 1;
+        let file = std::fs::File::create(root.dir.join("big.bin")).unwrap();
+        file.set_len(over_32_gib).unwrap();
+        drop(file);
+        let fs = root.fs();
+
+        let manifest = fs.manifest(&path("big.bin")).unwrap();
+        assert_eq!(manifest.length(), over_32_gib);
+        assert!(
+            manifest.chunk_size().as_u64() > ChunkSize::one_mebibyte().as_u64(),
+            "a file over 32 GiB must use a chunk size larger than the default"
+        );
+        assert!(
+            u32::try_from(manifest.chunk_count()).unwrap_or(u32::MAX)
+                <= limits::MAX_MANIFEST_CHUNKS
+        );
+    }
+
+    #[test]
+    fn manifest_of_a_file_over_512_gib_is_refused_before_any_read() {
+        // F1: 512 GiB is the largest length a manifest can describe at
+        // `ChunkSize::MAX`. Above that, `manifest` must refuse before it
+        // reads a single byte, so this returns quickly even though the
+        // file is sparse and never actually holds 512 GiB on disk.
+        let root = TempRoot::new("manifest-too-large");
+        let over_512_gib = 512u64 * 1024 * 1024 * 1024 + 1;
+        let file = std::fs::File::create(root.dir.join("huge.bin")).unwrap();
+        file.set_len(over_512_gib).unwrap();
+        drop(file);
+        let fs = root.fs();
+
+        let started = Instant::now();
+        assert_eq!(fs.manifest(&path("huge.bin")), Err(OpError::RangeTooLarge));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "a length over 512 GiB must be refused before any read, not after one"
+        );
     }
 
     #[test]

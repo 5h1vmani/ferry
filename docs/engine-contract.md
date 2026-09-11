@@ -401,11 +401,17 @@ Request::Manifest { path }
 Response::Manifest { manifest }   // the encoded Manifest: length, chunk size, chaining values, root
 ```
 
-The serving side reads the whole file once and hashes it with the
-existing `ManifestBuilder`. It serves through `GuardedFs` like every other
-operation and is logged as a `Stat` in the access log, because it reveals
-what a `stat` reveals and nothing more. It is refused on a directory with
-`IsADirectory`. `MAX_MANIFEST_BYTES` bounds the response.
+The serving side reads the file's length from the open handle first, before
+any read of its bytes. The chunk size follows that length: it starts at
+the one mebibyte default and steps up to the next power of two only when
+needed to keep the chunk count at or under `MAX_MANIFEST_CHUNKS`. A length
+above 512 GiB, the largest a manifest can describe at `ChunkSize::MAX`, is
+refused with `RangeTooLarge` before any read. Otherwise the file is hashed
+once with the existing `ManifestBuilder`, at the chosen chunk size. It
+serves through `GuardedFs` like every other operation and is logged as a
+`Stat` in the access log, because it reveals what a `stat` reveals and
+nothing more. It is refused on a directory with `IsADirectory`.
+`MAX_MANIFEST_BYTES` bounds the response.
 
 Who uses it: a pull's first pass fetches the manifest before the first
 chunk and verifies every chunk as it lands, so the first pass is no longer
