@@ -301,9 +301,10 @@ pub(crate) struct Shared {
     /// The claim on the data folder, held for as long as the engine is.
     pub(crate) dir_lock: DirLock,
     /// The access log's roll-up, open once `start` has run and dropped
-    /// again by `stop`. Held behind a mutex that is never kept locked
-    /// across I/O on a connection thread for longer than one `touch`
-    /// (docs/engine-contract.md, item 13).
+    /// again by `stop`. Held behind a mutex that a connection thread locks
+    /// for exactly one `touch`: one buffered write to the day file, never a
+    /// sync, so no operation on any connection ever waits on another
+    /// connection's disk write (docs/engine-contract.md, item 13).
     pub(crate) access_log: AccessLogHandle,
     /// The next connection id handed to a served connection's `GuardedFs`,
     /// or to a calling-side operation's own roll-up entry. One counter for

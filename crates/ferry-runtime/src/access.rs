@@ -597,7 +597,6 @@ impl AccessLog {
         frame.bytes(&encode_entry(fields, at_unix_secs));
         let mut file = open_day_file(&path)?;
         file.write_all(&frame.finish())?;
-        file.sync_all()?;
         self.sequences.insert(day, next_sequence + 1);
         Ok(true)
     }
