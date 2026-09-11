@@ -71,7 +71,7 @@ pub(crate) fn accept_qr_offer(
 ///
 /// Someone who cancelled while the handshake ran must not see a failure for
 /// a pairing they already stopped.
-pub(crate) fn report_pairing_failure(shared: &Arc<Shared>, error: &TcpError) {
+fn report_pairing_failure(shared: &Arc<Shared>, error: &TcpError) {
     if !lock(&shared.state).pairing.is_running() {
         return;
     }
@@ -110,7 +110,7 @@ pub(crate) fn dial_for_pairing(shared: &Arc<Shared>, addr: SocketAddr) {
 /// second code never replaces the one the person is comparing, but the
 /// person still sees that the connection which just arrived did not get
 /// one. `docs/audits/fable-security.md`, finding 4.
-pub(crate) fn hold_pairing(
+fn hold_pairing(
     shared: &Arc<Shared>,
     connection: PairedConnection,
     addr: SocketAddr,
@@ -168,7 +168,7 @@ pub(crate) fn hold_pairing(
 ///
 /// Returns `Runtime::PairingBusy` when something is already `Requested`, or
 /// when pairing has moved on.
-pub(crate) fn hold_qr_pairing(
+fn hold_qr_pairing(
     shared: &Arc<Shared>,
     connection: IkPairedConnection,
     addr: SocketAddr,
@@ -228,7 +228,7 @@ pub(crate) fn hold_qr_pairing(
 ///
 /// Does nothing when pairing has already moved on, which is what the
 /// watchdog does once the two minute deadline passes.
-pub(crate) fn hold_scanned_pairing(
+fn hold_scanned_pairing(
     shared: &Arc<Shared>,
     peer_key: PublicKey,
     stream: StopAware<SecureStream>,
@@ -315,7 +315,7 @@ pub(crate) fn pair_after_confirm(shared: &Arc<Shared>, taken: Confirming) {
 }
 
 /// Report a failed pairing, unless pairing has already moved on.
-pub(crate) fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
+fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
     if !lock(&shared.state).pairing.is_running() {
         return;
     }
@@ -332,7 +332,7 @@ pub(crate) fn fail_pairing(shared: &Arc<Shared>, error: FerryError) {
 /// refuse, adds nothing either: pairing succeeded, and a list that cannot
 /// grow is not a reason to fail it. `Shared::set_pairing` reapplies the rule
 /// right after this, when it reports `Confirmed`.
-pub(crate) fn trust_current_network(shared: &Arc<Shared>) {
+fn trust_current_network(shared: &Arc<Shared>) {
     let Some(name) = lock(&shared.state).network.clone() else {
         return;
     };
@@ -347,7 +347,7 @@ pub(crate) fn trust_current_network(shared: &Arc<Shared>) {
 ///
 /// Returns true when it reported `Confirmed`. False means pairing had
 /// already ended, or storing failed, and the caller must go no further.
-pub(crate) fn store_paired_peer(
+fn store_paired_peer(
     shared: &Arc<Shared>,
     peer_key: PublicKey,
     addr: SocketAddr,
@@ -409,7 +409,7 @@ pub(crate) fn store_paired_peer(
 /// agree with it, or the pairing fails: the name and kind shown in
 /// `Requested`, that a person already confirmed against, must be the same
 /// identity this finishes pairing with.
-pub(crate) fn finish_pairing(
+fn finish_pairing(
     shared: &Arc<Shared>,
     peer_key: PublicKey,
     stream: SecureStream,
@@ -477,7 +477,7 @@ pub(crate) fn finish_pairing(
 ///
 /// Returns an `RpcError` code when the exchange fails, and
 /// `TcpError::Timeout` when it does not finish in time.
-pub(crate) fn hello_with_deadline(
+fn hello_with_deadline(
     shared: &Arc<Shared>,
     stream: SecureStream,
 ) -> Result<(String, CoreDeviceKind, StopAware<SecureStream>), FerryError> {
@@ -525,7 +525,7 @@ pub(crate) fn hello_with_deadline(
 }
 
 /// Give up on pairing once the deadline passes.
-pub(crate) fn pairing_watchdog(shared: &Arc<Shared>) {
+fn pairing_watchdog(shared: &Arc<Shared>) {
     loop {
         let deadline = lock(&shared.state).pairing.deadline;
         let Some(deadline) = deadline else {
@@ -634,7 +634,7 @@ pub(crate) fn begin_pairing_deadline(shared: &Arc<Shared>) -> Option<i64> {
 /// policy `dial_offer` applies to a scanned offer's own list, since a
 /// machine with many interfaces should not draw a QR code that makes a
 /// phone try dialing all of them.
-pub(crate) fn local_wifi_addresses(port: u16) -> Vec<SocketAddr> {
+fn local_wifi_addresses(port: u16) -> Vec<SocketAddr> {
     let addresses = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()

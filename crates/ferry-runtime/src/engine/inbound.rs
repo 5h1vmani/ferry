@@ -23,7 +23,7 @@ use super::{
 /// dropping it is the only way to free one again, so the count can never
 /// be missed or double counted. `docs/audits/fable-engineering.md`,
 /// finding 2.
-pub(crate) struct InboundSlot(Arc<Shared>);
+struct InboundSlot(Arc<Shared>);
 
 impl Drop for InboundSlot {
     fn drop(&mut self) {
@@ -31,7 +31,7 @@ impl Drop for InboundSlot {
     }
 }
 
-pub(crate) fn reserve_inbound_slot(shared: &Arc<Shared>) -> Option<InboundSlot> {
+fn reserve_inbound_slot(shared: &Arc<Shared>) -> Option<InboundSlot> {
     shared
         .inbound
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
@@ -106,7 +106,7 @@ pub(crate) fn accept_loop(shared: &Arc<Shared>, net: &Arc<Listener>) {
 /// is only honoured while this device is actually open to that one method,
 /// and a mismatched request is simply dropped, the same way a `Connect`
 /// request from a stranger with no matching key already was.
-pub(crate) fn handle_inbound(shared: &Arc<Shared>, pending: Pending) {
+fn handle_inbound(shared: &Arc<Shared>, pending: Pending) {
     let remote = pending.remote();
     let Ok(negotiated) = pending.negotiate() else {
         // A version or a handshake timeout. Nothing to report: a peer that

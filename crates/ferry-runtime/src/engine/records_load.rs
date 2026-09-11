@@ -198,7 +198,7 @@ pub(crate) fn load_saved_transfers(shared: &Arc<Shared>) {
 }
 
 /// The row one stored record becomes.
-pub(crate) fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow {
+fn row_from_record(id: String, key_hex: String, record: &Record) -> TransferRow {
     let (source, destination, bytes_total, bytes_done, source_size, source_mtime, meta, chunk_size) =
         match record {
             Record::FirstPass(meta, pass) => (

@@ -425,7 +425,7 @@ pub(crate) fn notify(shared: &Arc<Shared>, change: Change) {
 }
 
 /// Tell the app about every kind whose turn has come.
-pub(crate) fn report_due(shared: &Arc<Shared>, force: bool) {
+fn report_due(shared: &Arc<Shared>, force: bool) {
     let due = shared.notify.take_due(force);
     if due.is_empty() {
         return;
@@ -454,7 +454,7 @@ pub(crate) fn report_due(shared: &Arc<Shared>, force: bool) {
 /// One of these runs at a time. It ends when nothing is waiting, and it
 /// reports what is left before it ends, so the last state always reaches the
 /// app.
-pub(crate) fn notify_timer(shared: &Arc<Shared>) {
+fn notify_timer(shared: &Arc<Shared>) {
     loop {
         let Some(left) = shared.notify.next_turn() else {
             return;

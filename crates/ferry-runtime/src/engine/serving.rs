@@ -52,7 +52,7 @@ pub(crate) fn register_serving(
 /// forever, since nothing capped how many it could hold at once at all.
 /// Refusing here, before a socket is registered or a name exchanged, means
 /// a refused connection costs this device nothing beyond the accept itself.
-pub(crate) fn try_register_serving(
+fn try_register_serving(
     shared: &Arc<Shared>,
     key_hex: &str,
     addr: SocketAddr,
@@ -64,7 +64,7 @@ pub(crate) fn try_register_serving(
 /// one serving switch under one lock, so the check and the push can never
 /// race against another thread doing the same for this peer. `enforce_cap`
 /// is `false` only for `register_serving`'s own caller.
-pub(crate) fn register_serving_inner(
+fn register_serving_inner(
     shared: &Arc<Shared>,
     key_hex: &str,
     addr: SocketAddr,
@@ -140,7 +140,7 @@ impl Drop for SocketRegistration {
 }
 
 /// Serve the shared root on one stream, and keep the device list honest.
-pub(crate) fn serve_stream(
+fn serve_stream(
     shared: &Arc<Shared>,
     mut stream: impl std::io::Read + std::io::Write,
     peer: PublicKey,
@@ -234,7 +234,7 @@ pub(crate) fn serve_named_stream(
 }
 
 /// Take this connection's switch back once it has finished.
-pub(crate) fn release_serving(shared: &Arc<Shared>, key_hex: &str, allowed: &Arc<AtomicBool>) {
+fn release_serving(shared: &Arc<Shared>, key_hex: &str, allowed: &Arc<AtomicBool>) {
     let mut state = lock(&shared.state);
     let live = state.live_mut(key_hex);
     live.reachable_via = None;

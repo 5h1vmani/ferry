@@ -75,7 +75,7 @@ pub(crate) fn remember_address(shared: &Arc<Shared>, addr: SocketAddr) {
 }
 
 /// Record an address discovery found, and offer it while pairing.
-pub(crate) fn on_discovered(shared: &Arc<Shared>, instance: &str, addr: SocketAddr) {
+fn on_discovered(shared: &Arc<Shared>, instance: &str, addr: SocketAddr) {
     remember_address(shared, addr);
     let shown = PairingCandidate {
         id: format!("wifi:{instance}"),

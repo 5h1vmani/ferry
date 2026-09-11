@@ -82,7 +82,7 @@ pub(crate) fn adb_loop(shared: &Arc<Shared>) {
 }
 
 /// One pass over the plugged in devices.
-pub(crate) fn poll_adb_once(shared: &Arc<Shared>) {
+fn poll_adb_once(shared: &Arc<Shared>) {
     let Some(adb) = shared.adb.as_ref() else {
         return;
     };
