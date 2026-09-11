@@ -112,8 +112,13 @@ class MainActivity : ComponentActivity() {
         // The engine lives as long as the process, and dropping it does not
         // end it. It is stopped only when nothing is left to serve: no
         // reachable service, and this activity going away for good.
+        //
+        // stop() opens a loopback connection to wake the accept loop and
+        // joins every thread, which can take a moment. A plain thread runs
+        // it here, not a coroutine, because a coroutine on this activity's
+        // own scope would be cancelled by the same onDestroy.
         if (isFinishing && !ReachableService.running) {
-            FerryEngine.stop()
+            Thread { FerryEngine.stop() }.start()
         }
     }
 
