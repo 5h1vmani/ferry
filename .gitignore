@@ -41,3 +41,6 @@ design_ouput/
 
 # Worktrees the orchestrating agent creates
 .claude/worktrees/
+
+# Python bytecode from the generator scripts
+__pycache__/
