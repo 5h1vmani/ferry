@@ -91,6 +91,16 @@ object FerryEngine {
     // What either device did to the other's files, newest first. L5, job 9.
     val accessLog: StateFlow<List<AccessEntry>> = _accessLog.asStateFlow()
 
+    private val _accessLogRetentionDays = MutableStateFlow<UInt?>(null)
+
+    // How many days the engine keeps one access log entry before pruning
+    // it. Read once at start, beside the other start-time facts below,
+    // because the engine's own answer never changes while it is running.
+    // Null until start() has run. AccessLogScreen.kt fills its footer
+    // from this instead of typing 30 itself. docs/engine-contract.md
+    // item 13.
+    val accessLogRetentionDays: StateFlow<UInt?> = _accessLogRetentionDays.asStateFlow()
+
     private val _pairing = MutableStateFlow<PairingState>(PairingState.Idle)
 
     // Where pairing is, as the engine reports it. Idle until a pairing
@@ -276,6 +286,7 @@ object FerryEngine {
             _transfers.value = current.transfers()
             _batches.value = current.batches()
             _accessLog.value = current.accessLog(null, ACCESS_LOG_LIMIT)
+            _accessLogRetentionDays.value = current.accessLogRetentionDays()
             readStatus(current)
             // NetworkName may have read a name before this engine was
             // built, or before start() opened it for calls. That reading
@@ -330,6 +341,7 @@ object FerryEngine {
             _transfers.value = emptyList()
             _batches.value = emptyList()
             _accessLog.value = emptyList()
+            _accessLogRetentionDays.value = null
             _network.value = null
             _wifiPresence.value = false
             _trustedNetworks.value = emptyList()
