@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import app.ferry.NetworkName
+import app.ferry.ShareIntake
 import uniffi.ferry_runtime.AccessEntry
 import uniffi.ferry_runtime.BatchInfo
 import uniffi.ferry_runtime.Config
@@ -531,6 +532,69 @@ object FerryEngine {
     // person has already acted on.
     fun clearError() {
         _error.value = null
+    }
+
+    // ---- Sending files the OS gestures gather: docs/ux-fix-plan.md, item 1 ----
+
+    // The root a gesture-started push lands in when the peer has one named
+    // this, ignoring case; otherwise the first root the peer lists.
+    // docs/engine-contract.md item 5, "Where a push lands".
+    private const val LANDING_ROOT_NAME = "Downloads"
+    private const val LANDING_SUBFOLDER = "Ferry"
+
+    // Sends several files into one folder on a paired device, as one batch.
+    // Returns the batch id. In the same style as list, stat, and mkdir
+    // below: a passthrough that throws the engine's own FerryException.
+    fun pushFiles(keyHex: String, localPaths: List<String>, remoteFolder: String): String =
+        required().pushFiles(keyHex, localPaths, remoteFolder)
+
+    // Sends every path to the one paired Mac's landing folder. Called by a
+    // share from another app and by the Devices screen's "Send files"
+    // control; both hand this the same list of absolute paths.
+    //
+    // Does nothing when no Mac is paired: Devices already shows that state
+    // on its own once ShareIntake asks it to. Otherwise this dials the Mac
+    // to list its roots, makes the landing folder, then pushes, and every
+    // one of those calls blocks, so it runs on scope, off the caller's
+    // thread.
+    fun pushShared(localPaths: List<String>) {
+        val device = _devices.value.firstOrNull() ?: return
+        val keyHex = device.keyHex
+        _error.value = null
+        scope.launch {
+            try {
+                val folder = landingFolder(keyHex)
+                try {
+                    mkdir(keyHex, folder)
+                } catch (e: FerryException) {
+                    val code = (e as? FerryException.Failed)?.code
+                    // push does not create the parent folder itself
+                    // (docs/engine-contract.md item 5), so this call makes
+                    // it first. A folder already there is success, not a
+                    // fault.
+                    if (code != "OpError::AlreadyExists") {
+                        throw e
+                    }
+                }
+                val batchId = pushFiles(keyHex, localPaths, folder)
+                appContext?.let { context -> ShareIntake.registerBatch(context, batchId, localPaths) }
+            } catch (e: FerryException) {
+                _error.value = e
+            }
+        }
+    }
+
+    // The root named "Downloads", matched ignoring case, else the first
+    // root the peer lists, each in a folder named "Ferry".
+    // docs/engine-contract.md item 5, "Where a push lands". `list` always
+    // returns at least one root for a device that started (item 15), so
+    // the fallback below is never expected to run.
+    private fun landingFolder(keyHex: String): String {
+        val roots = list(keyHex, "")
+        val chosen = roots.firstOrNull { it.name.equals(LANDING_ROOT_NAME, ignoreCase = true) }
+            ?: roots.firstOrNull()
+            ?: throw FerryException.Failed("Runtime::NoCandidate", null)
+        return "${chosen.name}/$LANDING_SUBFOLDER"
     }
 
     // Reads the key from filesDir, or makes one on first run and writes it.

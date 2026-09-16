@@ -141,7 +141,7 @@ under the device row, and Info folds into Settings.
 
 ```text
 Devices (home)
-├── top bar, and Settings from it
+├── top bar: "Send files" while a Mac is paired, and Settings **new**
 ├── the reachability row and its consequence    L0
 ├── one row per paired Mac, with a TransportBadge
 ├── Transfers, under the row                    L3
@@ -156,10 +156,20 @@ Devices (home)
 
 Persistent notification                         L0
 └── the state, and one action to change it
+
+Transfer notifications                          L0  **new**
+└── one per batch, or per transfer outside a batch: a progress bar while
+    it runs, then Done, or Failed with Retry
 ```
 
 If a second Mac is ever paired, the device row becomes a destination and this
 decision reverses. Nothing else in the structure changes.
+
+A share from another app, `ACTION_SEND` or `ACTION_SEND_MULTIPLE`, and the
+"Send files" control both call `push_files` into the Mac's landing folder,
+`docs/engine-contract.md` item 5. **new** With one Mac paired there is no
+device step. With no Mac paired, the share shows this screen in its empty
+state instead.
 
 ## Every screen, every state
 
@@ -187,8 +197,8 @@ see why has no way to guess.
 
 | State | Shows |
 |---|---|
-| Empty | "No phone paired." on the Mac, "No Mac paired." on the phone. A "Pair a phone" or "Pair" control. This is the first run. The presence control is still shown: it is the one true fact about a device that has paired with nothing. |
-| Populated | One row per device: name, TransportBadge. A device that is moving bytes shows its speed in the badge. |
+| Empty | "No phone paired." on the Mac, "No Mac paired." on the phone. A "Pair a phone" or "Pair" control. This is the first run. The presence control is still shown: it is the one true fact about a device that has paired with nothing. A share arriving with no Mac paired lands here too. **new** |
+| Populated | One row per device: name, TransportBadge. A device that is moving bytes shows its speed in the badge. On the phone, the top bar also gains "Send files", which opens the system document picker and pushes the chosen files to the paired Mac. **new** |
 | Two transports | The active transport in the badge; the spare stated once beside it: "USB also available". **new** A pulled cable is then not a surprise. |
 | Not reachable | The device icon in `text_secondary`, the name, a badge reading "Not reachable", and a caption: "Last seen 2 hours ago". Still listed. |
 

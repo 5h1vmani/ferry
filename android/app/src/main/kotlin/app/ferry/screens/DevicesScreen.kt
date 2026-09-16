@@ -11,6 +11,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -65,6 +66,7 @@ fun DevicesScreen(
     onSetAdvertising: (Boolean) -> Unit,
     onPairClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onSendFilesClick: () -> Unit,
     onRetryGroup: (TransferGroup) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -75,6 +77,15 @@ fun DevicesScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.devices_title)) },
                 actions = {
+                    // Sending needs a Mac to send to, the same way Pair
+                    // needs none: docs/ux-fix-plan.md item 1. With no Mac
+                    // paired, the empty state's own Pair control is the way
+                    // in, not this one.
+                    if (devices.isNotEmpty()) {
+                        TextButton(onClick = onSendFilesClick) {
+                            Text(stringResource(R.string.action_send_files))
+                        }
+                    }
                     IconButton(onClick = onSettingsClick) {
                         Icon(
                             imageVector = ferryIconFor(FerryIcon.settings),

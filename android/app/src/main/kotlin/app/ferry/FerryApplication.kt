@@ -21,6 +21,10 @@ class FerryApplication : Application() {
         super.onCreate()
         Permissions.refresh(this)
         FerryEngine.create(this)
+        // Sweeps cache copies a share made that no batch names any more,
+        // then keeps watching for the rest to reach Done.
+        // docs/ux-fix-plan.md item 1.
+        ShareIntake.start(this)
         // The Files app can start this process for FerryDocumentsProvider
         // with no activity and no service in front of it. Only start()
         // opens the shared root, so without this call every query from the

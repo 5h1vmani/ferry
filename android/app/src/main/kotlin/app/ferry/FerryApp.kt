@@ -6,6 +6,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -71,6 +72,7 @@ fun FerryApp(
     onRequestCamera: () -> Unit,
     onRequestLocation: () -> Unit,
     onSetAdvertising: (Boolean) -> Unit,
+    onSendFilesClick: () -> Unit,
 ) {
     val darkTheme = isSystemInDarkTheme()
     val baseScheme = if (darkTheme) darkColorScheme() else lightColorScheme()
@@ -88,6 +90,17 @@ fun FerryApp(
     val screen: Screen = screenFromSavedName(screenName)
     fun goTo(next: Screen) {
         screenName = next.toSavedName()
+    }
+
+    // A share from another app shows Devices, whatever screen was in front:
+    // the empty state with no Mac paired, or the pushed transfer once one
+    // is. docs/ux-fix-plan.md item 1. The counter is 0 before any share, so
+    // the first composition does not navigate anywhere on its own.
+    val shareNavigateHome by ShareIntake.navigateHome.collectAsState()
+    LaunchedEffect(shareNavigateHome) {
+        if (shareNavigateHome > 0) {
+            goTo(Screen.Devices)
+        }
     }
 
     // The system back gesture otherwise finishes the activity from every
@@ -182,6 +195,7 @@ fun FerryApp(
                     goTo(Screen.Pairing)
                 },
                 onSettingsClick = { goTo(Screen.Settings) },
+                onSendFilesClick = onSendFilesClick,
                 onRetryGroup = { group ->
                     // A batch retries every failed transfer in it, in one
                     // tap rather than one tap per file. A lone transfer's

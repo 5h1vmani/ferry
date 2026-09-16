@@ -716,9 +716,13 @@ a file from the Mac lands in the first root the phone lists, in `Download`:
 first and treats `OpError::AlreadyExists` as success, because `push` does
 not create the parent folder (`push.rs`, `open_local`). Root names match
 ignoring case, as item 15 says. A push to a device that is not reachable
-follows the same rule as a pull: the builder of item 1 reads
-`transfer.rs`, records here whether it queues or fails, and the app shows
-the answer.
+fails outright, unlike a pull. `push_files` dials the device first, to
+confirm the remote folder is really a folder, before it queues anything
+(`push.rs`, `push_files`, near line 198); that dial returns
+`Runtime::NotReachable` when no address connects (`transfer.rs`, `dial`,
+lines 622 to 644), so `push_files` returns the same error at once and the
+app shows it. `pull` and single-file `push` differ: both queue first and
+resume on their own once the device is reachable again.
 
 ### 6. The mount: built
 

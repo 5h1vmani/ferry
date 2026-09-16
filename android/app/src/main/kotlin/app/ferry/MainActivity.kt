@@ -1,6 +1,8 @@
 package app.ferry
 
 import android.Manifest
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,6 +20,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var notificationPrompt: ActivityResultLauncher<String>
     private lateinit var cameraPrompt: ActivityResultLauncher<String>
     private lateinit var locationPrompt: ActivityResultLauncher<String>
+
+    // The Devices screen's "Send files" control, docs/ux-fix-plan.md item 1.
+    // Opens the system picker for one or more documents, and feeds the
+    // chosen paths through the same call a share from another app uses.
+    private lateinit var sendFilesPrompt: ActivityResultLauncher<Array<String>>
 
     // True once the person has granted on the first run screen. The
     // notification prompt follows the all files access screen, which is
@@ -77,6 +84,9 @@ class MainActivity : ComponentActivity() {
             // re-register for.
             NetworkName.refresh(this)
         }
+        sendFilesPrompt = registerForActivityResult(
+            ActivityResultContracts.OpenMultipleDocuments(),
+        ) { uris -> handleSharedUris(uris) }
         setContent {
             FerryApp(
                 onGrantFirstRunAccess = ::grantFirstRunAccess,
@@ -89,8 +99,46 @@ class MainActivity : ComponentActivity() {
                 onRequestCamera = ::requestCamera,
                 onRequestLocation = ::requestLocationIfNeeded,
                 onSetAdvertising = ::setAdvertising,
+                onSendFilesClick = { sendFilesPrompt.launch(arrayOf("*/*")) },
             )
         }
+        handleIntentIfShare(intent)
+    }
+
+    // A share from another app arrives here when this activity is not
+    // already the front of the task; singleTop in the manifest sends a
+    // second one to onNewIntent instead of a new instance, so one share
+    // never builds a second engine.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntentIfShare(intent)
+    }
+
+    // docs/ux-fix-plan.md item 1. Every path resolves off the main thread,
+    // because a content URI can mean a disk copy, and the push itself
+    // dials the Mac. FerryEngine.pushShared does nothing when no Mac is
+    // paired; requestNavigateHome shows Devices either way, since that is
+    // where the empty state, and the pushed transfer, both are.
+    private fun handleIntentIfShare(intent: Intent) {
+        if (!ShareIntake.isShareIntent(intent)) {
+            return
+        }
+        handleSharedUris(ShareIntake.urisFrom(intent))
+    }
+
+    private fun handleSharedUris(uris: List<Uri>) {
+        if (uris.isEmpty()) {
+            return
+        }
+        ShareIntake.requestNavigateHome()
+        val context = applicationContext
+        Thread {
+            val paths = ShareIntake.resolveToLocalPaths(context, uris)
+            if (paths.isNotEmpty()) {
+                FerryEngine.pushShared(paths)
+            }
+        }.start()
     }
 
     override fun onResume() {

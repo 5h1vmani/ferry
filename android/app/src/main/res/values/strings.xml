@@ -28,6 +28,10 @@
          says the same kind of thing on both platforms. -->
     <string name="action_forget_this_device">Forget this Mac</string>
     <string name="action_open_settings">Open settings</string>
+    <!-- The Devices screen's share control, docs/ux-fix-plan.md item 1.
+         Opens the system picker; the same words on the Mac name the Finder
+         Services entry and the drop target's own control. -->
+    <string name="action_send_files">Send files</string>
     <string name="cd_back">Back</string>
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
     <string name="dot_separator"> · </string>
