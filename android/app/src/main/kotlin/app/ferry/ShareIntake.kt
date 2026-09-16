@@ -5,10 +5,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -105,7 +107,7 @@ object ShareIntake {
 
     private fun resolveOne(context: Context, uri: Uri): String? {
         val direct = mediaStorePath(context, uri)
-        if (direct != null) {
+        if (direct != null && isUnderExternalStorage(direct)) {
             val file = File(direct)
             if (file.isFile && file.canRead()) {
                 return direct
@@ -113,10 +115,25 @@ object ShareIntake {
         }
         return try {
             copyToCache(context, uri)
-        } catch (e: java.io.IOException) {
+        } catch (e: IOException) {
             android.util.Log.w(LOG_TAG, "share content could not be read: $uri", e)
             null
         }
+    }
+
+    // The engine's LocalFs opens the parent folder of whatever path it is
+    // given (docs/engine-contract.md item 5), so a `_data` path outside the
+    // phone's own shared root is refused rather than handed to the engine
+    // directly; it is copied into the cache instead, the same as any path
+    // this app cannot vouch for.
+    private fun isUnderExternalStorage(path: String): Boolean {
+        val root = Environment.getExternalStorageDirectory().canonicalFile.path
+        val candidate = try {
+            File(path).canonicalFile.path
+        } catch (e: IOException) {
+            return false
+        }
+        return candidate == root || candidate.startsWith(root + File.separator)
     }
 
     // The `_data` column, when the provider is MediaStore and the row
@@ -141,17 +158,42 @@ object ShareIntake {
         return null
     }
 
+    // The name comes from another app's provider, so it is not trusted with
+    // a raw file path: a name such as "../../shared_prefs/x.xml" would
+    // write outside the fresh folder made for it below.
     private fun copyToCache(context: Context, uri: Uri): String {
-        val name = displayNameOf(context.contentResolver, uri)
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
+            throw IOException("refused scheme: ${uri.scheme}")
+        }
+        val rawName = displayNameOf(context.contentResolver, uri)
             ?: uri.lastPathSegment
             ?: UUID.randomUUID().toString()
+        val name = sanitizedFileName(rawName)
         val dir = File(File(context.cacheDir, CACHE_SUBDIR), UUID.randomUUID().toString())
         dir.mkdirs()
         val target = File(dir, name)
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(target).use { output -> input.copyTo(output) }
+        // Belt and braces on top of sanitizedFileName: the copy is refused
+        // unless it still lands directly inside the folder made for it.
+        if (target.canonicalFile.parentFile != dir.canonicalFile) {
+            throw IOException("refused path escape: $rawName")
         }
+        val input = context.contentResolver.openInputStream(uri)
+            ?: throw IOException("no stream for $uri")
+        input.use { source -> FileOutputStream(target).use { output -> source.copyTo(output) } }
         return target.absolutePath
+    }
+
+    // Reduces a name from another app to a plain file name: its last path
+    // segment, or a fresh UUID when that segment is empty, ".", "..", or
+    // holds a control character or a slash.
+    private fun sanitizedFileName(rawName: String): String {
+        val lastSegment = rawName.substringAfterLast('/')
+        val invalid = lastSegment.isEmpty() ||
+            lastSegment == "." ||
+            lastSegment == ".." ||
+            lastSegment.contains('/') ||
+            lastSegment.any { it.isISOControl() }
+        return if (invalid) UUID.randomUUID().toString() else lastSegment
     }
 
     private fun displayNameOf(resolver: ContentResolver, uri: Uri): String? {

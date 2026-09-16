@@ -724,6 +724,11 @@ lines 622 to 644), so `push_files` returns the same error at once and the
 app shows it. `pull` and single-file `push` differ: both queue first and
 resume on their own once the device is reachable again.
 
+The phone's share target accepts only `content://` URIs from the app that
+shared them, never a raw file path. A file it copies out of one is named
+by that URI's last path segment alone, sanitized, inside a folder made
+for that one copy, so nothing the sharing app names can land outside it.
+
 ### 6. The mount: built
 
 The Finder mount is a WebDAV bridge, as ADR 0008 decided. The bridge
