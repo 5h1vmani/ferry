@@ -1,10 +1,11 @@
-// The one place the engine's types are read.
+// The one place most of the engine's types are read.
 //
 // Everything the screens show is a snapshot from Model/Snapshot.swift.
 // This file turns the values UniFFI exports into those snapshots, and it is
-// the only file in the app that names DeviceInfo, TransferInfo, Entry, or
-// PairingState. A view that needed a new engine field would change this
-// file and its own body, and nothing in between.
+// the only file in the app that names DeviceInfo, TransferInfo, or
+// PairingState. `Entry` is named only in EngineModel.swift, for the landing
+// folder it resolves. A view that needed a new engine field would change
+// this file and its own body, and nothing in between.
 //
 // Every item in docs/engine-contract.md that a screen reads is built. The
 // items still marked deferred there (none today) would carry a default here
