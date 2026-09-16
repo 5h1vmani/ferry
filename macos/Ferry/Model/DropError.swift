@@ -11,6 +11,9 @@ enum DropError: Error {
     case folderNotSupported
     /// The device lists no root to land files in.
     case noLandingFolder
+    /// One of the URLs to send was not a file on this Mac.
+    /// `docs/audits/ux-gestures.md`, finding 4.
+    case nonFileURL
 }
 
 extension DropError {
@@ -28,6 +31,13 @@ extension DropError {
                 whatStopped: S.drop.noLandingFolderStopped,
                 why: S.drop.noLandingFolderWhy,
                 whatToDo: S.drop.noLandingFolderToDo,
+                canRetry: canRetry
+            )
+        case .nonFileURL:
+            return ThreePartError(
+                whatStopped: S.drop.nonFileURLStopped,
+                why: S.drop.nonFileURLWhy,
+                whatToDo: S.drop.nonFileURLToDo,
                 canRetry: canRetry
             )
         }

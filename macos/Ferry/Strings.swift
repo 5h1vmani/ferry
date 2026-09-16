@@ -136,6 +136,12 @@ enum S {
         static let noLandingFolderWhy = "The device shares no folder to land them in."
         static let noLandingFolderToDo = "Try again once the device shares a folder."
 
+        /// One item was not a file on this Mac, such as a web address.
+        /// `docs/audits/ux-gestures.md`, finding 4.
+        static let nonFileURLStopped = "The files were not sent."
+        static let nonFileURLWhy = "One of them was not a file on this Mac."
+        static let nonFileURLToDo = "Use Send files… instead."
+
         /// The folder name a gesture-started push always lands in, inside
         /// the first root the device lists. `docs/engine-contract.md`,
         /// item 5, "Where a push lands".

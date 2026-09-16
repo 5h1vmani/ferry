@@ -691,6 +691,13 @@ final class EngineModel: ObservableObject {
     /// the engine has no way to push one yet. `docs/ux-fix-plan.md`, item
     /// 3.
     func send(urls: [URL], toDevice keyHex: String) {
+        // Both drop targets, the Send files panel, and the Finder service
+        // all call this, so one guard here covers every entry point.
+        // `docs/audits/ux-gestures.md`, finding 4.
+        guard urls.allSatisfy(\.isFileURL) else {
+            actionError = DropError.nonFileURL.threePart(canRetry: false)
+            return
+        }
         guard urls.allSatisfy({ !EngineModel.isFolder($0) }) else {
             actionError = DropError.folderNotSupported.threePart(canRetry: false)
             return
