@@ -603,7 +603,12 @@ fn send<S: Read + Write>(
 ) -> Result<(), Outcome> {
     let manifest = &transfer.manifest;
     let (fs, leaf) = open_local(&plan.source)?;
-    let partial = partial_path(&plan.destination).map_err(Outcome::Fatal)?;
+    let partial =
+        partial_path(&plan.destination).map_err(|error| Outcome::Fatal(from_path(error)))?;
+    // This function does not log a running byte count, unlike
+    // `dav/put.rs`'s landing, so the count `write_all_remote` keeps is
+    // never read back.
+    let mut bytes_written = 0u64;
 
     {
         let mut state = lock(&shared.state);
@@ -649,7 +654,8 @@ fn send<S: Read + Write>(
             // did.
             return Err(Outcome::Fatal(failed("TransferError::ShortRead")));
         }
-        write_all_remote(client, &partial, offset, &bytes).map_err(|error| classify_rpc(&error))?;
+        write_all_remote(client, &partial, offset, &bytes, &mut bytes_written)
+            .map_err(|error| classify_rpc(&error))?;
         reporter.moved(offset + u64::from(length), manifest.length());
         if shared.stopping() {
             return Err(Outcome::Retry(failed("Runtime::NotReachable")));
@@ -751,16 +757,27 @@ fn first_mismatch(local: &Manifest, remote: &Manifest) -> usize {
 /// `docs/engine-contract.md` item 5: a fixed suffix, not a per-attempt
 /// random one, so a fresh attempt on the same transfer continues the same
 /// partial rather than starting a new one.
-fn partial_path(destination: &RemotePath) -> Result<RemotePath, FerryError> {
-    RemotePath::parse(&format!("{}.ferry-part", destination.as_str())).map_err(from_path)
+///
+/// `dav/put.rs`'s landing shares this same reasoning for a new file's own
+/// partial: that bridge only ever tries a `PUT` once per HTTP request, but
+/// a fixed name still means a stray partial from an earlier, failed
+/// request is overwritten rather than left to accumulate. `pub(crate)` so
+/// both call it instead of each parsing its own.
+pub(crate) fn partial_path(destination: &RemotePath) -> Result<RemotePath, PathError> {
+    RemotePath::parse(&format!("{}.ferry-part", destination.as_str()))
 }
 
 /// Write one range to the peer, in pieces one `write` call accepts.
-fn write_all_remote<S: Read + Write>(
+/// `bytes_written` is increased by every byte actually sent, success or
+/// not: `dav/put.rs`'s landing logs what a failed write still managed, so
+/// it passes its own running total; a caller with nothing to log, such as
+/// this file's own [`send`], passes a scratch counter it never reads.
+pub(crate) fn write_all_remote<S: Read + Write>(
     client: &mut Client<S>,
     path: &RemotePath,
     offset: u64,
     bytes: &[u8],
+    bytes_written: &mut u64,
 ) -> Result<(), RpcError> {
     let cap = usize::try_from(limits::MAX_WRITE_LEN).unwrap_or(usize::MAX);
     let mut written = 0usize;
@@ -782,6 +799,7 @@ fn write_all_remote<S: Read + Write>(
         if sent == 0 || usize::try_from(sent).unwrap_or(usize::MAX) > piece {
             return Err(RpcError::Remote(OpError::Internal));
         }
+        *bytes_written += u64::from(sent);
         written += usize::try_from(sent).unwrap_or(piece);
     }
     Ok(())
