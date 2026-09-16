@@ -28,9 +28,16 @@ final class NetworkName: NSObject {
     private let client: CWWiFiClient
     private let locationManager: CLLocationManager
 
+    /// False when `startMonitoringEvent` failed to start: a later network
+    /// change would never reach `onChange`, so `currentName` answers nil
+    /// from then on rather than a name that could go stale forever.
+    /// `docs/audits/principles.md`, M18.
+    private var isMonitoring = true
+
     /// The name right now, read fresh rather than cached: `EngineModel`
     /// calls this once, right after the engine starts.
     var currentName: String? {
+        guard isMonitoring else { return nil }
         guard let ssid = client.interface()?.ssid(), !ssid.isEmpty else { return nil }
         return ssid
     }
@@ -42,10 +49,20 @@ final class NetworkName: NSObject {
         super.init()
         locationManager.delegate = self
         client.delegate = self
-        try? client.startMonitoringEvent(with: .ssidDidChange)
+        do {
+            try client.startMonitoringEvent(with: .ssidDidChange)
+        } catch {
+            // Reported the same way Settings already states a refused
+            // location permission: the network name cannot be read.
+            isMonitoring = false
+        }
     }
 
     deinit {
+        // Errors are swallowed here the same way FinderMount.unmount
+        // swallows them: this runs as EngineModel.stop() tears the model
+        // down, presence is reset right after, and nothing is left to
+        // report a failure to.
         try? client.stopMonitoringEvent(with: .ssidDidChange)
     }
 

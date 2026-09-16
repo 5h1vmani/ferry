@@ -137,6 +137,11 @@ struct DeviceDetail: View {
             landingFolder = nil
             return
         }
-        landingFolder = try? await model.landingFolder(forDevice: device.keyHex)
+        do {
+            landingFolder = try await model.landingFolder(forDevice: device.keyHex)
+        } catch {
+            landingFolder = nil
+            model.actionError = ThreePartError.from(error, canRetry: false)
+        }
     }
 }

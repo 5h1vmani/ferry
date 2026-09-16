@@ -238,7 +238,11 @@ final class EngineModel: ObservableObject {
             guard let path = deviceInfos[index].mountPath else { continue }
             guard !FileManager.default.fileExists(atPath: path) else { continue }
             deviceInfos[index].mountPath = nil
-            try? engine?.setMountPath(deviceKeyHex: deviceInfos[index].keyHex, path: nil)
+            do {
+                try engine?.setMountPath(deviceKeyHex: deviceInfos[index].keyHex, path: nil)
+            } catch {
+                report(error)
+            }
         }
     }
 
@@ -541,7 +545,11 @@ final class EngineModel: ObservableObject {
             FinderMount.unmount(path: path)
         }
         engine?.mountStop(deviceKeyHex: keyHex)
-        try? engine?.setMountPath(deviceKeyHex: keyHex, path: nil)
+        do {
+            try engine?.setMountPath(deviceKeyHex: keyHex, path: nil)
+        } catch {
+            report(error)
+        }
     }
 
     // MARK: - Pairing
