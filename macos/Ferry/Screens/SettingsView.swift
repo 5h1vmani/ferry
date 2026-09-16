@@ -82,7 +82,7 @@ struct SettingsView: View {
                 // words are the same ones shown there.
                 if model.presence.isQuietOnThisNetwork {
                     VStack(alignment: .leading, spacing: FerrySpace.s1) {
-                        Text(quietWhy)
+                        Text(model.presence.quietOnThisNetworkLine)
                             .font(FerryFont.caption)
                             .foregroundStyle(FerryColor.textSecondary)
                         if model.presence.networkName == nil {
@@ -96,10 +96,6 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding(FerrySpace.s5)
         .frame(width: 480)
-    }
-
-    private var quietWhy: String {
-        model.presence.networkName == nil ? S.presence.quietUnknownNetwork : S.presence.quietKnownNetwork
     }
 
     private func openLocationSettings() {

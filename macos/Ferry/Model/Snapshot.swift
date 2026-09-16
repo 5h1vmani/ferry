@@ -42,6 +42,14 @@ struct PresenceSnapshot: Equatable {
     /// progress. `docs/engine-contract.md`, item 18.
     var isQuietOnThisNetwork: Bool { isAdvertising && !isWifiPresenceOn }
 
+    /// The quiet-on-this-network line, worded by whether the name is
+    /// known. `PresenceControl` and Settings, Networks both show this
+    /// line, so it is decided once here. `docs/engine-contract.md`, item
+    /// 18.
+    var quietOnThisNetworkLine: String {
+        networkName == nil ? S.presence.quietUnknownNetwork : S.presence.quietKnownNetwork
+    }
+
     static let unknown = PresenceSnapshot(
         isAdvertising: false,
         activeTransport: nil,

@@ -49,7 +49,7 @@ struct PresenceControl: View {
                 // Same reasoning, for the quiet-on-this-network state
                 // (docs/engine-contract.md, item 18): the words are the
                 // same ones Settings, Networks shows for this state.
-                Text(quietLine)
+                Text(presence.quietOnThisNetworkLine)
                     .font(FerryFont.caption)
                     .foregroundStyle(FerryColor.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -70,12 +70,6 @@ struct PresenceControl: View {
 
     private var label: String {
         presence.isAdvertising ? S.presence.advertising : S.presence.notAdvertising
-    }
-
-    /// The quiet-on-this-network line, worded by whether the name is
-    /// known. `docs/engine-contract.md`, item 18.
-    private var quietLine: String {
-        presence.networkName == nil ? S.presence.quietUnknownNetwork : S.presence.quietKnownNetwork
     }
 
     /// Off, the block lifts out of the sidebar with one step of grey and
@@ -102,7 +96,7 @@ struct PresenceControl: View {
         guard presence.isQuietOnThisNetwork else {
             return S.presence.accessibilityOn
         }
-        return S.presence.accessibilityQuiet(why: quietLine)
+        return S.presence.accessibilityQuiet(why: presence.quietOnThisNetworkLine)
     }
 }
 
