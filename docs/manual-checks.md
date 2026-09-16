@@ -316,6 +316,98 @@ Build and install both apps as in task 3.
 For each step, one line: worked, or what you saw instead. Paste the exact
 words from any error block.
 
+## Task 7: share, drop, and notify
+
+**Open.** Added 16 September 2026. This is `docs/ux-fix-plan.md`, items 1
+to 5. Nothing below has run on a real device yet.
+
+Build and install both apps as in task 3. Pair them and keep both on the
+same Wi-Fi.
+
+### Part A: the phone shares to the Mac
+
+1. On the phone, open Photos, pick one photo, and share it to Ferry. It
+   should appear under the Mac in Transfers and land in
+   `~/Downloads/Ferry` on the Mac.
+2. Share two files at once. They should appear as one batch.
+3. On Devices, tap "Send files", pick a document, and confirm it lands the
+   same way.
+4. Turn the Mac's Wi-Fi off and share a file. The phone should show an
+   error block that says the Mac is not reachable, and nothing should be
+   queued.
+5. Share a file from an app that is not a gallery, for example a file
+   from Chrome's downloads. It should still send. After it ends Done, the
+   folder `share` inside Ferry's cache should be empty. Android's Settings,
+   Apps, Ferry, Storage shows the cache size.
+6. Forget the Mac on the phone, then share a file. Devices should open in
+   its empty state and nothing should be sent.
+
+### Part B: the phone's transfer notification
+
+7. Start a large push from the phone, then leave the app with advertising
+   on. A second notification should show a moving progress bar.
+8. Let it finish. The notification should change to the done line with
+   files, size, and duration.
+9. Turn Wi-Fi off in the middle of a push so it fails. The notification
+   should show what stopped, with a Retry action. Turn Wi-Fi on and tap
+   Retry. The push should continue.
+10. The "reachable" notification should keep its words and actions
+    through all of this.
+
+### Part C: the Mac notifies
+
+11. Start any transfer. macOS should ask once for notification permission.
+    Allow it.
+12. Let a transfer finish. A notification should name the file or folder
+    and show bytes and duration.
+13. Make a transfer fail. A notification should show the first line of
+    the error.
+14. While a transfer runs, the Dock icon should show a badge with the
+    running count. It should clear when nothing runs.
+15. Open the menu bar item while a batch runs. It should show one line per
+    running batch: label, progress bar, speed.
+
+### Part D: the Mac drops and sends
+
+16. Drag a file from Finder onto the device row in the sidebar, then
+    another onto the detail pane. Both should start a push into
+    `Download` on the phone.
+17. Drag a folder onto the device row. It should be refused with a
+    three-part error, not dropped silently.
+18. Drop a file on the Ferry Dock icon. It should push the same way.
+19. Right-click the device row. "Open in Finder" should appear only while
+    the phone is mounted. "Send files…" and "Forget" should appear and
+    work.
+20. Use "Send files…" from the row, from the app menu, and with Cmd+O. All
+    three should open the same panel and land in the same folder.
+21. The caption at the top of the detail pane should say where a drop
+    lands and name the phone, and only while the phone is reachable.
+
+### Part E: the Finder service
+
+22. In Finder, open the phone's mounted volume, select a file, right-click,
+    and choose Services, "Send with Ferry". It should appear in Transfers
+    as a pull, not as a Finder copy.
+23. Do the same on a folder inside the mount. It should appear as one
+    batch.
+24. Select a file on the Mac's own disk and use the same service. It
+    should push to the phone.
+25. Right-click a finished pull in Transfers. "Reveal in Finder" should
+    appear only while the file is still on disk, and should open it.
+26. Right-click a failed row. "Retry" should appear and work. Select the
+    device and press Cmd+R. Every failed transfer of that device should
+    retry.
+
+If the service does not appear in the menu, open System Settings,
+Keyboard, Keyboard Shortcuts, Services, and check "Send with Ferry" under
+Files and Folders. A Debug build may need one launch before macOS lists
+it.
+
+### What to send back
+
+For each step, one line: worked, or what you saw instead. Paste the exact
+words from any error block or notification.
+
 ## Sending results back
 
 You do not need to write anything neat. Copy and paste is fine. Paste text

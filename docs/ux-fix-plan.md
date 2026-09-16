@@ -139,10 +139,12 @@ Where a gesture-started push lands, and the mkdir rule, are in
 
 | Item | Status |
 |---|---|
-| Batch 0 | In progress, 16 September 2026 |
-| 1. Phone share target | Not started |
-| 2. Notifications | Not started |
-| 3. Mac drop and service | Not started |
-| 4. Files section removed | Not started |
-| 5. Menus and shortcuts | Not started |
-| 6. Shiva looks | Waits on 1 to 5 |
+| Batch 0 | Done, 16 September 2026, commits c927e33 and 9017ff9 |
+| 1. Phone share target | Built, 16 September 2026, branch `ux-phone` merged. Not run on a device. |
+| 2. Notifications | Built on both, 16 September 2026. Not run on a device. |
+| 3. Mac drop and service | Built, 16 September 2026, branch `ux-mac` merged. Not run on a device. |
+| 4. Files section removed | Done, 16 September 2026. |
+| 5. Menus and shortcuts | Built, 16 September 2026. Not run on a device. |
+| 6. Shiva looks | Waits on the full gate and the audit. The steps are `docs/manual-checks.md` task 7. |
+
+The audit of the merged range is `docs/audits/ux-gestures.md`.
