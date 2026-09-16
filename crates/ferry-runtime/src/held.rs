@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 
 use ferry_core::limits;
 use ferry_core::session::SessionId;
-use ferry_core::wire::{Decoder, Encoder};
+use ferry_core::wire::{Decoder, Encoder, decode_i64, encode_i64};
 
 use crate::FerryError;
 use crate::errors::failed;
@@ -384,14 +384,6 @@ fn repair_torn_tail(path: &Path, good_len: usize) {
 // `Encoder` and `Decoder` have no signed integer methods, so a modified time
 // is carried as its bit pattern instead. `ferry-core`'s `peers.rs` does the
 // same, for the same reason.
-fn encode_i64(value: i64) -> u64 {
-    u64::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn decode_i64(value: u64) -> i64 {
-    i64::from_ne_bytes(value.to_ne_bytes())
-}
-
 // Write `bytes` to `path` so a crash mid write can never leave a short file
 // at `path`. The pattern `record.rs` and `batch.rs` each write again for
 // their own file, rather than sharing one function for all three.

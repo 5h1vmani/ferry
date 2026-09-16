@@ -22,7 +22,7 @@
 use crate::chunk::Manifest;
 use crate::limits;
 use crate::path::RemotePath;
-use crate::wire::{Decoder, Encoder, WireError};
+use crate::wire::{Decoder, Encoder, WireError, decode_i64, encode_i64};
 
 // Wire opcodes for `Request`. These numbers are the wire format: a variant
 // keeps its number even if the enum's declaration order changes later.
@@ -684,14 +684,6 @@ fn decode_path(d: &mut Decoder) -> Result<RemotePath, WireError> {
 // `i64` to `u64` would be a truncating cast in clippy's eyes even though no
 // bits are lost, so the bits are reinterpreted explicitly instead. This keeps
 // negative values exact.
-fn encode_i64(value: i64) -> u64 {
-    u64::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn decode_i64(value: u64) -> i64 {
-    i64::from_ne_bytes(value.to_ne_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Entry, FileKind, OpError, Request, Response, WireError};

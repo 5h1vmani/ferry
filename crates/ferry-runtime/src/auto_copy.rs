@@ -47,7 +47,7 @@ use ferry_core::localfs::LocalFs;
 use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, FileOps, exchange_hello};
 use ferry_core::session::SessionId;
-use ferry_core::wire::{Decoder, Encoder};
+use ferry_core::wire::{Decoder, Encoder, decode_i64, encode_i64};
 
 use crate::batch::{self, BatchRecord};
 use crate::engine::{Shared, SocketRegistration, leaf_of, mark_reachable, notify};
@@ -216,14 +216,6 @@ fn encode_rows(rows: &BTreeMap<String, AutoCopyRow>) -> Vec<u8> {
         }
     }
     e.finish()
-}
-
-fn encode_i64(value: i64) -> u64 {
-    u64::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn decode_i64(value: u64) -> i64 {
-    i64::from_ne_bytes(value.to_ne_bytes())
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), FerryError> {

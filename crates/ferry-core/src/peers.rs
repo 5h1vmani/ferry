@@ -60,7 +60,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::noise::{NoiseError, PublicKey, StaticKey};
-use crate::wire::{Decoder, Encoder, WireError};
+use crate::wire::{Decoder, Encoder, WireError, decode_i64, encode_i64};
 
 /// The newest peer store format this build writes, and one of the two it
 /// reads. See [`PeerStore::load`] for how a version 1 file is handled.
@@ -332,14 +332,6 @@ fn encode_peers(peers: &BTreeMap<PublicKey, Peer>) -> Vec<u8> {
 // count is carried as its bit pattern instead. An `as` cast between `i64`
 // and `u64` would be a truncating cast in clippy's eyes even though no bits
 // are lost, so the bits are reinterpreted explicitly. `ops.rs` does the same.
-fn encode_i64(value: i64) -> u64 {
-    u64::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn decode_i64(value: u64) -> i64 {
-    i64::from_ne_bytes(value.to_ne_bytes())
-}
-
 /// Where this device's own static key lives.
 ///
 /// The real implementations are the macOS Keychain and Android's

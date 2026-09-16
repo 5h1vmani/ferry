@@ -107,7 +107,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use ferry_core::limits::MAX_PATH_LEN;
-use ferry_core::wire::{Decoder, Encoder, WireError};
+use ferry_core::wire::{Decoder, Encoder, WireError, decode_i64, encode_i64};
 
 /// The version byte every day file starts with.
 const FORMAT_VERSION: u8 = 1;
@@ -352,15 +352,6 @@ fn day_key(unix_secs: i64) -> String {
 /// `Encoder` has no signed integer method, so a Unix second count is carried
 /// as its bit pattern. `ferry-core`'s `peers.rs` does the same, for the same
 /// reason.
-fn encode_i64(value: i64) -> u64 {
-    u64::from_ne_bytes(value.to_ne_bytes())
-}
-
-/// The inverse of [`encode_i64`].
-fn decode_i64(value: u64) -> i64 {
-    i64::from_ne_bytes(value.to_ne_bytes())
-}
-
 /// Write an optional byte count as a presence byte followed by the value, or
 /// a zero value when there is none.
 fn encode_option_u64(encoder: &mut Encoder, value: Option<u64>) {
