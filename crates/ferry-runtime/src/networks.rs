@@ -11,12 +11,9 @@
 //! UTF-8. It owns [`browse_allowed`], which does not need `reachable`, and
 //! [`wifi_presence`], which does.
 //!
-//! The file is written the way `record.rs` and `auto_copy.rs` write theirs:
-//! the bytes go to a temporary name, are flushed to the disk, and only then
-//! renamed over the real name. A rename is one step, so the real name always
-//! holds either the old list or the new one, never half of either. The file
-//! is created in mode `0o600` on Unix, as `auto_copy.rs` creates its own: a
-//! list of the networks a person is on says where they have been.
+//! The file is written through `privatefile::write_atomic_private`, made
+//! private in mode `0o600` on Unix: a list of the networks a person is on
+//! says where they have been.
 //!
 //! A missing file is an empty list. A file this build cannot read is an
 //! empty list too. An empty list trusts every network, which is what a
@@ -24,10 +21,7 @@
 //! file costs nothing but the names.
 
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-
-use ferry_core::session::SessionId;
 
 use std::sync::atomic::Ordering;
 
@@ -246,58 +240,8 @@ impl TrustedNetworks {
             text.push_str(name);
             text.push('\n');
         }
-        write_private_file(&self.path, text.as_bytes())
+        crate::privatefile::write_atomic_private(&self.path, text.as_bytes())
     }
-}
-
-/// Write `bytes` at `path` through a temporary name and a rename.
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), FerryError> {
-    let temporary = temporary_name(path)?;
-    let written = write_and_sync(&temporary, bytes).and_then(|()| fs::rename(&temporary, path));
-    if written.is_err() {
-        // A temporary file that is left behind is never read again, but it
-        // would sit in the app's own folder for ever.
-        drop(fs::remove_file(&temporary));
-        return Err(failed("TransferError::Local"));
-    }
-    Ok(())
-}
-
-fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = open_new_private_file(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-/// Create `path` in mode `0o600` on Unix, the same private mode
-/// `auto_copy.rs` gives its own file, set as part of the same syscall that
-/// creates it so there is no moment where the file exists with a wider mode.
-/// `create_new` refuses to write through anything already at the name,
-/// including a symbolic link someone planted there.
-#[cfg(unix)]
-fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-}
-
-/// A name next to `path` that nothing can be waiting at.
-fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
-    let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{session}.tmp"));
-    Ok(PathBuf::from(name))
 }
 
 /// Compare the browse-allowed and Wi-Fi presence rules to what is running,

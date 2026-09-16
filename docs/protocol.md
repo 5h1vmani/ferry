@@ -317,8 +317,8 @@ large, and must never assume the peer's numbers match its own.
 
 | Limit | This build's value |
 |---|---|
-| `read` length in one request | 1 MiB |
-| `write` bytes in one request | 1 MiB |
+| `read` length in one request | 1 MiB (`MAX_READ_LEN`) |
+| `write` bytes in one request | 1 MiB (`MAX_WRITE_LEN`) |
 | Entries in one `list` response | 1024 |
 | Path length | 1024 bytes |
 | Chunks in one manifest | 32768 |

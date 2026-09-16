@@ -17,7 +17,10 @@ use crate::state::lock;
 use crate::{EngineListener, PairingState};
 
 /// How long a device or transfer change waits before it is reported.
-const HOLD: Duration = Duration::from_millis(250);
+///
+/// `engine.rs`'s access log tick uses this same constant, so the roll-up's
+/// idle rule and the notify hold always match.
+pub(crate) const HOLD: Duration = Duration::from_millis(250);
 
 /// How long a new pairing candidate waits before the list is reported.
 ///

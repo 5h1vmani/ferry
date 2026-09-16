@@ -60,7 +60,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::noise::{NoiseError, PublicKey, StaticKey};
-use crate::wire::{Decoder, Encoder, WireError};
+use crate::wire::{Decoder, Encoder, WireError, decode_i64, encode_i64};
 
 /// The newest peer store format this build writes, and one of the two it
 /// reads. See [`PeerStore::load`] for how a version 1 file is handled.
@@ -328,18 +328,6 @@ fn encode_peers(peers: &BTreeMap<PublicKey, Peer>) -> Vec<u8> {
     e.finish()
 }
 
-// `Encoder` and `Decoder` have no signed integer methods, so a Unix second
-// count is carried as its bit pattern instead. An `as` cast between `i64`
-// and `u64` would be a truncating cast in clippy's eyes even though no bits
-// are lost, so the bits are reinterpreted explicitly. `ops.rs` does the same.
-fn encode_i64(value: i64) -> u64 {
-    u64::from_ne_bytes(value.to_ne_bytes())
-}
-
-fn decode_i64(value: u64) -> i64 {
-    i64::from_ne_bytes(value.to_ne_bytes())
-}
-
 /// Where this device's own static key lives.
 ///
 /// The real implementations are the macOS Keychain and Android's
@@ -510,7 +498,11 @@ fn random_tmp_path(path: &Path) -> Result<PathBuf, PeerError> {
 // Sixteen lowercase hex characters from eight random bytes. Only ever
 // called on the output of `getrandom::fill`, so it does not need to handle
 // arbitrary input.
-fn to_hex(bytes: [u8; 8]) -> String {
+//
+// `pub(crate)` because `discovery.rs` uses the same encoding for its own
+// random instance name, and used to carry an identical copy of this
+// function.
+pub(crate) fn to_hex(bytes: [u8; 8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

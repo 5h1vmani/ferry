@@ -29,34 +29,20 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --all --all-features
+      # Format, lint, and test the Rust workspace with all features. Each
+      # step's own output prints as "gate: <step> ok" or "gate: <step> FAIL".
+      - name: Run the Rust gate
+        run: scripts/gate.sh rust
 
       # A plain run catches a feature gate that hides a compile error.
       - name: Test without optional features
         run: cargo test --all
 
       # The apps are generated from the Rust surface, the design tokens, and
-      # the error table. Each generator has a check mode, and these steps
-      # fail when a committed generated file no longer matches its source.
-      - name: Check the generated tokens and error words
-        run: |
-          python3 scripts/gen_tokens.py --check
-          python3 scripts/gen_errors.py --check
-
-      - name: Check the generated app bindings
-        run: |
-          scripts/gen_bindings.sh /tmp/bindings
-          for f in ferry_runtime.swift ferry_runtimeFFI.h ferry_runtimeFFI.modulemap; do
-            diff "/tmp/bindings/macos/Ferry/Generated/$f" "macos/Ferry/Generated/$f"
-          done
-          diff -r /tmp/bindings/android/app/src/main/kotlin/uniffi android/app/src/main/kotlin/uniffi
+      # the error table. Each generator has a check mode, and this gate
+      # fails when a committed generated file no longer matches its source.
+      - name: Run the generated-file gate
+        run: scripts/gate.sh gen
 
   advisories:
     name: dependency advisories

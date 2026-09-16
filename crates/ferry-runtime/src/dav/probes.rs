@@ -11,6 +11,8 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use ferry_core::localfs::unix_secs_to_system_time;
+
 use crate::state::now_unix_secs;
 
 /// The largest sidecar body this store accepts. Finder's own bookkeeping
@@ -204,21 +206,6 @@ fn modified_time(path: &Path) -> Option<i64> {
         .ok()?
         .as_secs();
     i64::try_from(secs).ok()
-}
-
-/// The inverse of [`modified_time`]'s conversion, for
-/// [`SidecarStore::set_mtime`].
-fn unix_secs_to_system_time(secs: i64) -> SystemTime {
-    let magnitude = std::time::Duration::from_secs(secs.unsigned_abs());
-    if secs >= 0 {
-        SystemTime::UNIX_EPOCH
-            .checked_add(magnitude)
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    } else {
-        SystemTime::UNIX_EPOCH
-            .checked_sub(magnitude)
-            .unwrap_or(SystemTime::UNIX_EPOCH)
-    }
 }
 
 #[cfg(test)]

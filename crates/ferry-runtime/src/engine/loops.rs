@@ -5,13 +5,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::access::{self};
-use crate::notify::Change;
+use crate::notify::{Change, HOLD};
 use crate::state::{DeviceLive, UsbForward, clear_gone_usb_forwards, lock, now_unix_secs};
 use crate::{PairingCandidate, Transport};
 
 use super::{
-    ACCESS_LOG_PRUNE, ACCESS_LOG_TICK, ADB_POLL, FERRY_PHONE_PORT, Shared, add_candidate,
-    last_four, notify,
+    ACCESS_LOG_PRUNE, ADB_POLL, FERRY_PHONE_PORT, Shared, add_candidate, last_four, notify,
 };
 
 /// Connect to our own listener so a blocked `accept` returns.
@@ -28,10 +27,10 @@ pub(crate) fn wake_the_listener(shared: &Shared) {
 /// session `start` runs.
 ///
 /// One loop does both jobs, so pruning needs no periodic thread of its
-/// own: it already has to wake every [`ACCESS_LOG_TICK`] to give the
-/// roll-up's five second idle rule somewhere to run, which is the same
-/// cadence `notify.rs` reports on, and an hourly job can ride along on top
-/// of that (docs/engine-contract.md, item 13).
+/// own: it already has to wake every [`HOLD`] to give the roll-up's five
+/// second idle rule somewhere to run, which is the same cadence
+/// `notify.rs` reports on, because both read the same constant
+/// (docs/engine-contract.md, item 13).
 ///
 /// `docs/audits/fable-lifecycle.md`, finding 6: a prune's directory scan
 /// and unlinks used to run with `shared.access_log` locked the whole time,
@@ -65,7 +64,7 @@ pub(crate) fn access_log_loop(shared: &Arc<Shared>) {
             }
             next_prune = Instant::now() + ACCESS_LOG_PRUNE;
         }
-        if !shared.rest(ACCESS_LOG_TICK) {
+        if !shared.rest(HOLD) {
             return;
         }
     }

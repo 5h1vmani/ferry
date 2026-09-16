@@ -91,16 +91,21 @@ pub(crate) use loops::{
 /// IANA never assigns to a service, so nothing else can claim it.
 pub const FERRY_PHONE_PORT: u16 = 52_931;
 
+/// The subfolder [`api::transfers::landing_folder`] creates on a Mac peer's
+/// fixed landing folder. `docs/engine-contract.md` item 5, "Where a push
+/// lands": `Downloads/Ferry`, or `<first root>/Ferry` when no root is named
+/// `Downloads`.
+pub const LANDING_SUBFOLDER_MAC: &str = "Ferry";
+
+/// The subfolder [`api::transfers::landing_folder`] creates on a phone
+/// peer's fixed landing folder: `<first root>/Download`.
+pub const LANDING_SUBFOLDER_PHONE: &str = "Download";
+
 /// How long pairing runs before it gives up, unless a test shortens it.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// How often the engine asks `adb` which devices are plugged in.
 const ADB_POLL: Duration = Duration::from_secs(3);
-
-/// How often the access log roll-up is ticked, so an idle entry is
-/// finalised within this long of going quiet, and the listener is told
-/// within this long of that. Matches `notify.rs`'s own `HOLD`.
-const ACCESS_LOG_TICK: Duration = Duration::from_millis(250);
 
 /// How often the access log is pruned of day files past its retention
 /// window, after the pass `start` already ran.

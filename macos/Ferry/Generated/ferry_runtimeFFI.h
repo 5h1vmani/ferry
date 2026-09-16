@@ -303,6 +303,11 @@ uint64_t uniffi_ferry_runtime_fn_constructor_engine_new(RustBuffer config, uint6
 RustBuffer uniffi_ferry_runtime_fn_method_engine_access_log(uint64_t ptr, RustBuffer device_key_hex, uint32_t limit, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ACCESS_LOG_RETENTION_DAYS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_ACCESS_LOG_RETENTION_DAYS
+uint32_t uniffi_ferry_runtime_fn_method_engine_access_log_retention_days(uint64_t ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_AUTO_COPY
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_AUTO_COPY
 RustBuffer uniffi_ferry_runtime_fn_method_engine_auto_copy(uint64_t ptr, RustBuffer device_key_hex, RustCallStatus *_Nonnull out_status
@@ -466,6 +471,11 @@ RustBuffer uniffi_ferry_runtime_fn_method_engine_devices(uint64_t ptr, RustCallS
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_FORGET
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_FORGET
 void uniffi_ferry_runtime_fn_method_engine_forget(uint64_t ptr, RustBuffer key_hex, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_LANDING_FOLDER
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_LANDING_FOLDER
+RustBuffer uniffi_ferry_runtime_fn_method_engine_landing_folder(uint64_t ptr, RustBuffer device_key_hex, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_FN_METHOD_ENGINE_PULL
@@ -798,6 +808,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_access_log(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ACCESS_LOG_RETENTION_DAYS
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_ACCESS_LOG_RETENTION_DAYS
+uint16_t uniffi_ferry_runtime_checksum_method_engine_access_log_retention_days(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_AUTO_COPY
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_AUTO_COPY
 uint16_t uniffi_ferry_runtime_checksum_method_engine_auto_copy(void
@@ -993,6 +1009,12 @@ uint16_t uniffi_ferry_runtime_checksum_method_engine_devices(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_FORGET
 #define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_FORGET
 uint16_t uniffi_ferry_runtime_checksum_method_engine_forget(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_LANDING_FOLDER
+#define UNIFFI_FFIDEF_UNIFFI_FERRY_RUNTIME_CHECKSUM_METHOD_ENGINE_LANDING_FOLDER
+uint16_t uniffi_ferry_runtime_checksum_method_engine_landing_folder(void
     
 );
 #endif

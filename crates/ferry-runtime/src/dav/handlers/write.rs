@@ -508,6 +508,35 @@ fn copy_landing(
     )
 }
 
+/// The declared body length for a `PUT`, checked against
+/// [`http::MAX_PUT_BODY_LEN`].
+///
+/// Returns `None` after writing the refusal to `out`, in which case the
+/// caller closes the connection: `put_file` returns `Ok(false)` right
+/// away, the same as every other case here where nothing is safe to drain
+/// before the next request.
+fn checked_content_length(
+    head: &http::RequestHead,
+    out: &mut impl Write,
+) -> io::Result<Option<u64>> {
+    let Some(content_length) = head.content_length() else {
+        // No declared length at all: there is nothing safe to drain
+        // before the next request, so this closes rather than guessing,
+        // the same reasoning `BodyTooLarge` already carries in `respond`.
+        no_body(out, "411 Length Required")?;
+        return Ok(None);
+    };
+    if content_length > http::MAX_PUT_BODY_LEN {
+        // A declared length is known here, but paying to drain up to 32
+        // GiB just to keep a connection alive is not worth it either;
+        // Finder reconnects, the same as after a 413 anywhere else in
+        // this bridge.
+        no_body(out, "413 Payload Too Large")?;
+        return Ok(None);
+    }
+    Ok(Some(content_length))
+}
+
 /// `PUT` of a real file. `docs/engine-contract.md`, item 6, I2: the body
 /// is spooled to disk in pieces as it arrives, never held whole in
 /// memory. A new destination lands the push way
@@ -521,21 +550,9 @@ pub(crate) fn put_file(
     reader: &mut impl BufRead,
     out: &mut impl Write,
 ) -> io::Result<bool> {
-    let Some(content_length) = head.content_length() else {
-        // No declared length at all: there is nothing safe to drain
-        // before the next request, so this closes rather than guessing,
-        // the same reasoning `BodyTooLarge` already carries in `respond`.
-        no_body(out, "411 Length Required")?;
+    let Some(content_length) = checked_content_length(head, out)? else {
         return Ok(false);
     };
-    if content_length > http::MAX_PUT_BODY_LEN {
-        // A declared length is known here, but paying to drain up to 32
-        // GiB just to keep a connection alive is not worth it either;
-        // Finder reconnects, the same as after a 413 anywhere else in
-        // this bridge.
-        no_body(out, "413 Payload Too Large")?;
-        return Ok(false);
-    }
 
     // From here on, `content_length` is known and within bounds, so a
     // refusal drains the declared body (in bounded pieces, to

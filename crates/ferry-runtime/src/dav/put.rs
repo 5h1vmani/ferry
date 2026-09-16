@@ -5,11 +5,9 @@
 //! `docs/engine-contract.md`, item 6, I2, "I2, saving", reusing the
 //! sender's landing rule from item 5 (`push.rs`): a spool file on this
 //! Mac's own disk, its manifest built once, then chunks written to the
-//! peer, verified by the peer's own manifest, and landed. `push.rs` is
-//! outside this batch's files, so the small amount of wire plumbing below
-//! (`write_all_remote`, `partial_path`) is written again here rather than
-//! shared; the rule it follows is the same one, stated in the module
-//! documentation there.
+//! peer, verified by the peer's own manifest, and landed. The wire
+//! plumbing this needs, `write_all_remote` and `partial_path`, is
+//! `push.rs`'s own; this module calls it rather than carrying a copy.
 //!
 //! # New file versus delta
 //!
@@ -44,6 +42,7 @@ use ferry_core::path::RemotePath;
 use ferry_core::rpc::{Client, FileOps, RpcError};
 
 use crate::engine::Shared;
+use crate::push::{partial_path, write_all_remote};
 
 use super::http;
 
@@ -319,7 +318,7 @@ pub(crate) fn land_new<S: Read + Write>(
     manifest: &Manifest,
     bytes_written: &mut u64,
 ) -> Result<(), RpcError> {
-    let partial = partial_path(destination)?;
+    let partial = partial_path(destination).map_err(|_| RpcError::Remote(OpError::InvalidPath))?;
     match land_new_partial(
         client,
         destination,
@@ -421,48 +420,12 @@ pub(crate) fn land_delta<S: Read + Write>(
     Ok(())
 }
 
-/// Where a new-file landing writes until the whole file verifies on the
-/// peer. A fixed suffix, not a per-attempt random one, matching
-/// `push.rs`'s own reasoning: this bridge only ever tries a `PUT` once
-/// per HTTP request, but a fixed name still means a stray partial from an
-/// earlier, failed request is overwritten rather than left to accumulate.
-fn partial_path(destination: &RemotePath) -> Result<RemotePath, RpcError> {
-    RemotePath::parse(&format!("{}.ferry-part", destination.as_str()))
-        .map_err(|_| RpcError::Remote(OpError::InvalidPath))
-}
-
 /// True when `name`, a path's last segment, is this bridge's own partial
 /// marker. `docs/engine-contract.md`, item 6, I2: "a `.ferry-part` name is
 /// 404 on `GET`, `HEAD`, and `PROPFIND`, and never listed."
 #[must_use]
 pub(crate) fn is_partial_name(name: &str) -> bool {
     name.ends_with(".ferry-part")
-}
-
-/// Write one range to the peer, in pieces one `write` call accepts.
-/// Broadly `push.rs`'s own helper of the same name, plus `bytes_written`,
-/// increased by every byte actually sent, success or not, so a caller can
-/// log what a failed landing managed before it failed.
-fn write_all_remote<S: Read + Write>(
-    client: &mut Client<S>,
-    path: &RemotePath,
-    offset: u64,
-    bytes: &[u8],
-    bytes_written: &mut u64,
-) -> Result<(), RpcError> {
-    let cap = usize::try_from(limits::MAX_WRITE_LEN).unwrap_or(usize::MAX);
-    let mut written = 0usize;
-    while written < bytes.len() {
-        let piece = (bytes.len() - written).min(cap);
-        let at = offset + u64::try_from(written).unwrap_or(0);
-        let sent = client.write(path, at, bytes[written..written + piece].to_vec())?;
-        if sent == 0 {
-            return Err(RpcError::Remote(OpError::Internal));
-        }
-        *bytes_written += u64::from(sent);
-        written += usize::try_from(sent).unwrap_or(piece);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

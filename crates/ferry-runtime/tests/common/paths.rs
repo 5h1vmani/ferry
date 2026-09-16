@@ -156,20 +156,36 @@ impl EngineListener for Recorder {
     }
 }
 
+/// Poll `check` every `tick` until it answers true, or until `patience` runs
+/// out. Returns whether `check` succeeded before the deadline.
+///
+/// The one loop every wait in this crate's tests that has no callback to
+/// wait on is built from. [`poll_until`] and [`poll_until_or_describe`] are
+/// this with [`PATIENCE`] and [`POLL_TICK`] already filled in; a file whose
+/// wait is on a hot path, such as `resume_sweep.rs`, calls this directly
+/// with its own tighter constants instead, since a shared tick that suits
+/// an ordinary test is too coarse for a sweep of hundreds of pulls.
+pub(crate) fn poll_every(patience: Duration, tick: Duration, check: impl Fn() -> bool) -> bool {
+    let deadline = Instant::now() + patience;
+    while Instant::now() < deadline {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(tick);
+    }
+    false
+}
+
 /// Wait until `check` is true, looking again every few milliseconds.
 ///
 /// Some of what these tests watch, such as the byte count of a transfer,
 /// moves without a callback, because callbacks are rationed. So this polls
 /// instead of waiting on the condition variable.
 pub(crate) fn poll_until(what: &str, check: impl Fn() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while Instant::now() < deadline {
-        if check() {
-            return;
-        }
-        std::thread::sleep(POLL_TICK);
-    }
-    panic!("waited {PATIENCE:?} for {what}");
+    assert!(
+        poll_every(PATIENCE, POLL_TICK, check),
+        "waited {PATIENCE:?} for {what}"
+    );
 }
 
 /// Like [`poll_until`], but the panic also carries what `describe` saw at
@@ -180,14 +196,11 @@ pub(crate) fn poll_until_or_describe(
     check: impl Fn() -> bool,
     describe: impl Fn() -> String,
 ) {
-    let deadline = Instant::now() + PATIENCE;
-    while Instant::now() < deadline {
-        if check() {
-            return;
-        }
-        std::thread::sleep(POLL_TICK);
-    }
-    panic!("waited {PATIENCE:?} for {what}; saw: {}", describe());
+    assert!(
+        poll_every(PATIENCE, POLL_TICK, check),
+        "waited {PATIENCE:?} for {what}; saw: {}",
+        describe()
+    );
 }
 
 /// Engines under test.

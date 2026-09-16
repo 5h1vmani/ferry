@@ -19,20 +19,16 @@
 //! the floor and the live count is larger.
 //!
 //! Written the way `record.rs` writes a transfer record: a version byte,
-//! then the bytes go to a temporary name and are renamed over the real one,
-//! so a crash mid write never leaves a short file behind. The pattern is
-//! written again here rather than shared, the same choice `record.rs`
-//! documents for `peers.rs`'s own copy of it.
+//! then the bytes go through `privatefile::write_atomic`, which writes them
+//! to a temporary name and renames it over the real one, so a crash mid
+//! write never leaves a short file behind.
 
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ferry_core::limits;
-use ferry_core::session::SessionId;
 use ferry_core::wire::{Decoder, Encoder};
 
-use crate::errors::failed;
 use crate::state::BatchRow;
 use crate::{Direction, FerryError, Origin};
 
@@ -175,36 +171,7 @@ pub(crate) fn read_batch(path: &Path) -> Option<BatchRecord> {
 /// Returns `TransferError::Local` when local storage refuses the write, and
 /// `TransferError::NoRandomness` when the temporary name cannot be made.
 pub(crate) fn write_batch(path: &Path, record: &BatchRecord) -> Result<(), FerryError> {
-    let bytes = record.encode();
-    let temporary = temporary_name(path)?;
-    let written = write_and_sync(&temporary, &bytes).and_then(|()| fs::rename(&temporary, path));
-    if written.is_err() {
-        // A temporary file left behind is never read again, but it would
-        // otherwise sit in the app's own folder for ever.
-        drop(fs::remove_file(&temporary));
-        return Err(failed("TransferError::Local"));
-    }
-    Ok(())
-}
-
-/// Create the file, write every byte through that one handle, and flush it
-/// to the disk. `create_new` refuses to write through anything already at
-/// the name, including a symbolic link someone planted there.
-fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-/// A name next to `path` that nothing can be waiting at.
-fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
-    let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{session}.tmp"));
-    Ok(PathBuf::from(name))
+    crate::privatefile::write_atomic(path, &record.encode())
 }
 
 #[cfg(test)]

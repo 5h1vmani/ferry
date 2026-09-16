@@ -16,6 +16,7 @@ use ferry_core::rpc::{Client, RpcError};
 use crate::access::AccessVerb;
 use crate::engine::{Shared, record_this};
 use crate::guard::StopAware;
+use crate::pool;
 
 use crate::dav::probes::{self};
 use crate::dav::put;
@@ -137,25 +138,37 @@ fn depth_not_finite(out: &mut impl Write) -> io::Result<()> {
     out.write_all(body.as_bytes())
 }
 
-pub(crate) fn propfind(
+/// The preamble every `PROPFIND` needs before it decides whether to list
+/// children: the parsed path, the depth header, a pooled connection, and
+/// that connection's own stat of `target`.
+///
+/// Returns `None` after writing the refusal to `out` itself: a target that
+/// does not parse, a missing or `"infinity"` depth header, an empty pool,
+/// and a stat the peer refuses all end here. `propfind` returns `Ok(())`
+/// at once in that case.
+fn propfind_self_entry<'bridge, 'request>(
     shared: &Arc<Shared>,
-    bridge: &Bridge,
+    bridge: &'bridge Bridge,
     target: &str,
-    request: &http::Request,
+    request: &'request http::Request,
     out: &mut impl Write,
-) -> io::Result<()> {
+) -> io::Result<Option<(RemotePath, &'request str, pool::Borrowed<'bridge>, Entry)>> {
     let Ok(path) = RemotePath::parse(target) else {
-        return no_body(out, "404 Not Found");
+        no_body(out, "404 Not Found")?;
+        return Ok(None);
     };
     let Some(depth) = request.header("depth") else {
-        return depth_not_finite(out);
+        depth_not_finite(out)?;
+        return Ok(None);
     };
     if depth == "infinity" {
-        return depth_not_finite(out);
+        depth_not_finite(out)?;
+        return Ok(None);
     }
 
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
-        return unavailable(out);
+        unavailable(out)?;
+        return Ok(None);
     };
 
     let self_entry = match borrowed.client().stat(&path) {
@@ -165,8 +178,25 @@ pub(crate) fn propfind(
             if unhealthy {
                 borrowed.mark_unhealthy();
             }
-            return no_body(out, status);
+            no_body(out, status)?;
+            return Ok(None);
         }
+    };
+
+    Ok(Some((path, depth, borrowed, self_entry)))
+}
+
+pub(crate) fn propfind(
+    shared: &Arc<Shared>,
+    bridge: &Bridge,
+    target: &str,
+    request: &http::Request,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let Some((path, depth, mut borrowed, self_entry)) =
+        propfind_self_entry(shared, bridge, target, request, out)?
+    else {
+        return Ok(());
     };
 
     let mut named: Vec<(String, Entry)> = vec![(target.to_owned(), self_entry.clone())];

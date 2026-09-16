@@ -250,6 +250,23 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// Turn a signed Unix second count into the `u64` [`Encoder::u64`] carries.
+///
+/// The wire format has no signed integer, so a timestamp that can be before
+/// 1970, such as a peer's `paired_unix_secs`, is bit-cast into a `u64`
+/// instead of being clamped to zero. [`decode_i64`] reverses this exactly,
+/// with no loss, because both sides are the same width.
+#[must_use]
+pub fn encode_i64(value: i64) -> u64 {
+    u64::from_ne_bytes(value.to_ne_bytes())
+}
+
+/// The inverse of [`encode_i64`].
+#[must_use]
+pub fn decode_i64(value: u64) -> i64 {
+    i64::from_ne_bytes(value.to_ne_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

@@ -22,7 +22,16 @@ use crate::notify::Change;
 use crate::push;
 use crate::state::{BatchRow, TransferRow, key_from_hex, lock, now_unix_secs};
 use crate::transfer::{self, BACKOFF_MIN};
-use crate::{BatchInfo, DeviceInfo, Direction, FerryError, Origin, TransferInfo, TransferState};
+use crate::{
+    BatchInfo, DeviceInfo, DeviceKind, Direction, FerryError, Origin, TransferInfo, TransferState,
+};
+
+/// The root name [`Engine::landing_folder`] prefers on a Mac peer, ignoring
+/// case, per `docs/engine-contract.md` item 5, "Where a push lands". Not
+/// one of the two fixed subfolder names in `engine.rs`, so it stays here
+/// rather than a `pub const`: it names a root to look for, not a folder
+/// this engine creates.
+const MAC_PREFERRED_ROOT: &str = "Downloads";
 
 #[allow(clippy::needless_pass_by_value)]
 #[uniffi::export]
@@ -388,6 +397,65 @@ impl Engine {
         remote_folder: String,
     ) -> Result<String, FerryError> {
         push::push_files(&self.shared, &device_key_hex, &local_paths, &remote_folder)
+    }
+
+    /// Where a push started by a gesture, not by a folder a person is
+    /// looking at, lands on a paired device. Made if it does not exist yet.
+    ///
+    /// `docs/engine-contract.md`, item 5, "Where a push lands": the engine
+    /// owns this rule, so a Mac, a phone, and any future caller ask it the
+    /// same way instead of each typing it.
+    ///
+    /// Lists the peer's roots with [`Engine::list`]. On a Mac peer, the
+    /// folder is the root named `Downloads`, ignoring case, or the first
+    /// root when none is named that, then [`crate::engine::LANDING_SUBFOLDER_MAC`].
+    /// On a phone peer, the folder is the first root, then
+    /// [`crate::engine::LANDING_SUBFOLDER_PHONE`]. Either way, `mkdir` is
+    /// called on the folder, and `OpError::AlreadyExists` counts as
+    /// success, so this is safe to call before every push into the folder
+    /// it names.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
+    /// [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
+    /// root is not writable, and `RootsError::NoRoots`, the closest
+    /// existing code to "there is nowhere for this to land", when the
+    /// peer's own root list is empty.
+    pub fn landing_folder(&self, device_key_hex: String) -> Result<String, FerryError> {
+        let roots = self.list(device_key_hex.clone(), String::new())?;
+        let Some(first) = roots.first() else {
+            return Err(failed("RootsError::NoRoots"));
+        };
+
+        let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+        let kind = lock(&self.shared.state)
+            .peers
+            .get(&key)
+            .map(|peer| DeviceKind::from(peer.kind))
+            .ok_or_else(|| failed("Runtime::NotPaired"))?;
+
+        let (root_name, subfolder) = match kind {
+            DeviceKind::Mac => (
+                roots
+                    .iter()
+                    .find(|entry| entry.name.eq_ignore_ascii_case(MAC_PREFERRED_ROOT))
+                    .unwrap_or(first)
+                    .name
+                    .clone(),
+                crate::engine::LANDING_SUBFOLDER_MAC,
+            ),
+            DeviceKind::Phone => (first.name.clone(), crate::engine::LANDING_SUBFOLDER_PHONE),
+        };
+        let folder = format!("{root_name}/{subfolder}");
+
+        match self.mkdir(device_key_hex, folder.clone()) {
+            Ok(()) => {}
+            Err(FerryError::Failed { code, .. }) if code == "OpError::AlreadyExists" => {}
+            Err(error) => return Err(error),
+        }
+
+        Ok(folder)
     }
 
     /// Restart a failed transfer from its resume point.

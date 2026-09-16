@@ -62,7 +62,8 @@
 //!
 //! # Not yet
 //!
-//! Per-peer connection caps are not built. Recorded in `PLAN.md`.
+//! Per-peer connection caps are built. `MAX_SERVING_PER_PEER` is enforced
+//! at `engine/serving.rs`. Anything still open is recorded in `PLAN.md`.
 //!
 //! # Contract for `Engine`
 //!
@@ -271,6 +272,7 @@ mod held;
 mod networks;
 mod notify;
 mod pool;
+mod privatefile;
 mod push;
 mod record;
 mod state;

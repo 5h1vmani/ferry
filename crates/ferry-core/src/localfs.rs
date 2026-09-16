@@ -621,7 +621,13 @@ fn system_time_to_unix_secs(time: SystemTime) -> i64 {
     }
 }
 
-fn unix_secs_to_system_time(secs: i64) -> SystemTime {
+/// The inverse of [`system_time_to_unix_secs`].
+///
+/// `pub` because `ferry-runtime`'s `dav/probes.rs` needs the same
+/// conversion for `SidecarStore::set_mtime`, and used to carry its own
+/// identical copy.
+#[must_use]
+pub fn unix_secs_to_system_time(secs: i64) -> SystemTime {
     let magnitude = Duration::from_secs(secs.unsigned_abs());
     if secs >= 0 {
         UNIX_EPOCH.checked_add(magnitude).unwrap_or(UNIX_EPOCH)
