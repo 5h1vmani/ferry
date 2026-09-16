@@ -18,9 +18,10 @@ same order as the tables in design/tokens.json, which is easier for a
 person to read.
 """
 
-import json
 import sys
 from pathlib import Path
+
+from gen_common import check_or_write, load_json
 
 # The Kotlin package for the generated file. One constant, so it is easy to
 # find and change.
@@ -64,11 +65,6 @@ SWIFT_TEXT_STYLE_BASE_SIZE = {
     "caption": 12,
     "caption2": 11,
 }
-
-
-def load_json(path):
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
 
 
 def snake_to_camel(name):
@@ -315,51 +311,19 @@ def generate_kotlin(tokens, colors):
     return "\n".join(lines)
 
 
-def read_existing(path):
-    if not path.exists():
-        return None
-    with open(path, "r", encoding="utf-8") as handle:
-        return handle.read()
-
-
-def write_file(path, content):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(content)
-
-
 def main():
-    check_mode = "--check" in sys.argv[1:]
-
     tokens = load_json(TOKENS_PATH)
     colors = load_json(COLORS_PATH)
 
     swift_content = generate_swift(tokens, colors)
     kotlin_content = generate_kotlin(tokens, colors)
 
-    if check_mode:
-        mismatches = []
-        if read_existing(SWIFT_PATH) != swift_content:
-            mismatches.append(str(SWIFT_PATH.relative_to(ROOT)))
-        if read_existing(KOTLIN_PATH) != kotlin_content:
-            mismatches.append(str(KOTLIN_PATH.relative_to(ROOT)))
-
-        if mismatches:
-            print(
-                "Generated tokens are out of date. Run "
-                "`python3 scripts/gen_tokens.py` and commit the result. "
-                "Out of date: " + ", ".join(mismatches)
-            )
-            return 1
-
-        print("Generated tokens are up to date.")
-        return 0
-
-    write_file(SWIFT_PATH, swift_content)
-    write_file(KOTLIN_PATH, kotlin_content)
-    print(f"Wrote {SWIFT_PATH.relative_to(ROOT)}")
-    print(f"Wrote {KOTLIN_PATH.relative_to(ROOT)}")
-    return 0
+    return check_or_write(
+        "tokens",
+        "gen_tokens.py",
+        ROOT,
+        [(SWIFT_PATH, swift_content), (KOTLIN_PATH, kotlin_content)],
+    )
 
 
 if __name__ == "__main__":
