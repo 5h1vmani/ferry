@@ -356,32 +356,65 @@ object ShareIntake {
     private fun isCacheCopy(context: Context, path: String): Boolean =
         path.startsWith(File(context.cacheDir, CACHE_SUBDIR).absolutePath)
 
-    // Records which cache copies belong to one push_files batch, so they
-    // can be deleted once that batch reaches Done. Called after pushFiles
-    // returns a batch id; a call with no cache copies writes nothing.
-    fun registerBatch(context: Context, batchId: String, localPaths: List<String>) {
+    // Records which cache copies belong to one share, under an id the
+    // caller already has, so they can be deleted once that id names a
+    // batch that reaches Done. Audit finding 7: called with a request id
+    // before the push, not only after with the real batch id, since a
+    // push that never returns one must not lose track of its copies.
+    // A call with no cache copies writes nothing.
+    fun registerBatch(context: Context, id: String, localPaths: List<String>) {
         val cachePaths = localPaths.filter { isCacheCopy(context, it) }
         if (cachePaths.isEmpty()) {
             return
         }
         val registryDir = File(context.filesDir, REGISTRY_SUBDIR)
         registryDir.mkdirs()
-        File(registryDir, batchId).writeText(cachePaths.joinToString("\n"))
+        File(registryDir, id).writeText(cachePaths.joinToString("\n"))
+    }
+
+    // Moves a registration from the request id it was made under to the
+    // real batch id pushFiles returned, once it succeeds: audit finding 7.
+    fun renameRegistration(context: Context, fromId: String, toId: String) {
+        val registryDir = File(context.filesDir, REGISTRY_SUBDIR)
+        val from = File(registryDir, fromId)
+        if (from.exists()) {
+            from.renameTo(File(registryDir, toId))
+        }
     }
 
     // Removes every cache copy whose batch is Done, or whose batch no
     // engine record names any more: docs/ux-fix-plan.md item 1, "at app
-    // start when no transfer names it".
+    // start when no transfer names it". Also removes every folder under
+    // the cache itself that no surviving registry entry names: audit
+    // finding 7. A push that threw before pushFiles returned a batch id
+    // left its copy registered only under a request id no batch will ever
+    // match, and the registry-only sweep above never looked at the cache
+    // folder to find it.
     private fun sweepOrphaned(context: Context) {
-        val entries = File(context.filesDir, REGISTRY_SUBDIR).listFiles().orEmpty()
-        if (entries.isEmpty()) {
-            return
-        }
+        val registryDir = File(context.filesDir, REGISTRY_SUBDIR)
         val known = FerryEngine.batches.value.associateBy { it.id }
-        for (entry in entries) {
+        val survivingPaths = mutableListOf<String>()
+        for (entry in registryDir.listFiles().orEmpty()) {
             val batch = known[entry.name]
             if (batch == null || batch.state == EngineTransferState.DONE) {
                 deleteRegistered(entry)
+            } else {
+                survivingPaths += entry.readLines()
+            }
+        }
+        deleteUnnamedCacheFolders(context, survivingPaths)
+    }
+
+    // Every per-share folder under the cache that no path in
+    // survivingPaths sits inside is removed outright: nothing still
+    // pending names it, so it is either already spent or was never
+    // registered at all before the process that made it died.
+    private fun deleteUnnamedCacheFolders(context: Context, survivingPaths: List<String>) {
+        val namedDirs = survivingPaths.mapNotNull { File(it).parentFile?.absolutePath }.toSet()
+        val cacheRoot = File(context.cacheDir, CACHE_SUBDIR)
+        for (dir in cacheRoot.listFiles().orEmpty()) {
+            if (dir.absolutePath !in namedDirs) {
+                dir.deleteRecursively()
             }
         }
     }
