@@ -1113,7 +1113,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pick_candidate() and 0xFFFF) != 3231) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() and 0xFFFF) != 4073) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_start_pairing_with() and 0xFFFF) != 16235) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_delete() and 0xFFFF) != 16352) {
@@ -1929,9 +1929,10 @@ public interface EngineInterface {
      * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
      * and publishes `Offering`. While offering, one `IK` handshake whose
      * message one carries the current nonce is accepted; it shows
-     * `Requested` and holds the connection for `confirm_pairing`. Meant for
-     * the Mac; the phone's camera screen is not built yet, so nothing
-     * today calls this with `Qr` on a phone.
+     * `Requested` and holds the connection for `confirm_pairing`. The Mac
+     * calls this with `Qr` to show its code. The phone scans that code and
+     * calls `offer_scanned` instead, so nothing calls this with `Qr` on a
+     * phone.
      *
      * Calling this while a pairing is already running only reports the
      * current state again, under either method.
@@ -2855,9 +2856,10 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
      * `Qr`: makes a nonce and an offer for this device's Wi-Fi addresses,
      * and publishes `Offering`. While offering, one `IK` handshake whose
      * message one carries the current nonce is accepted; it shows
-     * `Requested` and holds the connection for `confirm_pairing`. Meant for
-     * the Mac; the phone's camera screen is not built yet, so nothing
-     * today calls this with `Qr` on a phone.
+     * `Requested` and holds the connection for `confirm_pairing`. The Mac
+     * calls this with `Qr` to show its code. The phone scans that code and
+     * calls `offer_scanned` instead, so nothing calls this with `Qr` on a
+     * phone.
      *
      * Calling this while a pairing is already running only reports the
      * current state again, under either method.

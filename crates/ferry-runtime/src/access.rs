@@ -1,9 +1,12 @@
 //! The access log: what a paired device actually read or wrote.
 //!
 //! Job 9 in `docs/jobs.md`, item 13 in `docs/engine-contract.md`. This module
-//! is a standalone store and roll-up. It is not wired into the engine yet:
-//! nothing calls it, and the `uniffi` records the app will eventually see are
-//! built later, on the boundary, from the plain types here.
+//! is the store and the roll-up. The engine opens it at `start`
+//! (`engine/api/lifecycle.rs`), records a verb for every served operation
+//! (`engine/shared.rs`), prunes it after 30 days (`engine/loops.rs`), and
+//! exposes it through `access_log()` and the `access_log_changed` event. The
+//! `uniffi` records the app sees are built on the boundary from the plain
+//! types here.
 //!
 //! # Framing
 //!
