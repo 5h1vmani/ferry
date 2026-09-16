@@ -548,17 +548,27 @@ object FerryEngine {
     fun pushFiles(keyHex: String, localPaths: List<String>, remoteFolder: String): String =
         required().pushFiles(keyHex, localPaths, remoteFolder)
 
-    // Sends every path to the one paired Mac's landing folder. Called by a
+    // Sends every path to the target device's landing folder. Called by a
     // share from another app and by the Devices screen's "Send files"
     // control; both hand this the same list of absolute paths.
     //
     // Does nothing when no Mac is paired: Devices already shows that state
-    // on its own once ShareIntake asks it to. Otherwise this dials the Mac
-    // to list its roots, makes the landing folder, then pushes, and every
-    // one of those calls blocks, so it runs on scope, off the caller's
-    // thread.
+    // on its own once ShareIntake asks it to. Otherwise this dials the
+    // target to list its roots, makes the landing folder, then pushes, and
+    // every one of those calls blocks, so it runs on scope, off the
+    // caller's thread.
     fun pushShared(localPaths: List<String>) {
-        val device = _devices.value.firstOrNull() ?: return
+        val devices = _devices.value
+        if (devices.isEmpty()) {
+            return
+        }
+        val device = targetDevice(devices) ?: run {
+            // Several are paired and none is reachable: audit finding 6.
+            // The same fault a dial would hit anyway, shown at once rather
+            // than after picking one of several devices arbitrarily.
+            _error.value = FerryException.Failed("Runtime::NotReachable", null)
+            return
+        }
         val keyHex = device.keyHex
         _error.value = null
         scope.launch {
@@ -582,6 +592,16 @@ object FerryEngine {
                 _error.value = e
             }
         }
+    }
+
+    // The only paired device, else the first reachable one: audit finding
+    // 6, the same rule the Mac's EngineModel.targetDevice uses. Null when
+    // several are paired and none is reachable.
+    private fun targetDevice(devices: List<DeviceInfo>): DeviceInfo? {
+        if (devices.size == 1) {
+            return devices.first()
+        }
+        return devices.firstOrNull { it.reachableVia != null }
     }
 
     // The root named "Downloads", matched ignoring case, else the first
