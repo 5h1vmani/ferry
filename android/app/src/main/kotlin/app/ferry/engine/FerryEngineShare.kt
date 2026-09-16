@@ -2,7 +2,6 @@ package app.ferry.engine
 
 import app.ferry.FerryErrorCode
 import app.ferry.ShareCacheRegistry
-import app.ferry.ShareIntake
 import kotlinx.coroutines.launch
 import uniffi.ferry_runtime.DeviceInfo
 import uniffi.ferry_runtime.FerryException
@@ -12,16 +11,13 @@ import java.util.UUID
 // from FerryEngine.kt, docs/audits/principles.md row P9. pushFiles and
 // pushShared are extension functions on FerryEngine, so a caller still
 // writes FerryEngine.pushShared(...), unchanged from before the split.
-//
-// The engine is gaining its own landing_folder call in a parallel batch;
-// landingFolder, LANDING_ROOT_NAME, and LANDING_SUBFOLDER stay as they are
-// here until the phone adopts it.
 
-// The root a gesture-started push lands in when the peer has one named
-// this, ignoring case; otherwise the first root the peer lists.
-// docs/engine-contract.md item 5, "Where a push lands".
-private const val LANDING_ROOT_NAME = "Downloads"
-private const val LANDING_SUBFOLDER = "Ferry"
+// Where a gesture-started push lands on the target device. The engine
+// picks the folder and makes it, so this app no longer picks a folder
+// name of its own. docs/engine-contract.md item 5, "Where a push lands".
+// In the same style as list, stat, and mkdir in FerryEngineDocuments.kt:
+// a passthrough that throws the engine's own FerryException.
+fun FerryEngine.landingFolder(keyHex: String): String = required().landingFolder(keyHex)
 
 // Sends several files into one folder on a paired device, as one batch.
 // Returns the batch id. In the same style as list, stat, and mkdir in
@@ -35,10 +31,9 @@ fun FerryEngine.pushFiles(keyHex: String, localPaths: List<String>, remoteFolder
 // control; both hand this the same list of absolute paths.
 //
 // Does nothing when no Mac is paired: Devices already shows that state
-// on its own once ShareIntake asks it to. Otherwise this dials the
-// target to list its roots, makes the landing folder, then pushes, and
-// every one of those calls blocks, so it runs on scope, off the
-// caller's thread.
+// on its own once ShareIntake asks it to. Otherwise this asks the engine
+// for the landing folder, then pushes, and both calls block, so this
+// runs on scope, off the caller's thread.
 fun FerryEngine.pushShared(localPaths: List<String>) {
     val devices = _devices.value
     if (devices.isEmpty()) {
@@ -64,26 +59,12 @@ fun FerryEngine.pushShared(localPaths: List<String>) {
     }
     scope.launch {
         try {
-            val folder = landingFolder(keyHex) ?: run {
-                // The Mac lists no root at all: audit finding 8. Not
-                // an engine code, so this is an app-side fault shown
-                // the same way the Mac's own DropError.noLandingFolder
-                // is, naming the device.
-                ShareIntake.setAppError(ShareIntake.AppError.NoLandingFolder(device.name))
-                return@launch
-            }
-            try {
-                mkdir(keyHex, folder)
-            } catch (e: FerryException) {
-                val code = (e as? FerryException.Failed)?.code
-                // push does not create the parent folder itself
-                // (docs/engine-contract.md item 5), so this call makes
-                // it first. A folder already there is success, not a
-                // fault.
-                if (code != FerryErrorCode.OP_ERROR_ALREADY_EXISTS) {
-                    throw e
-                }
-            }
+            // The engine picks the folder, makes it, and returns
+            // Runtime::NotPaired, Runtime::NotReachable,
+            // OpError::PermissionDenied, or RootsError::NoRoots on its
+            // own errors. Every one already has words in the generated
+            // table, so no app-side fault is built for any of them here.
+            val folder = landingFolder(keyHex)
             val batchId = pushFiles(keyHex, localPaths, folder)
             context?.let { ShareCacheRegistry.renameRegistration(it, requestId, batchId) }
         } catch (e: FerryException) {
@@ -100,18 +81,4 @@ private fun targetDevice(devices: List<DeviceInfo>): DeviceInfo? {
         return devices.first()
     }
     return devices.firstOrNull { it.reachableVia != null }
-}
-
-// The root named "Downloads", matched ignoring case, else the first
-// root the peer lists, each in a folder named "Ferry". Null when the
-// peer lists no root at all: a Mac with nothing shared in Settings.
-// docs/engine-contract.md item 5, "Where a push lands". Audit finding
-// 8: this used to throw the pairing code Runtime::NoCandidate here,
-// whose words say nothing true about a share.
-private fun FerryEngine.landingFolder(keyHex: String): String? {
-    val roots = list(keyHex, "")
-    val chosen = roots.firstOrNull { it.name.equals(LANDING_ROOT_NAME, ignoreCase = true) }
-        ?: roots.firstOrNull()
-        ?: return null
-    return "${chosen.name}/$LANDING_SUBFOLDER"
 }

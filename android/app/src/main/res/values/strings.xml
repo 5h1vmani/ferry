@@ -62,11 +62,6 @@
     <string name="share_too_many_why">It named %1$d files. Ferry sends at most %2$d files in one share.</string>
     <string name="share_too_many_todo">Share fewer files at a time.</string>
 
-    <!-- The target Mac lists no shared root, audit finding 8. Named by the
-         Mac's own name, the way every other device fact on this screen is. -->
-    <string name="share_no_landing_folder_stopped">The share stopped.</string>
-    <string name="share_no_landing_folder_why">%1$s shares no folder.</string>
-    <string name="share_no_landing_folder_todo">Add a shared folder in Ferry\'s Settings on the Mac.</string>
     <string name="cd_back">Back</string>
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
     <string name="dot_separator"> · </string>
