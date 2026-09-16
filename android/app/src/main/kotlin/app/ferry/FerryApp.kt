@@ -6,6 +6,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -103,6 +104,17 @@ fun FerryApp(
         }
     }
 
+    // A share's app-side error is cleared once Devices is left, not just
+    // at the start of the next share: audit finding 10. Nothing else
+    // clears it, so it stayed on Devices until another share happened.
+    DisposableEffect(screen) {
+        onDispose {
+            if (screen == Screen.Devices) {
+                ShareIntake.clearAppError()
+            }
+        }
+    }
+
     // The system back gesture otherwise finishes the activity from every
     // screen, whatever screen is showing. Each branch does what that
     // screen's own back control does.
@@ -154,12 +166,15 @@ fun FerryApp(
         errorWords = threePartError("Runtime::AllFilesAccess")
         errorActionLabel = stringResource(R.string.action_open_settings)
         errorAction = onOpenAllFilesAccess
-    } else if (shareAppError != null) {
-        errorWords = appErrorWords(shareAppError!!)
     } else {
+        // A live engine error is shown ahead of an app-side share fault:
+        // audit finding 10. The share error used to be checked first, so
+        // it could hide a real engine error behind an old share's words.
         val failure = engineError
-        if (failure != null) {
-            errorWords = threePartError(failure)
+        errorWords = when {
+            failure != null -> threePartError(failure)
+            shareAppError != null -> appErrorWords(shareAppError!!)
+            else -> null
         }
     }
 
