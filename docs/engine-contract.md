@@ -728,6 +728,9 @@ The phone's share target accepts only `content://` URIs from the app that
 shared them, never a raw file path. A file it copies out of one is named
 by that URI's last path segment alone, sanitized, inside a folder made
 for that one copy, so nothing the sharing app names can land outside it.
+It refuses the whole share unless the share's own intent carries
+`FLAG_GRANT_READ_URI_PERMISSION`, since the system sets that flag only for
+a sender that could read the file itself.
 
 ### 6. The mount: built
 

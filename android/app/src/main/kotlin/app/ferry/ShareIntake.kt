@@ -53,21 +53,38 @@ object ShareIntake {
         _navigateHome.value += 1
     }
 
-    // The display name of the first file a share could not read, or null
-    // once a share has read every file it named. FerryApp shows this
-    // through the same ErrorBlock an engine error uses: docs/voice.md rule
-    // 10, nothing is hidden. Set at the start of every resolve call, so an
-    // error from an earlier share does not outlive it.
-    private val _unreadableName = MutableStateFlow<String?>(null)
-    val unreadableName: StateFlow<String?> = _unreadableName.asStateFlow()
+    // An app-side fault a share or a push into its folder can hit, with no
+    // engine code of its own. FerryApp turns each into the same three
+    // parts an engine error would show, from strings.xml, through the same
+    // ErrorBlock: docs/voice.md rule 10, nothing is hidden. Set at the
+    // start of every resolve call, so an error from an earlier share does
+    // not outlive it; audit finding 10 also clears it when Devices is left.
+    sealed class AppError {
+        // The sharing app's own intent carried no read grant: audit
+        // finding 1.
+        data object NotGranted : AppError()
+        data class Unreadable(val name: String) : AppError()
+    }
 
-    // What one resolve call found: every path, ready to push, or the name
-    // of the first file that could not be read. A share with any
-    // unreadable file sends none of them, so a person is never left
-    // guessing which files went and which did not.
+    private val _appError = MutableStateFlow<AppError?>(null)
+    val appError: StateFlow<AppError?> = _appError.asStateFlow()
+
+    fun setAppError(error: AppError) {
+        _appError.value = error
+    }
+
+    fun clearAppError() {
+        _appError.value = null
+    }
+
+    // What one resolve call found: every path, ready to push, or the
+    // reason none of them will be. A share with any fault sends none of
+    // its files, so a person is never left guessing which went and which
+    // did not.
     sealed class Resolution {
         data class Success(val localPaths: List<String>) : Resolution()
         data object Unreadable : Resolution()
+        data object NotGranted : Resolution()
     }
 
     // Called once, from FerryApplication.onCreate. Waits for the engine to
@@ -122,13 +139,24 @@ object ShareIntake {
     //
     // Stops at the first file it cannot read and sends none of the paths:
     // a share that partly lands is a person guessing which files made it.
-    fun resolve(context: Context, uris: List<Uri>): Resolution {
-        _unreadableName.value = null
+    //
+    // `hasReadGrant` is `intent.flags` carrying `FLAG_GRANT_READ_URI_PERMISSION`
+    // for a share, and always true for the document picker, which the
+    // system itself always grants. Audit finding 1: the system gives that
+    // grant only to a sender that could read the file itself, so it is the
+    // proof docs/engine-contract.md item 5 asks for; without it, nothing is
+    // read.
+    fun resolve(context: Context, uris: List<Uri>, hasReadGrant: Boolean): Resolution {
+        clearAppError()
+        if (!hasReadGrant) {
+            setAppError(AppError.NotGranted)
+            return Resolution.NotGranted
+        }
         val paths = mutableListOf<String>()
         for (uri in uris) {
             val path = resolveOne(context, uri)
             if (path == null) {
-                _unreadableName.value = nameForError(context, uri)
+                setAppError(AppError.Unreadable(nameForError(context, uri)))
                 return Resolution.Unreadable
             }
             paths += path

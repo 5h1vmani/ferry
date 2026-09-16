@@ -40,6 +40,12 @@
     <string name="share_unreadable_stopped">The share stopped.</string>
     <string name="share_unreadable_why">Ferry could not read %1$s from the app that shared it.</string>
     <string name="share_unreadable_todo">Save the file to the phone, then share it again.</string>
+
+    <!-- A share whose intent carried no read grant, audit finding 1 of
+         docs/audits/ux-gestures.md. -->
+    <string name="share_not_granted_stopped">The share stopped.</string>
+    <string name="share_not_granted_why">The app that shared did not give Ferry the right to read the file.</string>
+    <string name="share_not_granted_todo">Share it from the phone\'s own Photos or Files app.</string>
     <string name="cd_back">Back</string>
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
     <string name="dot_separator"> · </string>

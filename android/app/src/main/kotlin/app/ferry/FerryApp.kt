@@ -138,10 +138,10 @@ fun FerryApp(
     val devices = engineDevices.map { it.toUi() }
     val accessDays = accessDaysOf(engineAccessLog.map { it.toUi() })
 
-    // A file a share could not read, or null: docs/ux-fix-plan.md item 1.
-    // This is an app-side fault, not an engine code, so its three parts are
-    // built from strings.xml here rather than through threePartError.
-    val shareUnreadableName by ShareIntake.unreadableName.collectAsState()
+    // An app-side fault a share, or a push it starts, hit: docs/ux-fix-plan.md
+    // item 1. Not an engine code, so its three parts are built from
+    // strings.xml here rather than through threePartError.
+    val shareAppError by ShareIntake.appError.collectAsState()
 
     // Devices carries whatever is stopping Ferry from working, in the order
     // that matters. A missing all files access grant comes first, because
@@ -154,12 +154,8 @@ fun FerryApp(
         errorWords = threePartError("Runtime::AllFilesAccess")
         errorActionLabel = stringResource(R.string.action_open_settings)
         errorAction = onOpenAllFilesAccess
-    } else if (shareUnreadableName != null) {
-        errorWords = ThreePartError(
-            stopped = stringResource(R.string.share_unreadable_stopped),
-            why = stringResource(R.string.share_unreadable_why, shareUnreadableName!!),
-            todo = stringResource(R.string.share_unreadable_todo),
-        )
+    } else if (shareAppError != null) {
+        errorWords = appErrorWords(shareAppError!!)
     } else {
         val failure = engineError
         if (failure != null) {
@@ -273,4 +269,22 @@ fun FerryApp(
             )
         }
     }
+}
+
+// The three parts for one ShareIntake.AppError, from strings.xml. These are
+// app-side faults with no engine code of their own, the same shape as
+// ErrorWords.kt's threePartError but reading a different set of templates.
+@Composable
+private fun appErrorWords(error: ShareIntake.AppError): ThreePartError = when (error) {
+    is ShareIntake.AppError.NotGranted -> ThreePartError(
+        stopped = stringResource(R.string.share_not_granted_stopped),
+        why = stringResource(R.string.share_not_granted_why),
+        todo = stringResource(R.string.share_not_granted_todo),
+    )
+
+    is ShareIntake.AppError.Unreadable -> ThreePartError(
+        stopped = stringResource(R.string.share_unreadable_stopped),
+        why = stringResource(R.string.share_unreadable_why, error.name),
+        todo = stringResource(R.string.share_unreadable_todo),
+    )
 }
