@@ -16,3 +16,16 @@ extension DeviceInfo: Identifiable {
 extension TransferInfo: Identifiable {}
 
 extension PairingCandidate: Identifiable {}
+
+extension DeviceKind {
+    /// The SF Symbol for this kind of device, on a device row or a
+    /// pairing request. `DeviceRow` and `PairingRequestView` both
+    /// switched on `DeviceKind` for the same icon, so it is decided once
+    /// here.
+    var icon: String {
+        switch self {
+        case .phone: return FerryIcon.devicePhone
+        case .mac: return FerryIcon.deviceMac
+        }
+    }
+}

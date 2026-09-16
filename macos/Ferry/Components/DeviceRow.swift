@@ -14,7 +14,7 @@ struct DeviceRow: View {
 
     var body: some View {
         HStack(spacing: FerrySpace.s2) {
-            Image(systemName: icon)
+            Image(systemName: device.kind.icon)
                 .foregroundStyle(device.isReachable ? FerryColor.text : FerryColor.textSecondary)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -68,13 +68,6 @@ struct DeviceRow: View {
             Button(S.deviceDetail.forgetThisPhone, role: .destructive) {
                 model.forget(keyHex: device.keyHex)
             }
-        }
-    }
-
-    private var icon: String {
-        switch device.kind {
-        case .phone: return FerryIcon.devicePhone
-        case .mac: return FerryIcon.deviceMac
         }
     }
 }

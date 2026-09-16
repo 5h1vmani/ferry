@@ -108,16 +108,9 @@ struct PairingRequestView: View {
     let onPair: () -> Void
     let onRefuse: () -> Void
 
-    private var icon: String {
-        switch kind {
-        case .phone: return FerryIcon.devicePhone
-        case .mac: return FerryIcon.deviceMac
-        }
-    }
-
     var body: some View {
         VStack(spacing: FerrySpace.s3) {
-            Image(systemName: icon)
+            Image(systemName: kind.icon)
                 .font(.system(size: 32))
                 .foregroundStyle(FerryColor.accent)
 
