@@ -51,6 +51,11 @@ final class EngineModel: ObservableObject {
     /// The Wi-Fi networks this Mac trusts. `docs/engine-contract.md`,
     /// item 18.
     @Published private(set) var trustedNetworks: [String] = []
+    /// The device selected in the window. Read by `ContentView`, and by
+    /// every command and gesture that needs "the selected device":
+    /// `targetDevice`, the app menu's Send files and Retry, and pairing's
+    /// own confirmation. `docs/ux-fix-plan.md`, item 3, "Device choice".
+    @Published var selectedDeviceKeyHex: String?
 
     /// The engine's own values, kept so a change notification can rebuild
     /// snapshots without asking the engine twice.
@@ -323,6 +328,20 @@ final class EngineModel: ObservableObject {
     /// One device by its key, or nil once it is forgotten.
     func device(keyHex: String) -> DeviceSnapshot? {
         devices.first { $0.keyHex == keyHex }
+    }
+
+    /// The device a gesture or a command with no device of its own acts
+    /// on: the only paired device; when more than one is paired, the one
+    /// selected in the window, else the first reachable one.
+    /// `docs/ux-fix-plan.md`, item 3, "Device choice".
+    var targetDevice: DeviceSnapshot? {
+        if devices.count == 1 {
+            return devices.first
+        }
+        if let keyHex = selectedDeviceKeyHex, let device = device(keyHex: keyHex) {
+            return device
+        }
+        return devices.first { $0.isReachable }
     }
 
     /// Every transfer for one device, grouped as the Transfers section
@@ -630,6 +649,113 @@ final class EngineModel: ObservableObject {
                 await self?.report(error)
             }
         }
+    }
+
+    // MARK: - Sending files by drop, Send files, or a Finder service
+
+    /// Where a gesture-started push lands on one device: the first root it
+    /// lists, in "Download" (docs/engine-contract.md, item 5, "Where a
+    /// push lands"). Read only: does not make the folder. Runs the round
+    /// trip off the main thread, the same as `list`.
+    func landingFolder(forDevice keyHex: String) async throws -> String {
+        guard let engine else {
+            throw FerryError.Failed(code: "Runtime::NotStarted", detail: nil)
+        }
+        return try await Task.detached {
+            let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
+            return try EngineModel.landingFolderPath(from: roots)
+        }.value
+    }
+
+    /// The folder name `landingFolder` and `send` both compute from a
+    /// `list("")` call: the first root's name, then "Download".
+    nonisolated private static func landingFolderPath(from roots: [Entry]) throws -> String {
+        guard let firstRoot = roots.first else {
+            throw DropError.noLandingFolder
+        }
+        return firstRoot.name + "/" + S.drop.downloadFolderName
+    }
+
+    /// Whether `url` names a folder on disk right now.
+    nonisolated private static func isFolder(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        return isDirectory.boolValue
+    }
+
+    /// Starts sending local files to one device's landing folder: a drop
+    /// on a device row or the detail pane, "Send files…", or the app
+    /// menu's Cmd+O all call this. A folder in `urls` is refused, because
+    /// the engine has no way to push one yet. `docs/ux-fix-plan.md`, item
+    /// 3.
+    func send(urls: [URL], toDevice keyHex: String) {
+        guard urls.allSatisfy({ !EngineModel.isFolder($0) }) else {
+            actionError = DropError.folderNotSupported.threePart(canRetry: false)
+            return
+        }
+        guard let engine else { return }
+        let localPaths = urls.map(\.path)
+        Task.detached { [weak self] in
+            do {
+                let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
+                let folder = try EngineModel.landingFolderPath(from: roots)
+                do {
+                    try engine.mkdir(deviceKeyHex: keyHex, remotePath: folder)
+                } catch let error as FerryError {
+                    if case let .Failed(code, _) = error, code == "OpError::AlreadyExists" {
+                        // The folder is already there, which is the
+                        // outcome this call asked for.
+                    } else {
+                        throw error
+                    }
+                }
+                _ = try engine.pushFiles(deviceKeyHex: keyHex, localPaths: localPaths, remoteFolder: folder)
+            } catch {
+                await self?.report(error)
+            }
+        }
+    }
+
+    /// Routes URLs the "Send with Ferry" Finder service handed this app.
+    /// A URL already inside a device's Finder mount is pulled again,
+    /// through the resumable engine rather than the plain Finder copy
+    /// that put it there; everything else is pushed to `targetDevice`.
+    /// `docs/ux-fix-plan.md`, item 3.
+    func sendFromFinder(urls: [URL]) {
+        var toPush: [URL] = []
+        for url in urls {
+            if let (device, remotePath) = mountedLocation(of: url) {
+                if EngineModel.isFolder(url) {
+                    pullFolder(deviceKeyHex: device.keyHex, remotePath: remotePath)
+                } else {
+                    pull(deviceKeyHex: device.keyHex, remotePath: remotePath, localName: url.lastPathComponent)
+                }
+            } else {
+                toPush.append(url)
+            }
+        }
+        guard !toPush.isEmpty, let device = targetDevice else { return }
+        send(urls: toPush, toDevice: device.keyHex)
+    }
+
+    /// The device and remote path for a URL inside that device's Finder
+    /// mount, or nil when it is outside every mount. The mount serves each
+    /// root at its own top level, so `<mount path>/<root>/<rel>` maps
+    /// straight onto the remote path `"<root>/<rel>"`: verified against
+    /// `crates/ferry-runtime/src/dav/handlers/browse.rs`, where a listed
+    /// child's path is built the same way, and `crates/ferry-core/src/path.rs`,
+    /// where a `RemotePath`'s first component is the root name.
+    private func mountedLocation(of url: URL) -> (device: DeviceSnapshot, remotePath: String)? {
+        let path = url.path
+        for device in devices {
+            guard let mountPath = mount(forDevice: device.keyHex).path else { continue }
+            let prefix = mountPath.hasSuffix("/") ? mountPath : mountPath + "/"
+            guard path.hasPrefix(prefix) else { continue }
+            return (device, String(path.dropFirst(prefix.count)))
+        }
+        return nil
     }
 
     /// Restarts a failed transfer from its resume point.

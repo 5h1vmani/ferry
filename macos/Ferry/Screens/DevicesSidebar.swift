@@ -58,6 +58,7 @@ struct DevicesSidebar: View {
     } detail: {
         EmptyState(line: S.devices.noPhoneSelected)
     }
+    .environmentObject(EngineModel())
 }
 
 #Preview("Empty, not advertising") {
@@ -70,5 +71,6 @@ struct DevicesSidebar: View {
     } detail: {
         EmptyState(line: S.devices.noPhoneSelected)
     }
+    .environmentObject(EngineModel())
 }
 #endif

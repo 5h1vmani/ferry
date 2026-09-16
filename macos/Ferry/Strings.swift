@@ -103,6 +103,14 @@ enum S {
             case .wifi: return spareTransportWifi
             }
         }
+
+        /// Opens the panel that picks files to send. New in
+        /// docs/ux-fix-plan.md, items 3 and 5: the device row, the app
+        /// menu, and its Cmd+O shortcut all open the same panel.
+        static let sendFiles = "Send files…"
+
+        /// The app menu's Cmd+R. New in docs/ux-fix-plan.md, item 5.
+        static let retryFailedTransfers = "Retry failed transfers"
     }
 
     /// The Finder mount, in one line. New in docs/ia.md, Access.
@@ -112,6 +120,32 @@ enum S {
         static let accessibilityMountReadyFormat = "Finder mount ready at %@"
         static func accessibilityMountReady(path: String) -> String {
             String(format: accessibilityMountReadyFormat, path)
+        }
+    }
+
+    /// Words for a drop, a Send files action, or the Finder service, for
+    /// what this app refuses before it reaches the engine. Not a
+    /// FerryError, the same choice `keyStore` and `mount` make.
+    /// `docs/ux-fix-plan.md`, item 3.
+    enum drop {
+        static let folderStopped = "The folder was not sent."
+        static let folderWhy = "Ferry cannot send a whole folder yet."
+        static let folderToDo = "Send the files inside it instead."
+
+        static let noLandingFolderStopped = "The files were not sent."
+        static let noLandingFolderWhy = "The device shares no folder to land them in."
+        static let noLandingFolderToDo = "Try again once the device shares a folder."
+
+        /// The folder name a gesture-started push always lands in, inside
+        /// the first root the device lists. `docs/engine-contract.md`,
+        /// item 5, "Where a push lands".
+        static let downloadFolderName = "Download"
+
+        /// The caption at the top of a device's detail, while it is
+        /// reachable: where a drop lands. `docs/ux-fix-plan.md`, item 4.
+        static let captionFormat = "Files dropped on %1$@ land in %2$@."
+        static func caption(deviceName: String, folder: String) -> String {
+            String(format: captionFormat, deviceName, folder)
         }
     }
 

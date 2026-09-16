@@ -9,9 +9,17 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var model: EngineModel
-    /// The selected device's public key, which is its identity.
-    @State private var selection: String?
     @State private var isPairingPresented = false
+
+    /// The selected device's public key, which is its identity. Held on
+    /// the model, not here, so the app menu's commands can read it too
+    /// (docs/ux-fix-plan.md, item 3, "Device choice").
+    private var selection: Binding<String?> {
+        Binding(
+            get: { model.selectedDeviceKeyHex },
+            set: { model.selectedDeviceKeyHex = $0 }
+        )
+    }
 
     var body: some View {
         Group {
@@ -24,7 +32,7 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $isPairingPresented) {
-            PairingSheet(selection: $selection)
+            PairingSheet(selection: selection)
                 .environmentObject(model)
         }
     }
@@ -34,7 +42,7 @@ struct ContentView: View {
             DevicesSidebar(
                 devices: model.devices,
                 presence: model.presence,
-                selection: $selection,
+                selection: selection,
                 onPair: { isPairingPresented = true },
                 onAdvertisingChange: { model.setAdvertising($0) }
             )
@@ -48,16 +56,16 @@ struct ContentView: View {
             }
         }
         .onChange(of: model.devices.map(\.id)) { _, ids in
-            if let selection, !ids.contains(selection) {
-                self.selection = ids.first
-            } else if selection == nil {
-                selection = ids.first
+            if let current = model.selectedDeviceKeyHex, !ids.contains(current) {
+                model.selectedDeviceKeyHex = ids.first
+            } else if model.selectedDeviceKeyHex == nil {
+                model.selectedDeviceKeyHex = ids.first
             }
         }
     }
 
     private var selectedDevice: DeviceSnapshot? {
-        guard let selection else { return nil }
-        return model.device(keyHex: selection)
+        guard let keyHex = model.selectedDeviceKeyHex else { return nil }
+        return model.device(keyHex: keyHex)
     }
 }

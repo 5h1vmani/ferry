@@ -8,6 +8,7 @@
 import SwiftUI
 
 struct DeviceRow: View {
+    @EnvironmentObject private var model: EngineModel
     let device: DeviceSnapshot
 
     var body: some View {
@@ -46,6 +47,16 @@ struct DeviceRow: View {
                 lastSeen: device.lastSeen
             )
         )
+        .dropDestination(for: URL.self) { urls, _ in
+            guard device.isReachable else { return false }
+            model.send(urls: urls, toDevice: device.keyHex)
+            return true
+        }
+        .contextMenu {
+            Button(S.devices.sendFiles) {
+                SendFilesPanel.present(forDevice: device.keyHex, model: model)
+            }
+        }
     }
 
     private var icon: String {
@@ -64,5 +75,6 @@ struct DeviceRow: View {
         }
     }
     .frame(width: 232)
+    .environmentObject(EngineModel())
 }
 #endif

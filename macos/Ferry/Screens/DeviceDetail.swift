@@ -90,6 +90,11 @@ struct DeviceDetail: View {
             folders = []
             model.actionError = nil
         }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard device.isReachable else { return false }
+            model.send(urls: urls, toDevice: device.keyHex)
+            return true
+        }
     }
 
     /// The active transport, and the spare stated once beside it, so a
