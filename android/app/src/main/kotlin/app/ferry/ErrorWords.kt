@@ -1,5 +1,6 @@
 package app.ferry
 
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import app.ferry.model.ThreePartError
@@ -13,10 +14,9 @@ import uniffi.ferry_runtime.FerryException
 
 // The lookup, fallback, fill, and trim behind every three-part error a
 // person sees. threePartError below reads the unknown-code words through
-// stringResource, for a Compose screen; ReachableService's own
-// errorWordsFor reads the same words through getString, since it has no
-// Compose context. Each caller resolves its own three words and hands
-// them here.
+// stringResource, for a Compose screen; errorWordsFor further below reads
+// the same words through getString, for a caller with no Compose context.
+// Each caller resolves its own three words and hands them here.
 //
 // A part the table leaves empty is dropped, never guessed, which is the
 // rule in docs/voice.md.
@@ -51,4 +51,24 @@ fun threePartError(code: String, detail: String? = null): ThreePartError = build
 fun threePartError(error: FerryException): ThreePartError {
     val failure = error as? FerryException.Failed
     return threePartError(failure?.code.orEmpty(), failure?.detail)
+}
+
+// The plain-Context twin of threePartError above, for a caller with no
+// Compose context: ReachableService and TransferNotifier, which read the
+// unknown-code words through getString. Returns FerryErrors.Words, whose
+// why and todo are never null, so a dropped part reads as an empty string
+// rather than as null.
+fun errorWordsFor(context: Context, code: String, detail: String?): FerryErrors.Words {
+    val words = buildThreePartError(
+        code = code,
+        detail = detail,
+        unknownStopped = context.getString(R.string.error_unknown_stopped),
+        unknownWhy = context.getString(R.string.error_unknown_why, code),
+        unknownTodo = context.getString(R.string.error_unknown_todo),
+    )
+    return FerryErrors.Words(
+        stopped = words.stopped,
+        why = words.why.orEmpty(),
+        todo = words.todo.orEmpty(),
+    )
 }
