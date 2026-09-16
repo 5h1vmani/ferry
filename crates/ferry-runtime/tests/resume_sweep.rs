@@ -98,7 +98,9 @@ use ferry_core::path::RemotePath;
 use ferry_core::rpc::FileOps;
 use ferry_runtime::TransferState;
 
-use common::paths::{Peer, Side, build, pair_with_peer, pull_big, sample_bytes, start_peer_with};
+use common::paths::{
+    Peer, Side, build, pair_with_peer, poll_every, pull_big, sample_bytes, start_peer_with,
+};
 
 // ---------------------------------------------------------------------------
 // The wire arithmetic. See the module documentation for the derivation.
@@ -338,15 +340,15 @@ impl FileOps for OneFile {
 }
 
 /// Wait until `check` is true, looking again every [`POLL_TICK`].
+///
+/// `common::paths::poll_every` is the shared loop; this file keeps its own
+/// `PATIENCE` and `POLL_TICK` and only wraps that loop, because the tighter
+/// tick above is what the sweep's critical path needs.
 fn poll_until(what: &str, check: impl Fn() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while Instant::now() < deadline {
-        if check() {
-            return;
-        }
-        std::thread::sleep(POLL_TICK);
-    }
-    panic!("waited {PATIENCE:?} for {what}");
+    assert!(
+        poll_every(PATIENCE, POLL_TICK, check),
+        "waited {PATIENCE:?} for {what}"
+    );
 }
 
 fn wait_done(side: &Side, id: &str) {

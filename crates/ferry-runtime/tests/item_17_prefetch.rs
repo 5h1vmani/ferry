@@ -28,6 +28,7 @@ use ferry_core::rpc::{FileOps, exchange_hello, serve};
 use ferry_core::tcp::Listener;
 use ferry_runtime::{AccessEntry, AccessVerb, Actor, DeviceKind, KeyPair, generate_key};
 
+use common::paths::poll_until;
 use common::{
     PATIENCE, Side, TestClient, build_side, count_entries, loopback_addr, port_of, public_key_of,
 };
@@ -47,15 +48,6 @@ fn prefetch_entry(log: &[AccessEntry], folder: &str) -> Option<AccessEntry> {
                 && entry.files.is_some()
         })
         .cloned()
-}
-
-/// Waits until `ready` answers true, or fails the test after [`PATIENCE`].
-fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while !ready() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// The Mac and the phone, paired, with the phone's bridge mounted and a
@@ -231,7 +223,7 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
 
     // The Mac writes its own entry once the whole listing is prefetched,
     // so this is the cheap signal that the three reads have happened.
-    wait_until("the Mac records the prefetch of Root/Photos", || {
+    poll_until("the Mac records the prefetch of Root/Photos", || {
         it.prefetch_of("Root/Photos").is_some()
     });
     let entry = it
@@ -257,7 +249,7 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
     // they share, with `files` counting them. That is the whole point of
     // the roll-up, since this prefetch is what made the phone's log show
     // one line per image.
-    wait_until(
+    poll_until(
         "the phone has logged the prefetch as one folder read",
         || it.peer_reads() == reads_before + 1,
     );
@@ -298,7 +290,7 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
     // serving threads and finalises everything they left behind, so the
     // counts below hold everything that happened.
     it.mac.engine.stop();
-    wait_until("the phone to finalise what the bridge left", || {
+    poll_until("the phone to finalise what the bridge left", || {
         it.peer_reads() > reads_before
     });
     assert_eq!(
@@ -325,7 +317,7 @@ fn a_file_written_again_with_a_new_size_misses_its_cached_head() {
     let mut it = Mounted::new(&[("Photos/a.jpg", first.as_slice())]);
 
     it.propfind("/Root/Photos", "1");
-    wait_until("the Mac records the prefetch of Root/Photos", || {
+    poll_until("the Mac records the prefetch of Root/Photos", || {
         it.prefetch_of("Root/Photos").is_some()
     });
     let entry = it
@@ -375,7 +367,7 @@ fn a_get_that_needs_the_wire_never_mixes_two_versions_of_a_file() {
     let mut it = Mounted::new(&[("Photos/a.jpg", first.as_slice())]);
 
     it.propfind("/Root/Photos", "1");
-    wait_until("the Mac records the prefetch of Root/Photos", || {
+    poll_until("the Mac records the prefetch of Root/Photos", || {
         it.prefetch_of("Root/Photos").is_some()
     });
     let entry = it

@@ -14,11 +14,10 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
 use ferry_runtime::{DeviceKind, generate_key};
 
-use common::{PATIENCE, TestClient, base64_encode, build_side, loopback_addr, pattern, port_of};
+use common::paths::poll_until;
+use common::{TestClient, base64_encode, build_side, loopback_addr, pattern, port_of};
 
 /// The spool folder's total size right now, walked directly by the test
 /// rather than through the engine. Kept independent of
@@ -46,19 +45,6 @@ fn real_spool_bytes(data_dir: &std::path::Path) -> u64 {
     total
 }
 
-/// Waits up to [`PATIENCE`] for `condition` to hold, polling every ten
-/// milliseconds. Panics, naming `what`, once that budget runs out.
-fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    loop {
-        if condition() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
 /// Waits for `Engine::spool_bytes` to agree with a fresh walk of the spool
 /// folder, naming `what` in the panic if it never does.
 ///
@@ -75,12 +61,8 @@ fn wait_for_count_to_match_disk(
     data_dir: &std::path::Path,
     what: &str,
 ) {
-    let mut last = (0u64, 0u64);
-    wait_until(what, || {
-        last = (engine.spool_bytes(), real_spool_bytes(data_dir));
-        last.0 == last.1
-    });
-    assert_eq!(last.0, last.1, "{what}");
+    poll_until(what, || engine.spool_bytes() == real_spool_bytes(data_dir));
+    assert_eq!(engine.spool_bytes(), real_spool_bytes(data_dir), "{what}");
 }
 
 #[test]
@@ -180,7 +162,7 @@ fn two_puts_in_a_row_leave_the_running_count_exact_and_a_removed_spool_file_lowe
     aborted.write_raw_head(&format!(
         "PUT /Root/Aborted.bin HTTP/1.1\r\nHost: {host}\r\nAuthorization: Basic {credentials}\r\nContent-Length: {reserved_len}\r\n\r\n"
     ));
-    wait_until("the reserved spool file to raise the running count", || {
+    poll_until("the reserved spool file to raise the running count", || {
         mac.engine.spool_bytes() >= reserved_len
     });
 
@@ -191,7 +173,7 @@ fn two_puts_in_a_row_leave_the_running_count_exact_and_a_removed_spool_file_lowe
     // `SpoolFile` and lowering the count by the same amount it raised it.
     drop(aborted);
 
-    wait_until(
+    poll_until(
         "the dropped spool file to lower the running count back down",
         || mac.engine.spool_bytes() == 0,
     );
