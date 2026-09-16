@@ -131,10 +131,6 @@ enum S {
         static let folderWhy = "Ferry cannot send a whole folder yet."
         static let folderToDo = "Send the files inside it instead."
 
-        static let noLandingFolderStopped = "The files were not sent."
-        static let noLandingFolderWhy = "The device shares no folder to land them in."
-        static let noLandingFolderToDo = "Try again once the device shares a folder."
-
         /// One item was not a file on this Mac, such as a web address.
         /// `docs/audits/ux-gestures.md`, finding 4.
         static let nonFileURLStopped = "The files were not sent."

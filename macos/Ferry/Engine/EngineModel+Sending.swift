@@ -40,35 +40,18 @@ extension EngineModel {
 
     // MARK: - Sending files by drop, Send files, or a Finder service
 
-    /// Where a gesture-started push lands on one device: the first root it
-    /// lists, in "Download" (docs/engine-contract.md, item 5, "Where a
-    /// push lands"). Read only: does not make the folder. Runs the round
-    /// trip off the main thread, the same as `list`.
+    /// Where a gesture-started push lands on one device, as the engine
+    /// decides (docs/engine-contract.md, item 5, "Where a push lands").
+    /// The engine also makes the folder, so this is safe to call again
+    /// before every push. Runs the round trip off the main thread, the
+    /// same as `list`.
     func landingFolder(forDevice keyHex: String) async throws -> String {
         guard let engine else {
             throw FerryError.Failed(code: FerryErrorCode.runtimeNotStarted, detail: nil)
         }
         return try await Task.detached {
-            let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
-            return try EngineModel.landingFolderPath(from: roots)
+            try engine.landingFolder(deviceKeyHex: keyHex)
         }.value
-    }
-
-    /// The subfolder name a gesture-started push always lands in, inside
-    /// the first root the device lists. `docs/engine-contract.md`, item 5,
-    /// "Where a push lands", fixes this value: it is a path segment both
-    /// apps must agree on, not a word a person reads, so it lives here
-    /// rather than in `Strings.swift`. `docs/audits/ux-gestures.md`,
-    /// finding 13.
-    nonisolated private static let landingSubfolder = "Download"
-
-    /// The folder name `landingFolder` and `send` both compute from a
-    /// `list("")` call: the first root's name, then `landingSubfolder`.
-    nonisolated private static func landingFolderPath(from roots: [Entry]) throws -> String {
-        guard let firstRoot = roots.first else {
-            throw DropError.noLandingFolder
-        }
-        return firstRoot.name + "/" + landingSubfolder
     }
 
     /// Whether `url` names a folder on disk right now.
@@ -102,18 +85,7 @@ extension EngineModel {
         let localPaths = urls.map(\.path)
         Task.detached { [weak self] in
             do {
-                let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
-                let folder = try EngineModel.landingFolderPath(from: roots)
-                do {
-                    try engine.mkdir(deviceKeyHex: keyHex, remotePath: folder)
-                } catch let error as FerryError {
-                    if case let .Failed(code, _) = error, code == FerryErrorCode.opErrorAlreadyExists {
-                        // The folder is already there, which is the
-                        // outcome this call asked for.
-                    } else {
-                        throw error
-                    }
-                }
+                let folder = try engine.landingFolder(deviceKeyHex: keyHex)
                 _ = try engine.pushFiles(deviceKeyHex: keyHex, localPaths: localPaths, remoteFolder: folder)
             } catch {
                 await self?.report(error)

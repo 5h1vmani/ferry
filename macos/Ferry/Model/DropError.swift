@@ -9,8 +9,6 @@ enum DropError: Error {
     /// A folder was among the items to push. The engine has no way to
     /// push a folder yet (docs/ux-fix-plan.md, "Not in this pass").
     case folderNotSupported
-    /// The device lists no root to land files in.
-    case noLandingFolder
     /// One of the URLs to send was not a file on this Mac.
     /// `docs/audits/ux-gestures.md`, finding 4.
     case nonFileURL
@@ -30,13 +28,6 @@ extension DropError {
                 whatStopped: S.drop.folderStopped,
                 why: S.drop.folderWhy,
                 whatToDo: S.drop.folderToDo,
-                canRetry: canRetry
-            )
-        case .noLandingFolder:
-            return ThreePartError(
-                whatStopped: S.drop.noLandingFolderStopped,
-                why: S.drop.noLandingFolderWhy,
-                whatToDo: S.drop.noLandingFolderToDo,
                 canRetry: canRetry
             )
         case .nonFileURL:
