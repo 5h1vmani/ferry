@@ -13,7 +13,6 @@ import android.os.Build
 import android.os.IBinder
 import app.ferry.engine.FerryEngine
 import app.ferry.model.Direction
-import app.ferry.model.Origin
 import app.ferry.model.TransferGroup
 import app.ferry.model.TransferState
 import app.ferry.model.toUi
@@ -372,55 +371,62 @@ class ReachableService : Service() {
 
     // "Automatic · Phone to Mac", or just the direction: the same words
     // TransferRow's own originAndDirection composes, from strings.xml.
+    // buildDirectionLine in TransferLines.kt holds the shared logic.
     private fun directionLineFor(group: TransferGroup): String {
         val direction = when (group.direction) {
             Direction.Pull -> getString(R.string.transfers_direction_mac_to_phone)
             Direction.Push -> getString(R.string.transfers_direction_phone_to_mac)
         }
-        if (group.origin != Origin.Automatic) {
-            return direction
-        }
-        return getString(R.string.transfers_origin_automatic) +
-            getString(R.string.dot_separator) +
-            direction
+        return buildDirectionLine(
+            origin = group.origin,
+            direction = direction,
+            automaticLabel = getString(R.string.transfers_origin_automatic),
+            dotSeparator = getString(R.string.dot_separator),
+        )
     }
 
     // "43 of 120 files · 2.1 GB remaining · 38 MB/s": TransferRow's own
     // activeLine, built the same way without a Compose context.
     private fun activeLineFor(group: TransferGroup): String {
-        val parts = mutableListOf<String>()
-        if (!group.isSingleFile) {
-            parts += getString(R.string.transfers_files_progress, group.filesDone, group.filesTotal)
+        val filesProgress = if (!group.isSingleFile) {
+            getString(R.string.transfers_files_progress, group.filesDone, group.filesTotal)
+        } else {
+            null
         }
         val remaining = (group.bytesTotal - group.bytesDone).coerceAtLeast(0L)
-        parts += getString(R.string.progress_remaining, formatSize(this, remaining))
+        val remainingText = getString(R.string.progress_remaining, formatSize(this, remaining))
         val speed = group.speedMBps
-        if (speed != null && speed > 0) {
-            parts += getString(R.string.transport_speed_value, speed)
+        val speedText = if (speed != null && speed > 0) {
+            getString(R.string.transport_speed_value, speed)
+        } else {
+            null
         }
-        return parts.joinToString(getString(R.string.dot_separator))
+        return buildActiveLine(filesProgress, remainingText, speedText, getString(R.string.dot_separator))
     }
 
     // TransferRow's own pausedLine.
     private fun pausedLineFor(group: TransferGroup): String {
-        val code = group.errorCode ?: return getString(R.string.progress_paused_plain)
-        val words = errorWordsFor(code, group.errorDetail)
-        val reason = listOfNotNull(words.why, words.todo).joinToString(" ")
-        return getString(R.string.progress_paused, reason)
+        val code = group.errorCode
+        val words = code?.let { errorWordsFor(it, group.errorDetail) }
+        return buildPausedLine(
+            code = code,
+            why = words?.why,
+            todo = words?.todo,
+            pausedPlain = getString(R.string.progress_paused_plain),
+            pausedTemplate = getString(R.string.progress_paused),
+        )
     }
 
     // "12 files · 4.8 GB · 3 min": TransferRow's own doneLine.
     private fun doneLineFor(group: TransferGroup): String {
-        val parts = mutableListOf<String>()
-        if (!group.isSingleFile) {
-            parts += getString(R.string.transfers_file_count, group.filesTotal)
+        val fileCount = if (!group.isSingleFile) {
+            getString(R.string.transfers_file_count, group.filesTotal)
+        } else {
+            null
         }
-        parts += formatSize(this, group.bytesTotal)
-        val duration = group.durationSecs
-        if (duration != null) {
-            parts += formatDuration(this, duration)
-        }
-        return parts.joinToString(getString(R.string.dot_separator))
+        val size = formatSize(this, group.bytesTotal)
+        val duration = group.durationSecs?.let { formatDuration(this, it) }
+        return buildDoneLine(fileCount, size, duration, getString(R.string.dot_separator))
     }
 
     // The three-part words for one error code, from the generated table,
