@@ -228,7 +228,6 @@ enum S {
         static let section = "Access log"
         static let empty = "No access yet."
         static let retention = "Kept for 30 days."
-        static let revealInFinder = "Reveal in Finder"
         static let today = "Today"
         static let yesterday = "Yesterday"
 

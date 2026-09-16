@@ -83,9 +83,9 @@ struct DeviceSnapshot: Equatable, Identifiable {
 
 // MARK: - Access, L2
 
-/// Whether the phone's folders are mounted in Finder, and where. Nothing
-/// reports it yet (docs/engine-contract.md, item 6), so this is empty and the
-/// section is absent.
+/// Whether the phone's folders are mounted in Finder, and where. Item 6
+/// reports this from the engine. The Access section shows while `path` is
+/// non-nil, and is absent otherwise.
 struct MountSnapshot: Equatable {
     /// "/Volumes/Pixel 3 XL" while mounted.
     let path: String?
