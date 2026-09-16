@@ -6,6 +6,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -103,6 +104,17 @@ fun FerryApp(
         }
     }
 
+    // A share's app-side error is cleared once Devices is left, not just
+    // at the start of the next share: audit finding 10. Nothing else
+    // clears it, so it stayed on Devices until another share happened.
+    DisposableEffect(screen) {
+        onDispose {
+            if (screen == Screen.Devices) {
+                ShareIntake.clearAppError()
+            }
+        }
+    }
+
     // The system back gesture otherwise finishes the activity from every
     // screen, whatever screen is showing. Each branch does what that
     // screen's own back control does.
@@ -138,10 +150,10 @@ fun FerryApp(
     val devices = engineDevices.map { it.toUi() }
     val accessDays = accessDaysOf(engineAccessLog.map { it.toUi() })
 
-    // A file a share could not read, or null: docs/ux-fix-plan.md item 1.
-    // This is an app-side fault, not an engine code, so its three parts are
-    // built from strings.xml here rather than through threePartError.
-    val shareUnreadableName by ShareIntake.unreadableName.collectAsState()
+    // An app-side fault a share, or a push it starts, hit: docs/ux-fix-plan.md
+    // item 1. Not an engine code, so its three parts are built from
+    // strings.xml here rather than through threePartError.
+    val shareAppError by ShareIntake.appError.collectAsState()
 
     // Devices carries whatever is stopping Ferry from working, in the order
     // that matters. A missing all files access grant comes first, because
@@ -154,16 +166,15 @@ fun FerryApp(
         errorWords = threePartError("Runtime::AllFilesAccess")
         errorActionLabel = stringResource(R.string.action_open_settings)
         errorAction = onOpenAllFilesAccess
-    } else if (shareUnreadableName != null) {
-        errorWords = ThreePartError(
-            stopped = stringResource(R.string.share_unreadable_stopped),
-            why = stringResource(R.string.share_unreadable_why, shareUnreadableName!!),
-            todo = stringResource(R.string.share_unreadable_todo),
-        )
     } else {
+        // A live engine error is shown ahead of an app-side share fault:
+        // audit finding 10. The share error used to be checked first, so
+        // it could hide a real engine error behind an old share's words.
         val failure = engineError
-        if (failure != null) {
-            errorWords = threePartError(failure)
+        errorWords = when {
+            failure != null -> threePartError(failure)
+            shareAppError != null -> appErrorWords(shareAppError!!)
+            else -> null
         }
     }
 
@@ -273,4 +284,40 @@ fun FerryApp(
             )
         }
     }
+}
+
+// The three parts for one ShareIntake.AppError, from strings.xml. These are
+// app-side faults with no engine code of their own, the same shape as
+// ErrorWords.kt's threePartError but reading a different set of templates.
+@Composable
+private fun appErrorWords(error: ShareIntake.AppError): ThreePartError = when (error) {
+    is ShareIntake.AppError.NotGranted -> ThreePartError(
+        stopped = stringResource(R.string.share_not_granted_stopped),
+        why = stringResource(R.string.share_not_granted_why),
+        todo = stringResource(R.string.share_not_granted_todo),
+    )
+
+    is ShareIntake.AppError.Unreadable -> ThreePartError(
+        stopped = stringResource(R.string.share_unreadable_stopped),
+        why = stringResource(R.string.share_unreadable_why, error.name),
+        todo = stringResource(R.string.share_unreadable_todo),
+    )
+
+    is ShareIntake.AppError.TooLarge -> ThreePartError(
+        stopped = stringResource(R.string.share_too_large_stopped),
+        why = stringResource(R.string.share_too_large_why, error.name),
+        todo = stringResource(R.string.share_too_large_todo),
+    )
+
+    is ShareIntake.AppError.TooMany -> ThreePartError(
+        stopped = stringResource(R.string.share_too_many_stopped),
+        why = stringResource(R.string.share_too_many_why, error.count, error.max),
+        todo = stringResource(R.string.share_too_many_todo),
+    )
+
+    is ShareIntake.AppError.NoLandingFolder -> ThreePartError(
+        stopped = stringResource(R.string.share_no_landing_folder_stopped),
+        why = stringResource(R.string.share_no_landing_folder_why, error.deviceName),
+        todo = stringResource(R.string.share_no_landing_folder_todo),
+    )
 }

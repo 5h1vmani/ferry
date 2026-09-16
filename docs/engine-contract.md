@@ -728,6 +728,14 @@ The phone's share target accepts only `content://` URIs from the app that
 shared them, never a raw file path. A file it copies out of one is named
 by that URI's last path segment alone, sanitized, inside a folder made
 for that one copy, so nothing the sharing app names can land outside it.
+It refuses the whole share unless the share's own intent carries
+`FLAG_GRANT_READ_URI_PERMISSION`, since the system sets that flag only for
+a sender that could read the file itself. A share naming more than 100
+files is refused whole, and a copy stops and is deleted if it would pass
+4 GiB or leave the phone with less than 512 MiB free. The target device
+for a gesture-started push is the only one paired, else the first
+reachable one; when several are paired and none is reachable, the app
+shows the same not-reachable error a dial would have failed with.
 
 ### 6. The mount: built
 

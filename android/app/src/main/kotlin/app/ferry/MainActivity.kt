@@ -86,7 +86,11 @@ class MainActivity : ComponentActivity() {
         }
         sendFilesPrompt = registerForActivityResult(
             ActivityResultContracts.OpenMultipleDocuments(),
-        ) { uris -> handleSharedUris(uris) }
+        ) { uris ->
+            // The document picker's own result always carries a read
+            // grant; the system is the sender, not another app.
+            handleSharedUris(uris, hasReadGrant = true)
+        }
         setContent {
             FerryApp(
                 onGrantFirstRunAccess = ::grantFirstRunAccess,
@@ -124,22 +128,39 @@ class MainActivity : ComponentActivity() {
         if (!ShareIntake.isShareIntent(intent)) {
             return
         }
-        handleSharedUris(ShareIntake.urisFrom(intent))
+        // Audit finding 1: a sender that could not read the file itself
+        // never gets this flag from the system, so its absence is the
+        // proof docs/engine-contract.md item 5 asks for.
+        val hasReadGrant = intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0
+        handleSharedUris(ShareIntake.urisFrom(intent), hasReadGrant)
     }
 
-    private fun handleSharedUris(uris: List<Uri>) {
+    private fun handleSharedUris(uris: List<Uri>, hasReadGrant: Boolean) {
         if (uris.isEmpty()) {
             return
         }
         ShareIntake.requestNavigateHome()
         val context = applicationContext
         Thread {
-            // A file that cannot be read stops the whole share: nothing is
-            // sent, and ShareIntake.unreadableName already carries the name
-            // FerryApp shows through ErrorBlock. docs/voice.md rule 10.
-            val resolution = ShareIntake.resolve(context, uris)
-            if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
-                FerryEngine.pushShared(resolution.localPaths)
+            try {
+                // A file that cannot be read stops the whole share: nothing
+                // is sent, and ShareIntake.appError already carries why,
+                // for FerryApp to show through ErrorBlock. docs/voice.md
+                // rule 10.
+                val resolution = ShareIntake.resolve(context, uris, hasReadGrant)
+                if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
+                    FerryEngine.pushShared(resolution.localPaths)
+                }
+            } catch (t: Throwable) {
+                // Audit finding 2. Any app on the phone can hand a share
+                // intent to Ferry; a fault this deep must not crash the
+                // process. There is no one file to name here, so the error
+                // says as much through the same path a per-file failure
+                // uses.
+                android.util.Log.w("Ferry", "share handling failed", t)
+                ShareIntake.setAppError(
+                    ShareIntake.AppError.Unreadable(context.getString(R.string.share_generic_file_name)),
+                )
             }
         }.start()
     }

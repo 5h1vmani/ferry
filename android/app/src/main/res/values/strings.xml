@@ -40,6 +40,33 @@
     <string name="share_unreadable_stopped">The share stopped.</string>
     <string name="share_unreadable_why">Ferry could not read %1$s from the app that shared it.</string>
     <string name="share_unreadable_todo">Save the file to the phone, then share it again.</string>
+    <!-- The name share_unreadable_why names when the failure gives no file
+         of its own, audit finding 2. -->
+    <string name="share_generic_file_name">the shared file</string>
+
+    <!-- A share whose intent carried no read grant, audit finding 1 of
+         docs/audits/ux-gestures.md. -->
+    <string name="share_not_granted_stopped">The share stopped.</string>
+    <string name="share_not_granted_why">The app that shared did not give Ferry the right to read the file.</string>
+    <string name="share_not_granted_todo">Share it from the phone\'s own Photos or Files app.</string>
+
+    <!-- A file over ShareIntake.MAX_SHARE_COPY_BYTES, or one that would
+         leave the phone with too little free space, audit finding 3. -->
+    <string name="share_too_large_stopped">The share stopped.</string>
+    <string name="share_too_large_why">%1$s is larger than the 4 GB Ferry copies, or the phone is nearly full.</string>
+    <string name="share_too_large_todo">Save it to the phone, then share it from Files.</string>
+
+    <!-- More files than ShareIntake.MAX_SHARE_URIS in one share, audit
+         finding 3. -->
+    <string name="share_too_many_stopped">The share stopped.</string>
+    <string name="share_too_many_why">It named %1$d files. Ferry sends at most %2$d files in one share.</string>
+    <string name="share_too_many_todo">Share fewer files at a time.</string>
+
+    <!-- The target Mac lists no shared root, audit finding 8. Named by the
+         Mac's own name, the way every other device fact on this screen is. -->
+    <string name="share_no_landing_folder_stopped">The share stopped.</string>
+    <string name="share_no_landing_folder_why">%1$s shares no folder.</string>
+    <string name="share_no_landing_folder_todo">Add a shared folder in Ferry\'s Settings on the Mac.</string>
     <string name="cd_back">Back</string>
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
     <string name="dot_separator"> · </string>
