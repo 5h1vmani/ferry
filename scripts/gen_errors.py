@@ -15,6 +15,7 @@ it do not move.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -71,6 +72,28 @@ def escape_string(value):
 # ---------------------------------------------------------------------------
 
 
+def code_ident_swift(code):
+    """OpError::AlreadyExists -> opErrorAlreadyExists."""
+    joined = "".join(code.split("::"))
+    return joined[0].lower() + joined[1:]
+
+
+def code_ident_kotlin(code):
+    """OpError::AlreadyExists -> OP_ERROR_ALREADY_EXISTS."""
+    joined = "".join(code.split("::"))
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", joined)
+    return snake.upper()
+
+
+def check_idents_unique(rows, ident):
+    seen = {}
+    for code, _ in rows:
+        name = ident(code)
+        if name in seen:
+            raise SystemExit(f"two codes make one identifier {name}: {seen[name]} and {code}")
+        seen[name] = code
+
+
 def generate_swift(data):
     rows = error_rows(data)
     lines = []
@@ -112,6 +135,13 @@ def generate_swift(data):
     lines.append("        }")
     lines.append('        return text.replacingOccurrences(of: "{detail}", with: detail)')
     lines.append("    }")
+    lines.append("}")
+    lines.append("")
+    check_idents_unique(rows, code_ident_swift)
+    lines.append("/// Every error code in design/errors.json, so no app types a code by hand.")
+    lines.append("enum FerryErrorCode {")
+    for code, _ in rows:
+        lines.append(f'    static let {code_ident_swift(code)} = "{escape_string(code)}"')
     lines.append("}")
     lines.append("")
     return "\n".join(lines)
@@ -164,6 +194,13 @@ def generate_kotlin(data):
     lines.append("        }")
     lines.append('        return text.replace("{detail}", detail)')
     lines.append("    }")
+    lines.append("}")
+    lines.append("")
+    check_idents_unique(rows, code_ident_kotlin)
+    lines.append("// Every error code in design/errors.json, so no app types a code by hand.")
+    lines.append("object FerryErrorCode {")
+    for code, _ in rows:
+        lines.append(f'    const val {code_ident_kotlin(code)} = "{escape_string(code)}"')
     lines.append("}")
     lines.append("")
     return "\n".join(lines)
