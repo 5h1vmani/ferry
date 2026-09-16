@@ -134,9 +134,12 @@ class MainActivity : ComponentActivity() {
         ShareIntake.requestNavigateHome()
         val context = applicationContext
         Thread {
-            val paths = ShareIntake.resolveToLocalPaths(context, uris)
-            if (paths.isNotEmpty()) {
-                FerryEngine.pushShared(paths)
+            // A file that cannot be read stops the whole share: nothing is
+            // sent, and ShareIntake.unreadableName already carries the name
+            // FerryApp shows through ErrorBlock. docs/voice.md rule 10.
+            val resolution = ShareIntake.resolve(context, uris)
+            if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
+                FerryEngine.pushShared(resolution.localPaths)
             }
         }.start()
     }

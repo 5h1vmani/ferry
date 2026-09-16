@@ -53,6 +53,23 @@ object ShareIntake {
         _navigateHome.value += 1
     }
 
+    // The display name of the first file a share could not read, or null
+    // once a share has read every file it named. FerryApp shows this
+    // through the same ErrorBlock an engine error uses: docs/voice.md rule
+    // 10, nothing is hidden. Set at the start of every resolve call, so an
+    // error from an earlier share does not outlive it.
+    private val _unreadableName = MutableStateFlow<String?>(null)
+    val unreadableName: StateFlow<String?> = _unreadableName.asStateFlow()
+
+    // What one resolve call found: every path, ready to push, or the name
+    // of the first file that could not be read. A share with any
+    // unreadable file sends none of them, so a person is never left
+    // guessing which files went and which did not.
+    sealed class Resolution {
+        data class Success(val localPaths: List<String>) : Resolution()
+        data object Unreadable : Resolution()
+    }
+
     // Called once, from FerryApplication.onCreate. Waits for the engine to
     // report started, since batches() reads nothing before that, then
     // removes every cache copy no known batch names, and keeps watching for
@@ -102,8 +119,34 @@ object ShareIntake {
 
     // Resolves every URI to an absolute path, copying into the cache where
     // needed. Blocks on disk, so the caller runs it off the main thread.
-    fun resolveToLocalPaths(context: Context, uris: List<Uri>): List<String> =
-        uris.mapNotNull { resolveOne(context, it) }
+    //
+    // Stops at the first file it cannot read and sends none of the paths:
+    // a share that partly lands is a person guessing which files made it.
+    fun resolve(context: Context, uris: List<Uri>): Resolution {
+        _unreadableName.value = null
+        val paths = mutableListOf<String>()
+        for (uri in uris) {
+            val path = resolveOne(context, uri)
+            if (path == null) {
+                _unreadableName.value = nameForError(context, uri)
+                return Resolution.Unreadable
+            }
+            paths += path
+        }
+        return Resolution.Success(paths)
+    }
+
+    // The name to show for a file that could not be read: the same display
+    // name copyToCache would have used, or the URI itself when the
+    // provider gives none or refuses to say.
+    private fun nameForError(context: Context, uri: Uri): String {
+        val name = try {
+            displayNameOf(context.contentResolver, uri)
+        } catch (e: SecurityException) {
+            null
+        }
+        return name ?: uri.lastPathSegment ?: uri.toString()
+    }
 
     private fun resolveOne(context: Context, uri: Uri): String? {
         val direct = mediaStorePath(context, uri)

@@ -138,6 +138,11 @@ fun FerryApp(
     val devices = engineDevices.map { it.toUi() }
     val accessDays = accessDaysOf(engineAccessLog.map { it.toUi() })
 
+    // A file a share could not read, or null: docs/ux-fix-plan.md item 1.
+    // This is an app-side fault, not an engine code, so its three parts are
+    // built from strings.xml here rather than through threePartError.
+    val shareUnreadableName by ShareIntake.unreadableName.collectAsState()
+
     // Devices carries whatever is stopping Ferry from working, in the order
     // that matters. A missing all files access grant comes first, because
     // it is the one a person can fix, and it is why the engine did not
@@ -149,6 +154,12 @@ fun FerryApp(
         errorWords = threePartError("Runtime::AllFilesAccess")
         errorActionLabel = stringResource(R.string.action_open_settings)
         errorAction = onOpenAllFilesAccess
+    } else if (shareUnreadableName != null) {
+        errorWords = ThreePartError(
+            stopped = stringResource(R.string.share_unreadable_stopped),
+            why = stringResource(R.string.share_unreadable_why, shareUnreadableName!!),
+            todo = stringResource(R.string.share_unreadable_todo),
+        )
     } else {
         val failure = engineError
         if (failure != null) {

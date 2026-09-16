@@ -32,6 +32,14 @@
          Opens the system picker; the same words on the Mac name the Finder
          Services entry and the drop target's own control. -->
     <string name="action_send_files">Send files</string>
+
+    <!-- A share that could not read one of its files, docs/ux-fix-plan.md
+         item 1. This is an app-side fault, not an engine code, so its
+         three parts live here rather than in the generated error table,
+         the same way the Mac's own app-side words live in Strings.swift. -->
+    <string name="share_unreadable_stopped">The share stopped.</string>
+    <string name="share_unreadable_why">Ferry could not read %1$s from the app that shared it.</string>
+    <string name="share_unreadable_todo">Save the file to the phone, then share it again.</string>
     <string name="cd_back">Back</string>
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
     <string name="dot_separator"> · </string>

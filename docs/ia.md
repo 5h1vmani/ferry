@@ -201,6 +201,7 @@ see why has no way to guess.
 | Populated | One row per device: name, TransportBadge. A device that is moving bytes shows its speed in the badge. On the phone, the top bar also gains "Send files", which opens the system document picker and pushes the chosen files to the paired Mac. **new** |
 | Two transports | The active transport in the badge; the spare stated once beside it: "USB also available". **new** A pulled cable is then not a surprise. |
 | Not reachable | The device icon in `text_secondary`, the name, a badge reading "Not reachable", and a caption: "Last seen 2 hours ago". Still listed. |
+| Unreadable share | On the phone, an ErrorBlock: "The share stopped. Ferry could not read <name> from the app that shared it. Save the file to the phone, then share it again." **new** Nothing is sent; docs/voice.md rule 10. |
 
 There is no loading state. The list is local and instant.
 
