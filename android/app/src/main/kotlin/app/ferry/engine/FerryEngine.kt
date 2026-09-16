@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import app.ferry.FerryErrorCode
 import app.ferry.NetworkName
 import app.ferry.ShareIntake
 import uniffi.ferry_runtime.AccessEntry
@@ -599,7 +600,7 @@ object FerryEngine {
                     // (docs/engine-contract.md item 5), so this call makes
                     // it first. A folder already there is success, not a
                     // fault.
-                    if (code != "OpError::AlreadyExists") {
+                    if (code != FerryErrorCode.OP_ERROR_ALREADY_EXISTS) {
                         throw e
                     }
                 }
