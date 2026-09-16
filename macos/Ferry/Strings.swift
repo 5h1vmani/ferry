@@ -154,11 +154,6 @@ enum S {
         static let noDeviceWhy = "No device is paired."
         static let noDeviceToDo = "Pair a phone, then try again."
 
-        /// The folder name a gesture-started push always lands in, inside
-        /// the first root the device lists. `docs/engine-contract.md`,
-        /// item 5, "Where a push lands".
-        static let downloadFolderName = "Download"
-
         /// The caption at the top of a device's detail, while it is
         /// reachable: where a drop lands. `docs/ux-fix-plan.md`, item 4.
         static let captionFormat = "Files dropped on %1$@ land in %2$@."

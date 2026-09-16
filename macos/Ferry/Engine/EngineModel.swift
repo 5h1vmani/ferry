@@ -671,13 +671,21 @@ final class EngineModel: ObservableObject {
         }.value
     }
 
+    /// The subfolder name a gesture-started push always lands in, inside
+    /// the first root the device lists. `docs/engine-contract.md`, item 5,
+    /// "Where a push lands", fixes this value: it is a path segment both
+    /// apps must agree on, not a word a person reads, so it lives here
+    /// rather than in `Strings.swift`. `docs/audits/ux-gestures.md`,
+    /// finding 13.
+    nonisolated private static let landingSubfolder = "Download"
+
     /// The folder name `landingFolder` and `send` both compute from a
-    /// `list("")` call: the first root's name, then "Download".
+    /// `list("")` call: the first root's name, then `landingSubfolder`.
     nonisolated private static func landingFolderPath(from roots: [Entry]) throws -> String {
         guard let firstRoot = roots.first else {
             throw DropError.noLandingFolder
         }
-        return firstRoot.name + "/" + S.drop.downloadFolderName
+        return firstRoot.name + "/" + landingSubfolder
     }
 
     /// Whether `url` names a folder on disk right now.
