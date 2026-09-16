@@ -200,6 +200,16 @@ class ReachableService : Service() {
         manager.createNotificationChannel(channel)
     }
 
+    // Opens MainActivity from a tap on any notification this service posts.
+    // Every notification opens the same screen, so this is the one place
+    // the intent is built.
+    private fun openAppIntent(): PendingIntent = PendingIntent.getActivity(
+        this,
+        0,
+        Intent(this, MainActivity::class.java),
+        PendingIntent.FLAG_IMMUTABLE,
+    )
+
     // While this service runs the phone is advertising, so the notification
     // states that and offers the one action that changes it. The off state
     // states that instead, with the action that reverses it, so both ends
@@ -209,12 +219,7 @@ class ReachableService : Service() {
     // The device is named rather than called "your phone", because a person
     // reading this may have two.
     private fun buildNotification(): Notification {
-        val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
+        val open = openAppIntent()
         if (!advertising) {
             val start = PendingIntent.getService(
                 this,
@@ -302,12 +307,7 @@ class ReachableService : Service() {
     }
 
     private fun buildTransferNotification(group: TransferGroup): Notification {
-        val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
+        val open = openAppIntent()
         val builder = Notification.Builder(this, TRANSFERS_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(group.label)
@@ -458,12 +458,7 @@ class ReachableService : Service() {
         } else {
             errorWordsFor(FerryErrorCode.RUNTIME_NOT_STARTED, null)
         }
-        val open = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE,
-        )
+        val open = openAppIntent()
         val notification = Notification.Builder(this, TRANSFERS_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(words.stopped)
