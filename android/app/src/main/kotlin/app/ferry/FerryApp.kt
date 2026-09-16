@@ -31,7 +31,7 @@ import app.ferry.screens.SettingsScreen
 //
 // There is no Device screen. A phone holds one Mac, so selecting it changes
 // nothing: its transfers are on Devices and its four facts are in Settings.
-// docs-v2/ia.md, On the phone.
+// docs/ia.md, On the phone.
 sealed class Screen {
     data object Devices : Screen()
     data object Pairing : Screen()

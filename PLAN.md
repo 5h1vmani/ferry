@@ -1,8 +1,9 @@
 # Ferry: build plan
 
 Date written: 9 September 2026.
-Status: order 0 is done, apart from two items that need a person at the
-keyboard. See `docs/spike-0-findings.md`. Phase 1 has not started.
+Status: this line is not kept current. The README's opening section holds
+the build status, and `docs/ux-fix-plan.md` holds the UX work's status.
+Order 0's findings are in `docs/spike-0-findings.md`.
 
 ## 1. Goal
 

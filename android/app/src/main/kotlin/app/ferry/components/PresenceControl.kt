@@ -17,7 +17,7 @@ import app.ferry.FerryIcon
 import app.ferry.R
 
 // Whether this phone advertises and accepts connections, and what that
-// costs when it does not. docs-v2/components.md, PresenceControl. Job 5's
+// costs when it does not. docs/components.md, PresenceControl. Job 5's
 // only control.
 //
 // It appears in two places on the phone: pinned under the top bar on

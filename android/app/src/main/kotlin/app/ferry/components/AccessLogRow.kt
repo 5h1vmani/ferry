@@ -17,7 +17,7 @@ import app.ferry.model.AccessActor
 import app.ferry.model.AccessEntry
 import app.ferry.model.AccessVerb
 
-// One file operation, as a sentence. docs-v2/components.md, AccessLogRow.
+// One file operation, as a sentence. docs/components.md, AccessLogRow.
 // L5, job 9.
 //
 // The subject is always named — "MacBook Pro read" or "This phone read" —

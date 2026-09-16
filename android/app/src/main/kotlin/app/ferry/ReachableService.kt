@@ -37,7 +37,7 @@ import uniffi.ferry_runtime.TransferInfo
 // the same words about the same fact, which is why those words live in
 // strings.xml and not in either of them.
 //
-// The off state is a state of this service, not its absence. docs-v2/ia.md,
+// The off state is a state of this service, not its absence. docs/ia.md,
 // Presence, both platforms, promises a notification with "Not advertising"
 // and a "Start advertising" action. Tapping Stop from the shade, or
 // turning the switch off inside the app, both leave a way back without
@@ -45,7 +45,7 @@ import uniffi.ferry_runtime.TransferInfo
 // the process itself dies. Toggling advertising off never stops it.
 //
 // The notification never shows the quiet-on-this-network line. Both its
-// lines show only in Settings, Networks: docs-v2/ia.md, Presence, both
+// lines show only in Settings, Networks: docs/ia.md, Presence, both
 // platforms.
 //
 // The service type is dataSync. Android 15 and later limit a dataSync
@@ -203,7 +203,7 @@ class ReachableService : Service() {
     // While this service runs the phone is advertising, so the notification
     // states that and offers the one action that changes it. The off state
     // states that instead, with the action that reverses it, so both ends
-    // of the switch are reachable from the shade. docs-v2/ia.md, Presence,
+    // of the switch are reachable from the shade. docs/ia.md, Presence,
     // both platforms.
     //
     // The device is named rather than called "your phone", because a person

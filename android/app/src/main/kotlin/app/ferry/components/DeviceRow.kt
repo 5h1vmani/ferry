@@ -20,18 +20,18 @@ import app.ferry.model.DeviceInfo
 import app.ferry.model.DeviceKind
 import app.ferry.model.Transport
 
-// One paired device in the Devices list. docs-v2/components.md, DeviceRow.
+// One paired device in the Devices list. docs/components.md, DeviceRow.
 //
 // The row is not a link. A phone holds one Mac, so a tap that selects it
 // changes nothing: there is no device detail screen, and the transfers sit
-// under this row on the same screen. docs-v2/ia.md, On the phone.
+// under this row on the same screen. docs/ia.md, On the phone.
 //
 // Screen reader says the name, then the badge text, then the spare
 // transport if there is one, then last seen if present, as one
 // announcement. TransportBadge sets its own contentDescription, so merging
 // descendants would read its text a second time; clearAndSetSemantics
 // replaces the whole subtree with exactly the one string
-// docs-v2/components.md asks for.
+// docs/components.md asks for.
 @Composable
 fun DeviceRow(
     device: DeviceInfo,

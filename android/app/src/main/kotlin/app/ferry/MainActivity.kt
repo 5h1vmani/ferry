@@ -28,7 +28,7 @@ class MainActivity : ComponentActivity() {
 
     // True once the person has granted on the first run screen. The
     // notification prompt follows the all files access screen, which is
-    // step 3 of the phone first run in docs-v2/ia.md.
+    // step 3 of the phone first run in docs/ia.md.
     private var cameFromFirstRun = false
 
     // Each prompt is shown once per run of the process. Android itself

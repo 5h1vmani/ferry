@@ -27,7 +27,7 @@ import app.ferry.FerrySpace
 import app.ferry.R
 import app.ferry.model.ChunkFacts
 
-// The bottom of the depth axis. docs-v2/ia.md, The chunk disclosure.
+// The bottom of the depth axis. docs/ia.md, The chunk disclosure.
 //
 // Part of the Transfers row, not a component of its own. It appears only
 // where the engine holds a chunk-level fact, and collapsed by default,

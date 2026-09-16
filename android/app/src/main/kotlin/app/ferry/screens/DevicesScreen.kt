@@ -32,7 +32,7 @@ import app.ferry.model.DeviceInfo
 import app.ferry.model.ThreePartError
 import app.ferry.model.TransferGroup
 
-// Devices, the home screen. docs-v2/ia.md, On the phone.
+// Devices, the home screen. docs/ia.md, On the phone.
 //
 // One row per paired device, its transfers under it, and Settings from the
 // top bar. There is no loading state; the list is local and instant.
@@ -49,7 +49,7 @@ import app.ferry.model.TransferGroup
 // anything is paired — so it shows in the empty state too.
 //
 // The error block above the list is what a missing all files access grant
-// looks like. docs-v2/ia.md asks for exactly that: Devices still works, and
+// looks like. docs/ia.md asks for exactly that: Devices still works, and
 // the reason nothing can be served is on the screen with a way to fix it.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

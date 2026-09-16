@@ -28,7 +28,7 @@ import app.ferry.FerryFont
 import app.ferry.FerrySpace
 import app.ferry.R
 
-// First run. docs-v2/ia.md, First run, phone.
+// First run. docs/ia.md, First run, phone.
 //
 // Two things, each with the reason it is needed. Ferry states what it wants
 // and why, and then gets out of the way.
@@ -36,7 +36,7 @@ import app.ferry.R
 // The control is "Grant access", not "Continue": rule 9 of docs/voice.md
 // bans that word by name, and this button does one nameable thing.
 //
-// Skip exists because all files access can be refused, and docs-v2/ia.md
+// Skip exists because all files access can be refused, and docs/ia.md
 // already says Devices must still work when it is. A screen with one
 // forward control and no way past it contradicts that. Skipping lands on
 // Devices with "Not granted" in Settings, and every transfer then fails

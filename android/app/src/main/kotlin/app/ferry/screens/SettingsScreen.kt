@@ -32,7 +32,7 @@ import app.ferry.formatDate
 import app.ferry.model.DeviceInfo
 import app.ferry.model.isCurrentNetworkTrusted
 
-// Settings. docs-v2/ia.md, Settings, the phone.
+// Settings. docs/ia.md, Settings, the phone.
 //
 // Reachability has left this screen. It was a switch filed under
 // preferences; it is a mode with a consequence, and it now lives where
@@ -238,7 +238,7 @@ private fun Fact(
     )
 }
 
-// The Networks section. docs/engine-contract.md item 18, docs-v2/ia.md
+// The Networks section. docs/engine-contract.md item 18, docs/ia.md
 // Settings, the phone.
 //
 // The current network row offers Trust only while it is known and not

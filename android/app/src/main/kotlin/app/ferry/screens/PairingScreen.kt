@@ -56,7 +56,7 @@ import app.ferry.model.pairingStepOf
 import app.ferry.threePartError
 import kotlinx.coroutines.delay
 
-// Pairing, a full screen flow on the phone. docs-v2/ia.md, Pairing, the
+// Pairing, a full screen flow on the phone. docs/ia.md, Pairing, the
 // phone.
 //
 // Two ways in, and every step offers the other one. Scanning is fewer steps
@@ -277,7 +277,7 @@ fun PairingScreen(
                 is PairingStep.Confirmed -> Padded {
                     ConfirmedContent()
                     LaunchedEffect(step.deviceId) {
-                        // docs-v2/components.md holds the paired icon for
+                        // docs/components.md holds the paired icon for
                         // one second before the view closes.
                         delay(CONFIRMED_MILLIS)
                         FerryEngine.cancelPairing()

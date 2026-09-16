@@ -28,7 +28,7 @@ import app.ferry.formatDate
 import app.ferry.model.AccessDay
 import app.ferry.model.DayKind
 
-// The access log. docs-v2/ia.md, The access log. L5, job 9.
+// The access log. docs/ia.md, The access log. L5, job 9.
 //
 // What this phone served to a paired device, and what it read from one.
 // Ferry is symmetric — either device serves files to the other — so both
@@ -41,7 +41,7 @@ import app.ferry.model.DayKind
 // destination and presence is not.
 //
 // Nothing here notifies, badges, or judges. It records what happened and
-// does not decide that something was wrong. docs-v2/jobs.md, what job 9 is
+// does not decide that something was wrong. docs/jobs.md, what job 9 is
 // not.
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

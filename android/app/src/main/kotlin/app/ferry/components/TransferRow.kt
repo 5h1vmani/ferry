@@ -31,7 +31,7 @@ import app.ferry.model.TransferState
 import app.ferry.threePartError
 
 // One group of transfers as one row of the Transfers section.
-// docs-v2/ia.md, Transfers.
+// docs/ia.md, Transfers.
 //
 // A batch and a single transfer draw the same way, so this view never asks
 // which it has: a folder copy of 120 files is one row, and so is one pull.

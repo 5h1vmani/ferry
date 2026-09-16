@@ -32,7 +32,7 @@ enum class DeviceKind {
     Mac,
 }
 
-// A device this phone has paired with. Matches docs-v2/ia.md's Device.
+// A device this phone has paired with. Matches docs/ia.md's Device.
 data class DeviceInfo(
     // The public key as 64 lowercase hex characters. This is the identity,
     // and it is what forget takes.
@@ -56,7 +56,7 @@ data class DeviceInfo(
     val mountPath: String?,
 )
 
-// One file moving in one direction. Matches docs-v2/ia.md's Transfer.
+// One file moving in one direction. Matches docs/ia.md's Transfer.
 enum class TransferState {
     Queued,
     Active,
@@ -88,7 +88,7 @@ data class ThreePartError(
 )
 
 // How far into a file's chunks a transfer has verified. The bottom of the
-// depth axis in docs-v2/ia.md, shown by the chunk disclosure.
+// depth axis in docs/ia.md, shown by the chunk disclosure.
 data class ChunkFacts(
     val verified: Int,
     val total: Int,
