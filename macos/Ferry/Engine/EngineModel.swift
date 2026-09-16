@@ -48,6 +48,10 @@ final class EngineModel: ObservableObject {
     @Published var presence: PresenceSnapshot = .unknown
     /// The folders this Mac serves.
     @Published var roots: [SharedRootSnapshot] = []
+    /// How many days an access log entry is kept, from
+    /// `access_log_retention_days()`. Nil until the engine has started.
+    /// `docs/engine-contract.md`, item 13.
+    @Published private(set) var accessLogRetentionDays: UInt32?
     /// Set when the engine could not be built or started. While this is
     /// set, the window shows it instead of the devices.
     @Published private(set) var startError: ThreePartError?
@@ -178,6 +182,7 @@ final class EngineModel: ObservableObject {
             // `start` is what opens the roots on disk, so this is the
             // engine's own answer, not the one this model guessed at init.
             roots = EngineAdapter.roots(engine.roots())
+            accessLogRetentionDays = engine.accessLogRetentionDays()
             reloadDevices()
             reloadTransfers()
             startNetworkReader()
@@ -206,6 +211,7 @@ final class EngineModel: ObservableObject {
         batchInfos = []
         devices = []
         trustedNetworks = []
+        accessLogRetentionDays = nil
         pairingState = .idle
         pairingMethod = nil
         pairing = .choosing

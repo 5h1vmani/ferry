@@ -273,7 +273,10 @@ enum S {
     enum accessLog {
         static let section = "Access log"
         static let empty = "No access yet."
-        static let retention = "Kept for 30 days."
+        static let retentionFormat = "Kept for %d days."
+        static func retention(days: UInt32) -> String {
+            String(format: retentionFormat, days)
+        }
         static let today = "Today"
         static let yesterday = "Yesterday"
 

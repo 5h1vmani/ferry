@@ -74,7 +74,8 @@ struct DeviceDetail: View {
 
             AccessLogSection(
                 days: model.accessLog(forDevice: device.keyHex),
-                peerName: device.name
+                peerName: device.name,
+                retentionDays: model.accessLogRetentionDays
             )
 
             infoFooter

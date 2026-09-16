@@ -14,6 +14,10 @@ import SwiftUI
 struct AccessLogSection: View {
     let days: [AccessDaySnapshot]
     let peerName: String
+    /// From the model's `accessLogRetentionDays`. Nil until the engine has
+    /// started, in which case the retention line is left out rather than
+    /// guessed.
+    let retentionDays: UInt32?
 
     var body: some View {
         Section(S.accessLog.section) {
@@ -32,9 +36,11 @@ struct AccessLogSection: View {
 
             // Stated because a log that quietly forgets is worse than no
             // log.
-            Text(S.accessLog.retention)
-                .font(FerryFont.caption)
-                .foregroundStyle(FerryColor.textSecondary)
+            if let retentionDays {
+                Text(S.accessLog.retention(days: retentionDays))
+                    .font(FerryFont.caption)
+                    .foregroundStyle(FerryColor.textSecondary)
+            }
         }
     }
 }
@@ -42,7 +48,7 @@ struct AccessLogSection: View {
 #if DEBUG
 #Preview {
     Form {
-        AccessLogSection(days: PreviewData.accessDays, peerName: "Pixel 3 XL")
+        AccessLogSection(days: PreviewData.accessDays, peerName: "Pixel 3 XL", retentionDays: 30)
     }
     .formStyle(.grouped)
     .frame(width: 700, height: 420)
@@ -50,7 +56,7 @@ struct AccessLogSection: View {
 
 #Preview("Empty") {
     Form {
-        AccessLogSection(days: [], peerName: "Pixel 3 XL")
+        AccessLogSection(days: [], peerName: "Pixel 3 XL", retentionDays: 30)
     }
     .formStyle(.grouped)
     .frame(width: 700, height: 240)
