@@ -142,23 +142,46 @@ final class EngineModel: ObservableObject {
 
     /// Builds the engine and starts it. Safe to call again after a failure;
     /// the Retry control does exactly that.
-    func start() {
+    ///
+    /// The data directory and the Keychain read both touch disk, so both
+    /// run off the main actor in a detached task, the way
+    /// `mountReachableDevice` runs its own disk and network work. Building
+    /// and starting the engine, and publishing the result, hop back to the
+    /// main actor in `finishStarting`.
+    func start() async {
         guard engine == nil else { return }
         startError = nil
-        // Held so that an engine which was built but failed to start is
-        // stopped again. It holds the data directory until it is, and the
-        // next try would be refused.
+        EngineModel.addAdbToPath()
+        do {
+            let (dataDir, key) = try await Task.detached {
+                let dataDir = try EngineModel.makeDataDirectory()
+                let key = try KeyStore.loadOrCreate()
+                return (dataDir, key)
+            }.value
+            try finishStarting(dataDir: dataDir, key: key)
+        } catch {
+            startError = ThreePartError.from(error, canRetry: true)
+        }
+    }
+
+    /// Builds and starts the engine once the data directory exists and the
+    /// key is read, then publishes the first snapshot. Runs on the main
+    /// actor: this is where `Engine` and every published property are
+    /// touched.
+    ///
+    /// Held so that an engine which was built but failed to start is
+    /// stopped again. It holds the data directory until it is, and the
+    /// next try would be refused.
+    private func finishStarting(dataDir: String, key: KeyPair) throws {
         var built: Engine?
         do {
-            EngineModel.addAdbToPath()
-            let dataDir = try EngineModel.makeDataDirectory()
             let config = Config(
                 dataDir: dataDir,
                 sharedRoots: roots.map(EngineModel.engineRoot),
                 downloadDir: downloadPath,
                 displayName: EngineModel.displayName(),
                 listenPort: 0,
-                key: try KeyStore.loadOrCreate(),
+                key: key,
                 kind: .mac
             )
             let events = EngineEvents(model: self)
@@ -175,9 +198,9 @@ final class EngineModel: ObservableObject {
             startNetworkReader()
         } catch {
             built?.stop()
-            startError = ThreePartError.from(error, canRetry: true)
             engine = nil
             events = nil
+            throw error
         }
     }
 
@@ -234,9 +257,25 @@ final class EngineModel: ObservableObject {
     /// again on the device's next reachable moment, the same as one this
     /// app unmounted itself.
     private func clearEjectedMounts() {
-        for index in deviceInfos.indices {
-            guard let path = deviceInfos[index].mountPath else { continue }
-            guard !FileManager.default.fileExists(atPath: path) else { continue }
+        let mounted = deviceInfos.compactMap { info in
+            info.mountPath.map { (keyHex: info.keyHex, path: $0) }
+        }
+        guard !mounted.isEmpty else { return }
+        Task.detached { [weak self] in
+            let ejected = mounted.filter { !FileManager.default.fileExists(atPath: $0.path) }
+            guard !ejected.isEmpty else { return }
+            await self?.clearMountPaths(forDevices: ejected.map(\.keyHex))
+        }
+    }
+
+    /// Clears the stored mount path for each device in `keyHexes`: a
+    /// person ejected the volume in Finder since `clearEjectedMounts` last
+    /// checked. Runs on the main actor, since it writes `deviceInfos` and
+    /// `devices` and can publish through `report(_:)`. `docs/engine-contract.md`,
+    /// item 6, S9.
+    private func clearMountPaths(forDevices keyHexes: [String]) {
+        let ejected = Set(keyHexes)
+        for index in deviceInfos.indices where ejected.contains(deviceInfos[index].keyHex) {
             deviceInfos[index].mountPath = nil
             do {
                 try engine?.setMountPath(deviceKeyHex: deviceInfos[index].keyHex, path: nil)
@@ -244,6 +283,7 @@ final class EngineModel: ObservableObject {
                 report(error)
             }
         }
+        devices = EngineAdapter.devices(deviceInfos)
     }
 
     func reloadTransfers() {
@@ -265,15 +305,28 @@ final class EngineModel: ObservableObject {
     /// value already known rather than a file system call to make.
     /// `docs/audits/ux-gestures.md`, finding 14.
     private func updateRevealPaths() {
-        for transfer in transferInfos {
+        let candidates = transferInfos.compactMap { transfer -> (id: String, path: String)? in
             guard transfer.batchId == nil, transfer.state == .done, transfer.direction == .pull else {
-                continue
+                return nil
             }
-            guard revealPaths[transfer.id] == nil else { continue }
-            let path = downloadPath + "/" + transfer.fileName
-            guard FileManager.default.fileExists(atPath: path) else { continue }
-            revealPaths[transfer.id] = path
+            guard revealPaths[transfer.id] == nil else { return nil }
+            return (transfer.id, downloadPath + "/" + transfer.fileName)
         }
+        guard !candidates.isEmpty else { return }
+        Task.detached { [weak self] in
+            let found = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
+            guard !found.isEmpty else { return }
+            await self?.storeRevealPaths(found)
+        }
+    }
+
+    /// Caches each path `updateRevealPaths` found on disk, off the main
+    /// actor. `docs/audits/ux-gestures.md`, finding 14.
+    private func storeRevealPaths(_ found: [(id: String, path: String)]) {
+        for item in found {
+            revealPaths[item.id] = item.path
+        }
+        objectWillChange.send()
     }
 
     /// Every batch moving right now, across every device, for the menu
@@ -923,14 +976,17 @@ final class EngineModel: ObservableObject {
         return NSHomeDirectory() + "/Downloads/Ferry"
     }
 
-    /// The engine's own files: paired devices and transfer records.
-    private static func makeDataDirectory() throws -> String {
+    /// The engine's own files: paired devices and transfer records. Marked
+    /// `nonisolated`, with `makeDirectory(at:)`, so `start()` can run this
+    /// inside a detached task rather than on the main actor: it touches no
+    /// instance state, only the disk. `docs/audits/principles.md`, M21.
+    nonisolated private static func makeDataDirectory() throws -> String {
         let path = NSHomeDirectory() + "/Library/Application Support/Ferry"
         try makeDirectory(at: path)
         return path
     }
 
-    private static func makeDirectory(at path: String) throws {
+    nonisolated private static func makeDirectory(at path: String) throws {
         try FileManager.default.createDirectory(
             atPath: path,
             withIntermediateDirectories: true

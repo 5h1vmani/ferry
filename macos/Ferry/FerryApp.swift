@@ -25,7 +25,7 @@ struct FerryApp: App {
                 .task {
                     appDelegate.model = model
                     appDelegate.registerServicesProvider()
-                    model.start()
+                    await model.start()
                 }
         }
         .commands {

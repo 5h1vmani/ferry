@@ -24,7 +24,7 @@ struct ContentView: View {
     var body: some View {
         Group {
             if let startError = model.startError {
-                ErrorBlock(error: startError, onRetry: { model.start() })
+                ErrorBlock(error: startError, onRetry: { Task { await model.start() } })
                     .padding(FerrySpace.s6)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             } else {
