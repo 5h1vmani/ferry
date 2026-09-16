@@ -575,7 +575,10 @@ mod tests {
         let binary = fake_adb("timeout", "sleep 30\n");
         // A short timeout, so this test does not itself take 10 seconds.
         let adb = Adb::with_timeout(binary, Duration::from_millis(200));
-        assert!(matches!(adb.devices(), Err(AdbError::Timeout)));
+        match adb.devices() {
+            Err(AdbError::Timeout) => {}
+            other => panic!("expected AdbError::Timeout, got {other:?}"),
+        }
     }
 
     #[test]
