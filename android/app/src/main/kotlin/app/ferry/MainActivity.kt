@@ -141,7 +141,7 @@ class MainActivity : ComponentActivity() {
         }
         ShareIntake.requestNavigateHome()
         val context = applicationContext
-        Thread {
+        ShareIntake.launchOnIo {
             try {
                 // A file that cannot be read stops the whole share: nothing
                 // is sent, and ShareIntake.appError already carries why,
@@ -162,7 +162,7 @@ class MainActivity : ComponentActivity() {
                     ShareIntake.AppError.Unreadable(context.getString(R.string.share_generic_file_name)),
                 )
             }
-        }.start()
+        }
     }
 
     override fun onResume() {

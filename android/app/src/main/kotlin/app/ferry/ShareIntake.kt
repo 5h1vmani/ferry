@@ -50,6 +50,15 @@ object ShareIntake {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    // Runs a share's disk and network work on this object's own IO scope,
+    // the same scope resolve, sweepOrphaned, and the rest of this file
+    // use. MainActivity calls this instead of starting its own thread for
+    // a share intent's resolve-then-push work, so both use the same kind
+    // of background execution. docs/audits/principles.md row P19.
+    fun launchOnIo(block: suspend () -> Unit) {
+        scope.launch { block() }
+    }
+
     @Volatile
     private var started = false
 
