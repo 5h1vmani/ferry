@@ -5,9 +5,11 @@
 // was last seen when it is not reachable. It is one accessibility element,
 // not four, so a screen reader reads it as one sentence.
 
+import AppKit
 import SwiftUI
 
 struct DeviceRow: View {
+    @EnvironmentObject private var model: EngineModel
     let device: DeviceSnapshot
 
     var body: some View {
@@ -46,6 +48,24 @@ struct DeviceRow: View {
                 lastSeen: device.lastSeen
             )
         )
+        .dropDestination(for: URL.self) { urls, _ in
+            guard device.isReachable else { return false }
+            model.send(urls: urls, toDevice: device.keyHex)
+            return true
+        }
+        .contextMenu {
+            if let path = model.mount(forDevice: device.keyHex).path {
+                Button(S.access.openInFinder) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                }
+            }
+            Button(S.devices.sendFiles) {
+                SendFilesPanel.present(forDevice: device.keyHex, model: model)
+            }
+            Button(S.deviceDetail.forgetThisPhone, role: .destructive) {
+                model.forget(keyHex: device.keyHex)
+            }
+        }
     }
 
     private var icon: String {
@@ -64,5 +84,6 @@ struct DeviceRow: View {
         }
     }
     .frame(width: 232)
+    .environmentObject(EngineModel())
 }
 #endif

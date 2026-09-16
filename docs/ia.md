@@ -109,8 +109,8 @@ Window
 │   ├── the reachability switch and its consequence
 │   └── "Pair a phone"
 ├── Detail, for the selected device
+│   ├── A caption, while reachable: where a drop lands   L2
 │   ├── Access: the Finder mount, one line      L2
-│   ├── Files: this device's view of the peer    L2
 │   ├── Automatic: copy new photos, one switch  L3
 │   ├── Transfers: newest first                 L3
 │   │   └── a chunk disclosure, where a chunk fact exists
@@ -128,10 +128,13 @@ Info was an equal section in the first version. It is four facts read twice a
 year, stacked against things that change every second, so it becomes a
 footer. Access, Automatic, and Access log are new.
 
-Six sections in one detail pane is the most this shape will carry. If a
-seventh is ever proposed, the pane becomes a list of destinations instead,
-and that is a bigger change than adding a section — so the seventh has to
-earn it.
+The window, a device row, and the app menu also accept a drop, "Send
+files…", and a Finder Services entry. `docs/decisions/0011-gestures-not-a-file-manager.md`
+records why, and "Drop, Mac only" below states each state.
+
+Five sections in one detail pane is the most this shape will carry. A sixth
+section would turn the pane into a list of destinations. That is a bigger
+change than adding a section, so a sixth has to earn it.
 
 ### On the phone
 
@@ -269,27 +272,29 @@ digit code will not match.
 The phone has no Access section. Until DocumentsProvider ships there is
 nothing true to say, and after it ships the Files app says it.
 
-### Files, Mac only
+### Drop, Mac only
 
-The Mac browses the phone's roots directly, over `list` and `stat`. This was
-built before this version of the IA was written, and it stays.
+The Mac accepts files by drop. It does not browse the phone.
+
+A drop on a device row, or on the whole detail pane, pushes those files to
+that device. It works only while the device is reachable. Finder's own
+mount browses the phone's folders. A drop is for sending, not for browsing.
 
 | State | Shows |
 |---|---|
-| Reading | The platform progress view. "Reading the folder." |
-| At the roots | One row per root the peer serves, by its name. "Go up" is disabled and the path reads "/". |
-| Populated | Folders first, then files by name. A folder is a control that enters it. A file states its size and offers "Copy to Mac". |
-| Empty | "This folder is empty." |
-| Failed | An ErrorBlock and a Retry control. |
+| Reachable | A caption at the top of the detail. It states where a drop lands, naming the device. |
+| Not reachable | Ferry shows no caption. The pane refuses every drop. |
+| A file dropped | The push starts as one `push_files` batch. It appears in Transfers. |
+| A folder dropped | Ferry refuses it, with a three part error. The engine has no way to push a folder yet. |
 
-This is the one view in Ferry with a loading state, and that is honest: a
-folder listing is a round trip to another device, unlike the Devices list,
-which is local and instant.
+"Send files…" on the device row, in the app menu, and Cmd+O all open the
+same file panel. Each one pushes to the same landing folder. One Finder
+Services entry, "Send with Ferry", takes file URLs from Finder. A file or
+folder already inside the mount is pulled again, through the resumable
+engine. Everything else is pushed.
 
-It is also the only way to fetch one named file until the Finder mount ships,
-and `pull` is the only direction the core has. When the mount lands, this
-section becomes a duplicate of Finder and should be reconsidered — not
-before.
+`docs/decisions/0011-gestures-not-a-file-manager.md` records why the old
+Files section is gone.
 
 ### Automatic, Mac only
 

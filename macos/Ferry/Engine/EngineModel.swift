@@ -27,6 +27,7 @@
 //     the NetFS call in FinderMount.swift, and `set_mount_path` all happen
 //     in one detached task, off the main actor.
 
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -50,6 +51,11 @@ final class EngineModel: ObservableObject {
     /// The Wi-Fi networks this Mac trusts. `docs/engine-contract.md`,
     /// item 18.
     @Published private(set) var trustedNetworks: [String] = []
+    /// The device selected in the window. Read by `ContentView`, and by
+    /// every command and gesture that needs "the selected device":
+    /// `targetDevice`, the app menu's Send files and Retry, and pairing's
+    /// own confirmation. `docs/ux-fix-plan.md`, item 3, "Device choice".
+    @Published var selectedDeviceKeyHex: String?
 
     /// The engine's own values, kept so a change notification can rebuild
     /// snapshots without asking the engine twice.
@@ -68,6 +74,14 @@ final class EngineModel: ObservableObject {
     /// reachable moment gets its own try. `docs/engine-contract.md`, item
     /// 6: "do not retry more than once per reachability change."
     private var mountAttempted: Set<String> = []
+    /// Each group's state as of the last `reloadTransfers`, so an ending is
+    /// announced once, and again if the group ends a second time after a
+    /// retry. `docs/ux-fix-plan.md`, item 2.
+    private var lastGroupStates: [String: TransferState] = [:]
+    /// True once `TransferNotifier.requestAuthorization` has been asked
+    /// for this run. `docs/ux-fix-plan.md`, item 2: asked the first time a
+    /// transfer starts, not at launch.
+    private var didRequestNotificationAuthorization = false
 
     private var engine: Engine?
     private var events: EngineEvents?
@@ -178,6 +192,9 @@ final class EngineModel: ObservableObject {
         offeringTimer = nil
         presence = .unknown
         mountAttempted = []
+        lastGroupStates = [:]
+        didRequestNotificationAuthorization = false
+        NSApp.dockTile.badgeLabel = nil
     }
 
     // MARK: - What the listener calls
@@ -218,7 +235,46 @@ final class EngineModel: ObservableObject {
         // A transfer moving changes a device's speed, which the badge and
         // the menu bar both state.
         refreshPresence()
+        requestNotificationAuthorizationIfNeeded()
+        notifyEndedTransfers()
+        updateDockBadge()
         objectWillChange.send()
+    }
+
+    /// Every batch moving right now, across every device, for the menu
+    /// bar's one line per running batch. `docs/ux-fix-plan.md`, item 2.
+    var runningBatches: [TransferGroupSnapshot] {
+        EngineAdapter.groups(transfers: transferInfos, batches: batchInfos)
+            .filter { $0.state == .active }
+    }
+
+    /// Asks for notification authorization the first time this run sees a
+    /// transfer. `docs/ux-fix-plan.md`, item 2.
+    private func requestNotificationAuthorizationIfNeeded() {
+        guard !didRequestNotificationAuthorization else { return }
+        guard !transferInfos.isEmpty || !batchInfos.isEmpty else { return }
+        didRequestNotificationAuthorization = true
+        TransferNotifier.requestAuthorization()
+    }
+
+    /// Posts one notification for every batch or single transfer that just
+    /// moved to Done or Failed since the last read. `docs/ux-fix-plan.md`,
+    /// item 2.
+    private func notifyEndedTransfers() {
+        let groups = EngineAdapter.groups(transfers: transferInfos, batches: batchInfos)
+        for group in groups {
+            let previous = lastGroupStates[group.id]
+            lastGroupStates[group.id] = group.state
+            guard previous != group.state, group.state == .done || group.state == .failed else { continue }
+            TransferNotifier.notify(group: group)
+        }
+    }
+
+    /// Sets the Dock badge to the count of running transfers, and clears
+    /// it at zero. `docs/ux-fix-plan.md`, item 2.
+    private func updateDockBadge() {
+        let running = transferInfos.filter { $0.state == .active }.count
+        NSApp.dockTile.badgeLabel = running > 0 ? FerryFormat.badgeCount(running) : nil
     }
 
     /// `EngineEvents.accessLogChanged` calls this at most once every 250
@@ -272,6 +328,20 @@ final class EngineModel: ObservableObject {
     /// One device by its key, or nil once it is forgotten.
     func device(keyHex: String) -> DeviceSnapshot? {
         devices.first { $0.keyHex == keyHex }
+    }
+
+    /// The device a gesture or a command with no device of its own acts
+    /// on: the only paired device; when more than one is paired, the one
+    /// selected in the window, else the first reachable one.
+    /// `docs/ux-fix-plan.md`, item 3, "Device choice".
+    var targetDevice: DeviceSnapshot? {
+        if devices.count == 1 {
+            return devices.first
+        }
+        if let keyHex = selectedDeviceKeyHex, let device = device(keyHex: keyHex) {
+            return device
+        }
+        return devices.first { $0.isReachable }
     }
 
     /// Every transfer for one device, grouped as the Transfers section
@@ -581,6 +651,113 @@ final class EngineModel: ObservableObject {
         }
     }
 
+    // MARK: - Sending files by drop, Send files, or a Finder service
+
+    /// Where a gesture-started push lands on one device: the first root it
+    /// lists, in "Download" (docs/engine-contract.md, item 5, "Where a
+    /// push lands"). Read only: does not make the folder. Runs the round
+    /// trip off the main thread, the same as `list`.
+    func landingFolder(forDevice keyHex: String) async throws -> String {
+        guard let engine else {
+            throw FerryError.Failed(code: "Runtime::NotStarted", detail: nil)
+        }
+        return try await Task.detached {
+            let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
+            return try EngineModel.landingFolderPath(from: roots)
+        }.value
+    }
+
+    /// The folder name `landingFolder` and `send` both compute from a
+    /// `list("")` call: the first root's name, then "Download".
+    nonisolated private static func landingFolderPath(from roots: [Entry]) throws -> String {
+        guard let firstRoot = roots.first else {
+            throw DropError.noLandingFolder
+        }
+        return firstRoot.name + "/" + S.drop.downloadFolderName
+    }
+
+    /// Whether `url` names a folder on disk right now.
+    nonisolated private static func isFolder(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        return isDirectory.boolValue
+    }
+
+    /// Starts sending local files to one device's landing folder: a drop
+    /// on a device row or the detail pane, "Send files…", or the app
+    /// menu's Cmd+O all call this. A folder in `urls` is refused, because
+    /// the engine has no way to push one yet. `docs/ux-fix-plan.md`, item
+    /// 3.
+    func send(urls: [URL], toDevice keyHex: String) {
+        guard urls.allSatisfy({ !EngineModel.isFolder($0) }) else {
+            actionError = DropError.folderNotSupported.threePart(canRetry: false)
+            return
+        }
+        guard let engine else { return }
+        let localPaths = urls.map(\.path)
+        Task.detached { [weak self] in
+            do {
+                let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
+                let folder = try EngineModel.landingFolderPath(from: roots)
+                do {
+                    try engine.mkdir(deviceKeyHex: keyHex, remotePath: folder)
+                } catch let error as FerryError {
+                    if case let .Failed(code, _) = error, code == "OpError::AlreadyExists" {
+                        // The folder is already there, which is the
+                        // outcome this call asked for.
+                    } else {
+                        throw error
+                    }
+                }
+                _ = try engine.pushFiles(deviceKeyHex: keyHex, localPaths: localPaths, remoteFolder: folder)
+            } catch {
+                await self?.report(error)
+            }
+        }
+    }
+
+    /// Routes URLs the "Send with Ferry" Finder service handed this app.
+    /// A URL already inside a device's Finder mount is pulled again,
+    /// through the resumable engine rather than the plain Finder copy
+    /// that put it there; everything else is pushed to `targetDevice`.
+    /// `docs/ux-fix-plan.md`, item 3.
+    func sendFromFinder(urls: [URL]) {
+        var toPush: [URL] = []
+        for url in urls {
+            if let (device, remotePath) = mountedLocation(of: url) {
+                if EngineModel.isFolder(url) {
+                    pullFolder(deviceKeyHex: device.keyHex, remotePath: remotePath)
+                } else {
+                    pull(deviceKeyHex: device.keyHex, remotePath: remotePath, localName: url.lastPathComponent)
+                }
+            } else {
+                toPush.append(url)
+            }
+        }
+        guard !toPush.isEmpty, let device = targetDevice else { return }
+        send(urls: toPush, toDevice: device.keyHex)
+    }
+
+    /// The device and remote path for a URL inside that device's Finder
+    /// mount, or nil when it is outside every mount. The mount serves each
+    /// root at its own top level, so `<mount path>/<root>/<rel>` maps
+    /// straight onto the remote path `"<root>/<rel>"`: verified against
+    /// `crates/ferry-runtime/src/dav/handlers/browse.rs`, where a listed
+    /// child's path is built the same way, and `crates/ferry-core/src/path.rs`,
+    /// where a `RemotePath`'s first component is the root name.
+    private func mountedLocation(of url: URL) -> (device: DeviceSnapshot, remotePath: String)? {
+        let path = url.path
+        for device in devices {
+            guard let mountPath = mount(forDevice: device.keyHex).path else { continue }
+            let prefix = mountPath.hasSuffix("/") ? mountPath : mountPath + "/"
+            guard path.hasPrefix(prefix) else { continue }
+            return (device, String(path.dropFirst(prefix.count)))
+        }
+        return nil
+    }
+
     /// Restarts a failed transfer from its resume point.
     func retry(transferId: String) {
         guard let engine else { return }
@@ -601,6 +778,18 @@ final class EngineModel: ObservableObject {
                 try engine.retryBatch(batchId: batchId)
             } catch {
                 await self?.report(error)
+            }
+        }
+    }
+
+    /// Restarts every failed transfer of one device: `retryBatch` for
+    /// every failed batch, `retry` for every failed transfer with no
+    /// batch. The app menu's Cmd+R. `docs/ux-fix-plan.md`, item 5.
+    func retryAllFailed(forDevice keyHex: String) {
+        for group in groups(forDevice: keyHex) where group.state == .failed {
+            switch group.retryTarget {
+            case .transfer(let id): retry(transferId: id)
+            case .batch(let id): retryBatch(batchId: id)
             }
         }
     }

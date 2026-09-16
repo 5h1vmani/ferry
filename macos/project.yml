@@ -102,3 +102,22 @@ targets:
         NSLocationUsageDescription: Ferry reads the Wi-Fi network name to know where it can be found.
         NSBonjourServices:
           - _ferry._tcp
+        # A drop on the Dock icon pushes to the target device
+        # (docs/ux-fix-plan.md, item 3). `LSHandlerRank: None` keeps Ferry
+        # from ever becoming a default opener for `public.item`: this only
+        # fires when a person drops files on the icon on purpose.
+        CFBundleDocumentTypes:
+          - CFBundleTypeRole: Viewer
+            LSHandlerRank: None
+            LSItemContentTypes:
+              - public.item
+        # One Finder Services entry, "Send with Ferry". `NSMessage` names
+        # the method `FerryServicesProvider` implements.
+        # `docs/ux-fix-plan.md`, item 3.
+        NSServices:
+          - NSMenuItem:
+              default: Send with Ferry
+            NSMessage: sendWithFerry
+            NSPortName: Ferry
+            NSSendTypes:
+              - public.file-url

@@ -24,8 +24,26 @@ struct FerryApp: App {
                 .environmentObject(model)
                 .task {
                     appDelegate.model = model
+                    appDelegate.registerServicesProvider()
                     model.start()
                 }
+        }
+        .commands {
+            CommandGroup(after: .newItem) {
+                Button(S.devices.sendFiles) {
+                    guard let device = model.targetDevice else { return }
+                    SendFilesPanel.present(forDevice: device.keyHex, model: model)
+                }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(model.targetDevice == nil)
+
+                Button(S.devices.retryFailedTransfers) {
+                    guard let device = model.targetDevice else { return }
+                    model.retryAllFailed(forDevice: device.keyHex)
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(model.targetDevice == nil)
+            }
         }
 
         MenuBarExtra {
@@ -43,12 +61,36 @@ struct FerryApp: App {
     }
 }
 
-/// Holds the model so the engine can be stopped when the app quits.
+/// Holds the model so the engine can be stopped when the app quits, and
+/// registers this app's one Finder Services entry.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: EngineModel?
+    private var servicesProvider: FerryServicesProvider?
+
+    /// Sets `NSApp.servicesProvider` once the model exists. Called from
+    /// `FerryApp`'s own `.task`, alongside `model.start()`, because the
+    /// delegate has no model yet at `applicationDidFinishLaunching`.
+    /// `docs/ux-fix-plan.md`, item 3.
+    func registerServicesProvider() {
+        guard let model, servicesProvider == nil else { return }
+        let provider = FerryServicesProvider(model: model)
+        servicesProvider = provider
+        NSApp.servicesProvider = provider
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         model?.stop()
+    }
+
+    /// Files dropped on the Dock icon. `project.yml`'s
+    /// `CFBundleDocumentTypes` declares `public.item` with handler rank
+    /// `None`, so Ferry never becomes a default opener; this only fires
+    /// when a person drops files on the icon on purpose. Pushes to
+    /// `targetDevice`'s landing folder, the same as a window drop.
+    /// `docs/ux-fix-plan.md`, item 3.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        guard let model, let device = model.targetDevice else { return }
+        model.send(urls: urls, toDevice: device.keyHex)
     }
 }

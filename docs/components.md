@@ -236,7 +236,6 @@ One line and one action, centred. Used wherever a list has nothing in it.
 | Devices, phone | "No Mac paired." | Pair |
 | Transfers | "No transfers." | none |
 | Access log | "No access yet." | none |
-| Files | "This folder is empty." | none |
 
 `body` type in `text_secondary`. The action is the platform's primary button.
 
@@ -273,18 +272,9 @@ in `SettingsView.swift`; a row for the current network and one for each
 trusted name inside `NetworksSection`, in `SettingsScreen.kt`, on the
 phone. Each platform draws its own Settings screen once.
 
-**FileBrowser**, a list of the other device's roots. It exists, on the Mac,
-as the Files section of `DeviceDetail` — built before this version of the
-inventory was written. It is not a component because it appears on one screen
-of one platform. It is also the one view in Ferry with a loading state, which
-is honest: a folder listing is a round trip, unlike the Devices list.
-
-It stays because it is the only way to fetch one named file before the Finder
-mount ships. It earns a place in this inventory the day the phone gains an
-equivalent, and it should be reconsidered the day the mount makes it a
-duplicate of Finder. Whether the phone ever needs one is blocked on
-`docs/manual-checks.md` task 3: whether the Files app is a usable browser for
-a DocumentsProvider-backed root.
+**FileBrowser**, the Files section of `DeviceDetail`, is removed. The Finder
+mount now browses the phone's folders, and a drop sends files to them
+(docs/decisions/0011-gestures-not-a-file-manager.md).
 
 ## What is deliberately not a component
 

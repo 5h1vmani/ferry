@@ -10,14 +10,10 @@
 // is not.
 
 import SwiftUI
-import AppKit
 
 struct AccessLogSection: View {
     let days: [AccessDaySnapshot]
     let peerName: String
-    /// Where the engine keeps the log, so a person can reach the file
-    /// itself. Nil until the engine writes one.
-    var logPath: String?
 
     var body: some View {
         Section(S.accessLog.section) {
@@ -34,19 +30,11 @@ struct AccessLogSection: View {
                 }
             }
 
-            HStack(spacing: FerrySpace.s3) {
-                // Stated because a log that quietly forgets is worse than
-                // no log.
-                Text(S.accessLog.retention)
-                    .font(FerryFont.caption)
-                    .foregroundStyle(FerryColor.textSecondary)
-                Spacer()
-                if let logPath {
-                    Button(S.accessLog.revealInFinder) {
-                        NSWorkspace.shared.selectFile(logPath, inFileViewerRootedAtPath: "")
-                    }
-                }
-            }
+            // Stated because a log that quietly forgets is worse than no
+            // log.
+            Text(S.accessLog.retention)
+                .font(FerryFont.caption)
+                .foregroundStyle(FerryColor.textSecondary)
         }
     }
 }

@@ -103,6 +103,14 @@ enum S {
             case .wifi: return spareTransportWifi
             }
         }
+
+        /// Opens the panel that picks files to send. New in
+        /// docs/ux-fix-plan.md, items 3 and 5: the device row, the app
+        /// menu, and its Cmd+O shortcut all open the same panel.
+        static let sendFiles = "Send files…"
+
+        /// The app menu's Cmd+R. New in docs/ux-fix-plan.md, item 5.
+        static let retryFailedTransfers = "Retry failed transfers"
     }
 
     /// The Finder mount, in one line. New in docs/ia.md, Access.
@@ -112,6 +120,32 @@ enum S {
         static let accessibilityMountReadyFormat = "Finder mount ready at %@"
         static func accessibilityMountReady(path: String) -> String {
             String(format: accessibilityMountReadyFormat, path)
+        }
+    }
+
+    /// Words for a drop, a Send files action, or the Finder service, for
+    /// what this app refuses before it reaches the engine. Not a
+    /// FerryError, the same choice `keyStore` and `mount` make.
+    /// `docs/ux-fix-plan.md`, item 3.
+    enum drop {
+        static let folderStopped = "The folder was not sent."
+        static let folderWhy = "Ferry cannot send a whole folder yet."
+        static let folderToDo = "Send the files inside it instead."
+
+        static let noLandingFolderStopped = "The files were not sent."
+        static let noLandingFolderWhy = "The device shares no folder to land them in."
+        static let noLandingFolderToDo = "Try again once the device shares a folder."
+
+        /// The folder name a gesture-started push always lands in, inside
+        /// the first root the device lists. `docs/engine-contract.md`,
+        /// item 5, "Where a push lands".
+        static let downloadFolderName = "Download"
+
+        /// The caption at the top of a device's detail, while it is
+        /// reachable: where a drop lands. `docs/ux-fix-plan.md`, item 4.
+        static let captionFormat = "Files dropped on %1$@ land in %2$@."
+        static func caption(deviceName: String, folder: String) -> String {
+            String(format: captionFormat, deviceName, folder)
         }
     }
 
@@ -176,6 +210,10 @@ enum S {
             String(format: filesProgressFormat, done, total)
         }
 
+        /// The context menu on a finished pull whose file is still on
+        /// disk. New in docs/ux-fix-plan.md, item 5.
+        static let revealInFinder = "Reveal in Finder"
+
         static let fileCountFormat = "%d files"
         static func fileCount(_ count: Int) -> String {
             String(format: fileCountFormat, count)
@@ -228,7 +266,6 @@ enum S {
         static let section = "Access log"
         static let empty = "No access yet."
         static let retention = "Kept for 30 days."
-        static let revealInFinder = "Reveal in Finder"
         static let today = "Today"
         static let yesterday = "Yesterday"
 
@@ -377,40 +414,12 @@ enum S {
     }
 
     enum deviceDetail {
-        static let filesSection = "Files"
         static let transfersSection = "Transfers"
         static let infoSection = "Info"
         static let noTransfers = "No transfers."
         static let pairedLabel = "Paired"
         static let keyFingerprintLabel = "Key fingerprint"
         static let forgetThisPhone = "Forget this phone"
-    }
-
-    /// Browsing the phone's shared folder. This is the only view in Ferry
-    /// with a loading state, and it is honest: a folder listing is a round
-    /// trip to another device.
-    enum files {
-        static let root = "/"
-        static let goUp = "Go up"
-        static let copyToMac = "Copy to Mac"
-        static let copyToPhone = "Copy to phone"
-        static let emptyFolder = "This folder is empty."
-        static let reading = "Reading the folder."
-
-        static let folderAccessibilityFormat = "%@, folder"
-        static func folderAccessibility(name: String) -> String {
-            String(format: folderAccessibilityFormat, name)
-        }
-
-        static let fileAccessibilityFormat = "%@, %@"
-        static func fileAccessibility(name: String, size: String) -> String {
-            String(format: fileAccessibilityFormat, name, size)
-        }
-
-        static let copyToMacAccessibilityFormat = "Copy %@ to Mac"
-        static func copyToMacAccessibility(name: String) -> String {
-            String(format: copyToMacAccessibilityFormat, name)
-        }
     }
 
     enum settings {
