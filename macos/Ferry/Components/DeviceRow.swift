@@ -5,6 +5,7 @@
 // was last seen when it is not reachable. It is one accessibility element,
 // not four, so a screen reader reads it as one sentence.
 
+import AppKit
 import SwiftUI
 
 struct DeviceRow: View {
@@ -53,8 +54,16 @@ struct DeviceRow: View {
             return true
         }
         .contextMenu {
+            if let path = model.mount(forDevice: device.keyHex).path {
+                Button(S.access.openInFinder) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                }
+            }
             Button(S.devices.sendFiles) {
                 SendFilesPanel.present(forDevice: device.keyHex, model: model)
+            }
+            Button(S.deviceDetail.forgetThisPhone, role: .destructive) {
+                model.forget(keyHex: device.keyHex)
             }
         }
     }

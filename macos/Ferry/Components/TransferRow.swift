@@ -7,11 +7,16 @@
 // how far it has got, and — only when a chunk fact exists — how far down
 // the failure goes.
 
+import AppKit
 import SwiftUI
 
 struct TransferRow: View {
     let group: TransferGroupSnapshot
     let onRetry: () -> Void
+    /// The finished pull's file on disk, when it is still there. Non-nil
+    /// only enables "Reveal in Finder" in the context menu.
+    /// `docs/ux-fix-plan.md`, item 5.
+    var revealPath: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: FerrySpace.s2) {
@@ -40,6 +45,16 @@ struct TransferRow: View {
             }
         }
         .padding(.vertical, FerrySpace.s1)
+        .contextMenu {
+            if group.state == .failed {
+                Button(S.common.retry, action: onRetry)
+            }
+            if let revealPath {
+                Button(S.transfers.revealInFinder) {
+                    NSWorkspace.shared.selectFile(revealPath, inFileViewerRootedAtPath: "")
+                }
+            }
+        }
     }
 
     /// The states are the ones in docs/ia.md, Transfers. A paused row

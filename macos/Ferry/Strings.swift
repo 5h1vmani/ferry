@@ -210,6 +210,10 @@ enum S {
             String(format: filesProgressFormat, done, total)
         }
 
+        /// The context menu on a finished pull whose file is still on
+        /// disk. New in docs/ux-fix-plan.md, item 5.
+        static let revealInFinder = "Reveal in Finder"
+
         static let fileCountFormat = "%d files"
         static func fileCount(_ count: Int) -> String {
             String(format: fileCountFormat, count)

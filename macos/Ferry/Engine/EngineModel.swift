@@ -782,6 +782,18 @@ final class EngineModel: ObservableObject {
         }
     }
 
+    /// Restarts every failed transfer of one device: `retryBatch` for
+    /// every failed batch, `retry` for every failed transfer with no
+    /// batch. The app menu's Cmd+R. `docs/ux-fix-plan.md`, item 5.
+    func retryAllFailed(forDevice keyHex: String) {
+        for group in groups(forDevice: keyHex) where group.state == .failed {
+            switch group.retryTarget {
+            case .transfer(let id): retry(transferId: id)
+            case .batch(let id): retryBatch(batchId: id)
+            }
+        }
+    }
+
     /// Removes a device's key and every transfer record for it.
     func forget(keyHex: String) {
         guard let engine else { return }

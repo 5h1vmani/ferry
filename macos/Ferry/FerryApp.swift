@@ -34,6 +34,14 @@ struct FerryApp: App {
                     guard let device = model.targetDevice else { return }
                     SendFilesPanel.present(forDevice: device.keyHex, model: model)
                 }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(model.targetDevice == nil)
+
+                Button(S.devices.retryFailedTransfers) {
+                    guard let device = model.targetDevice else { return }
+                    model.retryAllFailed(forDevice: device.keyHex)
+                }
+                .keyboardShortcut("r", modifiers: .command)
                 .disabled(model.targetDevice == nil)
             }
         }
