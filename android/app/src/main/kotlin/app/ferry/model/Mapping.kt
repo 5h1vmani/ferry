@@ -89,7 +89,6 @@ fun EngineDeviceInfo.toUi(): DeviceInfo {
         lastSeenUnixSecs = lastSeenUnixSecs,
         pairedUnixSecs = pairedUnixSecs,
         keyFingerprint = fingerprintOf(keyHex),
-        mountPath = mountPath,
     )
 }
 

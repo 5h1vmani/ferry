@@ -51,9 +51,6 @@ data class DeviceInfo(
     val pairedUnixSecs: Long,
     // The first sixteen bytes of the key, in groups of four characters.
     val keyFingerprint: String,
-    // Where this device's roots are mounted on this phone, if a bridge is
-    // serving them. Null until DocumentsProvider ships; see README.
-    val mountPath: String?,
 )
 
 // One file moving in one direction. Matches docs/ia.md's Transfer.
