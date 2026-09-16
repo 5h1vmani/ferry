@@ -30,7 +30,11 @@ enum TransferNotifier {
     }
 
     /// "43 files · 4.8 GB · 3 min" for Done, or the error's first line for
-    /// Failed. The same parts `TransferRow` shows, in the same order.
+    /// Failed. The same parts `TransferRow` shows, in the same order. A
+    /// Failed group with no error still posts one, with the words
+    /// `ThreePartError` uses for a code it does not recognize: item 2
+    /// promises one notification for every ending, not only the ones with
+    /// a known cause. `docs/audits/ux-gestures.md`, finding 15.
     private static func body(for group: TransferGroupSnapshot) -> String? {
         switch group.state {
         case .done:
@@ -44,7 +48,7 @@ enum TransferNotifier {
             }
             return parts.joined(separator: S.common.dotSeparator)
         case .failed:
-            return group.error?.whatStopped
+            return group.error?.whatStopped ?? S.common.unknownErrorStopped
         case .queued, .active, .paused:
             return nil
         }

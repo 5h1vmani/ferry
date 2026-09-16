@@ -136,10 +136,23 @@ enum S {
         static let noLandingFolderWhy = "The device shares no folder to land them in."
         static let noLandingFolderToDo = "Try again once the device shares a folder."
 
-        /// The folder name a gesture-started push always lands in, inside
-        /// the first root the device lists. `docs/engine-contract.md`,
-        /// item 5, "Where a push lands".
-        static let downloadFolderName = "Download"
+        /// One item was not a file on this Mac, such as a web address.
+        /// `docs/audits/ux-gestures.md`, finding 4.
+        static let nonFileURLStopped = "The files were not sent."
+        static let nonFileURLWhy = "One of them was not a file on this Mac."
+        static let nonFileURLToDo = "Use Send files… instead."
+
+        /// A drop on a device that is not reachable. `docs/audits/ux-gestures.md`,
+        /// finding 11.
+        static let deviceNotReachableStopped = "The files were not sent."
+        static let deviceNotReachableWhy = "The device is not reachable."
+        static let deviceNotReachableToDo = "Reconnect the device, then drop the files again."
+
+        /// A drop on the Dock icon with no device to send to.
+        /// `docs/audits/ux-gestures.md`, finding 11.
+        static let noDeviceStopped = "The files were not sent."
+        static let noDeviceWhy = "No device is paired."
+        static let noDeviceToDo = "Pair a phone, then try again."
 
         /// The caption at the top of a device's detail, while it is
         /// reachable: where a drop lands. `docs/ux-fix-plan.md`, item 4.

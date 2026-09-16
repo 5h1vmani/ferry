@@ -20,7 +20,6 @@
 // turn the pane into a list of destinations. That is a bigger change than
 // adding a section, so a sixth has to earn it.
 
-import Foundation
 import SwiftUI
 
 struct DeviceDetail: View {
@@ -67,7 +66,7 @@ struct DeviceDetail: View {
                                 case .batch(let id): model.retryBatch(batchId: id)
                                 }
                             },
-                            revealPath: revealPath(for: group)
+                            revealPath: group.revealPath
                         )
                     }
                 }
@@ -90,7 +89,10 @@ struct DeviceDetail: View {
             model.actionError = nil
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard device.isReachable else { return false }
+            guard device.isReachable else {
+                model.actionError = DropError.deviceNotReachable.threePart(canRetry: false)
+                return false
+            }
             model.send(urls: urls, toDevice: device.keyHex)
             return true
         }
@@ -128,18 +130,6 @@ struct DeviceDetail: View {
                 model.forget(keyHex: device.keyHex)
             }
         }
-    }
-
-    /// The file a finished single pull put on disk, or nil when it is not
-    /// there any more, or the group is not a finished pull.
-    /// `docs/ux-fix-plan.md`, item 5.
-    private func revealPath(for group: TransferGroupSnapshot) -> String? {
-        guard group.isSingleFile, group.direction == .phoneToMac, group.state == .done else {
-            return nil
-        }
-        let path = model.downloadPath + "/" + group.label
-        guard FileManager.default.fileExists(atPath: path) else { return nil }
-        return path
     }
 
     private func loadLandingFolder() async {

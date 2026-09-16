@@ -22,8 +22,11 @@ final class FerryServicesProvider: NSObject {
         userData: String,
         error: AutoreleasingUnsafeMutablePointer<NSString>
     ) {
+        // Reads file URLs only. Without this, a web URL on the pasteboard
+        // reaches `send`. `docs/audits/ux-gestures.md`, finding 4.
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
         guard
-            let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL],
+            let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL],
             !urls.isEmpty
         else {
             return

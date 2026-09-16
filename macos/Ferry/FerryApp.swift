@@ -90,7 +90,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `targetDevice`'s landing folder, the same as a window drop.
     /// `docs/ux-fix-plan.md`, item 3.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let model, let device = model.targetDevice else { return }
+        guard let model else { return }
+        guard let device = model.targetDevice else {
+            model.actionError = DropError.noDevice.threePart(canRetry: false)
+            return
+        }
         model.send(urls: urls, toDevice: device.keyHex)
     }
 }

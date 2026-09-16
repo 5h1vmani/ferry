@@ -59,7 +59,15 @@ enum EngineAdapter {
     /// transfer is kept as its own row rather than dropped: a row lost to a
     /// timing gap between two reads is worse than one shown without its
     /// batch for a moment.
-    static func groups(transfers: [TransferInfo], batches: [BatchInfo]) -> [TransferGroupSnapshot] {
+    /// `revealPaths` holds a finished single-file pull's file on disk, by
+    /// transfer id, computed once by `EngineModel` when a group reaches
+    /// Done. Never computed here: this function must stay a plain read of
+    /// the values it is given. `docs/audits/ux-gestures.md`, finding 14.
+    static func groups(
+        transfers: [TransferInfo],
+        batches: [BatchInfo],
+        revealPaths: [String: String] = [:]
+    ) -> [TransferGroupSnapshot] {
         let batchGroups = batches.map(group)
         let batchIDs = Set(batches.map(\.id))
         let singleGroups = transfers
@@ -67,7 +75,7 @@ enum EngineAdapter {
                 guard let batchId = transfer.batchId else { return true }
                 return !batchIDs.contains(batchId)
             }
-            .map(group)
+            .map { group($0, revealPath: revealPaths[$0.id]) }
         return batchGroups + singleGroups
     }
 
@@ -94,11 +102,14 @@ enum EngineAdapter {
             duration: batch.endedUnixSecs.map {
                 FerryFormat.duration(seconds: $0 - batch.startedUnixSecs)
             },
-            retryTarget: .batch(id: batch.id)
+            retryTarget: .batch(id: batch.id),
+            // Reveal in Finder is only for a finished single-file pull,
+            // never a batch. `docs/audits/ux-gestures.md`, finding 14.
+            revealPath: nil
         )
     }
 
-    static func group(_ transfer: TransferInfo) -> TransferGroupSnapshot {
+    static func group(_ transfer: TransferInfo, revealPath: String? = nil) -> TransferGroupSnapshot {
         // A pause is not a failure, so its words carry no retry control:
         // the engine resumes it on its own (docs/ia.md, Transfers).
         let words: ThreePartError? = transfer.error.map {
@@ -126,7 +137,8 @@ enum EngineAdapter {
             duration: transfer.endedUnixSecs.map {
                 FerryFormat.duration(seconds: $0 - transfer.startedUnixSecs)
             },
-            retryTarget: .transfer(id: transfer.id)
+            retryTarget: .transfer(id: transfer.id),
+            revealPath: revealPath
         )
     }
 

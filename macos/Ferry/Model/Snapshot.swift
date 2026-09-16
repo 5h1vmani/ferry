@@ -164,6 +164,11 @@ struct TransferGroupSnapshot: Equatable, Identifiable {
     let duration: String?
     /// Which engine call a retry on this row makes.
     let retryTarget: TransferRetryTarget
+    /// A finished single-file pull's file on disk, when it is still
+    /// there. Computed once, when the group reaches Done, and cached by
+    /// `EngineModel`, never by a view body. Nil for every other state,
+    /// and for a batch. `docs/audits/ux-gestures.md`, finding 14.
+    let revealPath: String?
 
     var fraction: Double {
         guard bytesTotal > 0 else { return 0 }

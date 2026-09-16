@@ -78,10 +78,22 @@ final class EngineModel: ObservableObject {
     /// announced once, and again if the group ends a second time after a
     /// retry. `docs/ux-fix-plan.md`, item 2.
     private var lastGroupStates: [String: TransferState] = [:]
+    /// True once `lastGroupStates` has been filled by one `reloadTransfers`.
+    /// The first read after `start()` can hold a run's whole stored
+    /// history, already Done or Failed; that read seeds the dictionary
+    /// without notifying. `docs/audits/ux-gestures.md`, finding 5.
+    private var hasSeededGroupStates = false
     /// True once `TransferNotifier.requestAuthorization` has been asked
-    /// for this run. `docs/ux-fix-plan.md`, item 2: asked the first time a
-    /// transfer starts, not at launch.
+    /// for this run. Asked only from a gesture that starts a transfer —
+    /// `pull`, `pullFolder`, `send` — never from `reloadTransfers`, so
+    /// stored history from a previous run cannot trigger it at launch.
+    /// `docs/ux-fix-plan.md`, item 2; `docs/audits/ux-gestures.md`, finding 5.
     private var didRequestNotificationAuthorization = false
+    /// A finished single-file pull's file on disk, by transfer id.
+    /// Computed once, the moment a group reaches Done, so `DeviceDetail`
+    /// never runs a file system call in its body.
+    /// `docs/audits/ux-gestures.md`, finding 14.
+    private var revealPaths: [String: String] = [:]
 
     private var engine: Engine?
     private var events: EngineEvents?
@@ -193,7 +205,9 @@ final class EngineModel: ObservableObject {
         presence = .unknown
         mountAttempted = []
         lastGroupStates = [:]
+        hasSeededGroupStates = false
         didRequestNotificationAuthorization = false
+        revealPaths = [:]
         NSApp.dockTile.badgeLabel = nil
     }
 
@@ -235,10 +249,26 @@ final class EngineModel: ObservableObject {
         // A transfer moving changes a device's speed, which the badge and
         // the menu bar both state.
         refreshPresence()
-        requestNotificationAuthorizationIfNeeded()
+        updateRevealPaths()
         notifyEndedTransfers()
         updateDockBadge()
         objectWillChange.send()
+    }
+
+    /// Caches a finished single-file pull's file on disk, the moment its
+    /// transfer reaches Done, so `groups(forDevice:)` can hand the view a
+    /// value already known rather than a file system call to make.
+    /// `docs/audits/ux-gestures.md`, finding 14.
+    private func updateRevealPaths() {
+        for transfer in transferInfos {
+            guard transfer.batchId == nil, transfer.state == .done, transfer.direction == .pull else {
+                continue
+            }
+            guard revealPaths[transfer.id] == nil else { continue }
+            let path = downloadPath + "/" + transfer.fileName
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            revealPaths[transfer.id] = path
+        }
     }
 
     /// Every batch moving right now, across every device, for the menu
@@ -248,20 +278,32 @@ final class EngineModel: ObservableObject {
             .filter { $0.state == .active }
     }
 
-    /// Asks for notification authorization the first time this run sees a
-    /// transfer. `docs/ux-fix-plan.md`, item 2.
+    /// Asks for notification authorization the first time a gesture in
+    /// this session starts a transfer. Called from `pull`, `pullFolder`,
+    /// and `send`, never from `reloadTransfers`: stored history read at
+    /// launch is not a gesture. `docs/ux-fix-plan.md`, item 2;
+    /// `docs/audits/ux-gestures.md`, finding 5.
     private func requestNotificationAuthorizationIfNeeded() {
         guard !didRequestNotificationAuthorization else { return }
-        guard !transferInfos.isEmpty || !batchInfos.isEmpty else { return }
         didRequestNotificationAuthorization = true
         TransferNotifier.requestAuthorization()
     }
 
     /// Posts one notification for every batch or single transfer that just
-    /// moved to Done or Failed since the last read. `docs/ux-fix-plan.md`,
-    /// item 2.
+    /// moved to Done or Failed since the last read. The first call after
+    /// `start()` only seeds `lastGroupStates`: it never notifies, because a
+    /// group already Done or Failed there is stored history, not an
+    /// ending this run watched happen. `docs/ux-fix-plan.md`, item 2;
+    /// `docs/audits/ux-gestures.md`, finding 5.
     private func notifyEndedTransfers() {
         let groups = EngineAdapter.groups(transfers: transferInfos, batches: batchInfos)
+        guard hasSeededGroupStates else {
+            for group in groups {
+                lastGroupStates[group.id] = group.state
+            }
+            hasSeededGroupStates = true
+            return
+        }
         for group in groups {
             let previous = lastGroupStates[group.id]
             lastGroupStates[group.id] = group.state
@@ -349,7 +391,8 @@ final class EngineModel: ObservableObject {
     func groups(forDevice keyHex: String) -> [TransferGroupSnapshot] {
         EngineAdapter.groups(
             transfers: transferInfos.filter { $0.deviceKeyHex == keyHex },
-            batches: batchInfos.filter { $0.deviceKeyHex == keyHex }
+            batches: batchInfos.filter { $0.deviceKeyHex == keyHex },
+            revealPaths: revealPaths
         )
     }
 
@@ -609,6 +652,7 @@ final class EngineModel: ObservableObject {
     /// Starts copying one file from a paired device into the shared folder.
     func pull(deviceKeyHex: String, remotePath: String, localName: String) {
         guard let engine else { return }
+        requestNotificationAuthorizationIfNeeded()
         Task.detached { [weak self] in
             do {
                 _ = try engine.pull(
@@ -625,26 +669,10 @@ final class EngineModel: ObservableObject {
     /// Starts copying a whole folder from a paired device into one batch.
     func pullFolder(deviceKeyHex: String, remotePath: String) {
         guard let engine else { return }
+        requestNotificationAuthorizationIfNeeded()
         Task.detached { [weak self] in
             do {
                 _ = try engine.pullFolder(deviceKeyHex: deviceKeyHex, remotePath: remotePath)
-            } catch {
-                await self?.report(error)
-            }
-        }
-    }
-
-    /// Starts copying one or more local files into a folder on a paired
-    /// device, as one batch. `docs/engine-contract.md`, item 5.
-    func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: String) {
-        guard let engine else { return }
-        Task.detached { [weak self] in
-            do {
-                _ = try engine.pushFiles(
-                    deviceKeyHex: deviceKeyHex,
-                    localPaths: localPaths,
-                    remoteFolder: remoteFolder
-                )
             } catch {
                 await self?.report(error)
             }
@@ -667,13 +695,21 @@ final class EngineModel: ObservableObject {
         }.value
     }
 
+    /// The subfolder name a gesture-started push always lands in, inside
+    /// the first root the device lists. `docs/engine-contract.md`, item 5,
+    /// "Where a push lands", fixes this value: it is a path segment both
+    /// apps must agree on, not a word a person reads, so it lives here
+    /// rather than in `Strings.swift`. `docs/audits/ux-gestures.md`,
+    /// finding 13.
+    nonisolated private static let landingSubfolder = "Download"
+
     /// The folder name `landingFolder` and `send` both compute from a
-    /// `list("")` call: the first root's name, then "Download".
+    /// `list("")` call: the first root's name, then `landingSubfolder`.
     nonisolated private static func landingFolderPath(from roots: [Entry]) throws -> String {
         guard let firstRoot = roots.first else {
             throw DropError.noLandingFolder
         }
-        return firstRoot.name + "/" + S.drop.downloadFolderName
+        return firstRoot.name + "/" + landingSubfolder
     }
 
     /// Whether `url` names a folder on disk right now.
@@ -691,11 +727,19 @@ final class EngineModel: ObservableObject {
     /// the engine has no way to push one yet. `docs/ux-fix-plan.md`, item
     /// 3.
     func send(urls: [URL], toDevice keyHex: String) {
+        // Both drop targets, the Send files panel, and the Finder service
+        // all call this, so one guard here covers every entry point.
+        // `docs/audits/ux-gestures.md`, finding 4.
+        guard urls.allSatisfy(\.isFileURL) else {
+            actionError = DropError.nonFileURL.threePart(canRetry: false)
+            return
+        }
         guard urls.allSatisfy({ !EngineModel.isFolder($0) }) else {
             actionError = DropError.folderNotSupported.threePart(canRetry: false)
             return
         }
         guard let engine else { return }
+        requestNotificationAuthorizationIfNeeded()
         let localPaths = urls.map(\.path)
         Task.detached { [weak self] in
             do {
