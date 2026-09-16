@@ -410,40 +410,12 @@ enum S {
     }
 
     enum deviceDetail {
-        static let filesSection = "Files"
         static let transfersSection = "Transfers"
         static let infoSection = "Info"
         static let noTransfers = "No transfers."
         static let pairedLabel = "Paired"
         static let keyFingerprintLabel = "Key fingerprint"
         static let forgetThisPhone = "Forget this phone"
-    }
-
-    /// Browsing the phone's shared folder. This is the only view in Ferry
-    /// with a loading state, and it is honest: a folder listing is a round
-    /// trip to another device.
-    enum files {
-        static let root = "/"
-        static let goUp = "Go up"
-        static let copyToMac = "Copy to Mac"
-        static let copyToPhone = "Copy to phone"
-        static let emptyFolder = "This folder is empty."
-        static let reading = "Reading the folder."
-
-        static let folderAccessibilityFormat = "%@, folder"
-        static func folderAccessibility(name: String) -> String {
-            String(format: folderAccessibilityFormat, name)
-        }
-
-        static let fileAccessibilityFormat = "%@, %@"
-        static func fileAccessibility(name: String, size: String) -> String {
-            String(format: fileAccessibilityFormat, name, size)
-        }
-
-        static let copyToMacAccessibilityFormat = "Copy %@ to Mac"
-        static func copyToMacAccessibility(name: String) -> String {
-            String(format: copyToMacAccessibilityFormat, name)
-        }
     }
 
     enum settings {

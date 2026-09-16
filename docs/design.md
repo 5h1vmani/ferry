@@ -48,7 +48,9 @@ and TalkBack before it is called done. This costs minutes now and weeks later.
 
 ## The screens, from the jobs
 
-Phase 1 has four screens on each platform, and no more.
+Phase 1 has four screens on each platform. A share target, a drop target, a
+Services entry, and a notification are not screens
+(docs/decisions/0011-gestures-not-a-file-manager.md).
 
 | Screen | Serves | Shows |
 |---|---|---|
