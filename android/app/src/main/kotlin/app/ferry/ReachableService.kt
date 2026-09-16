@@ -426,17 +426,23 @@ class ReachableService : Service() {
     // The three-part words for one error code, from the generated table,
     // with `{detail}` filled the same way ErrorWords.kt fills it for
     // ErrorBlock. Falls back to the unknown-code words for a code the
-    // table does not hold.
+    // table does not hold. ErrorWords.kt's buildThreePartError does the
+    // lookup, fallback, fill, and trim; this wrapper resolves the
+    // unknown-code words through getString, since a service has no
+    // Compose context, and turns a null why or todo back into an empty
+    // part, which is what FerryErrors.Words holds.
     private fun errorWordsFor(code: String, detail: String?): FerryErrors.Words {
-        val words = FerryErrors.wordsFor(code) ?: return FerryErrors.Words(
-            stopped = getString(R.string.error_unknown_stopped),
-            why = getString(R.string.error_unknown_why, code),
-            todo = getString(R.string.error_unknown_todo),
+        val words = buildThreePartError(
+            code = code,
+            detail = detail,
+            unknownStopped = getString(R.string.error_unknown_stopped),
+            unknownWhy = getString(R.string.error_unknown_why, code),
+            unknownTodo = getString(R.string.error_unknown_todo),
         )
         return FerryErrors.Words(
-            stopped = FerryErrors.fill(words.stopped, detail).trim(),
-            why = FerryErrors.fill(words.why, detail).trim(),
-            todo = FerryErrors.fill(words.todo, detail).trim(),
+            stopped = words.stopped,
+            why = words.why.orEmpty(),
+            todo = words.todo.orEmpty(),
         )
     }
 
