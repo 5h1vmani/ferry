@@ -38,15 +38,7 @@ enum TransferNotifier {
     private static func body(for group: TransferGroupSnapshot) -> String? {
         switch group.state {
         case .done:
-            var parts: [String] = []
-            if !group.isSingleFile {
-                parts.append(S.transfers.fileCount(Int(group.filesTotal)))
-            }
-            parts.append(FerryFormat.bytes(group.bytesTotal))
-            if let duration = group.duration {
-                parts.append(duration)
-            }
-            return parts.joined(separator: S.common.dotSeparator)
+            return group.doneSummary
         case .failed:
             return group.error?.whatStopped ?? S.common.unknownErrorStopped
         case .queued, .active, .paused:

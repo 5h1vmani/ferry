@@ -182,6 +182,21 @@ struct TransferGroupSnapshot: Equatable, Identifiable {
     var isSingleFile: Bool {
         filesTotal <= 1
     }
+
+    /// "43 files · 4.8 GB · 3 min" for a group that reached Done.
+    /// `TransferRow` and `TransferNotifier` both show these words for the
+    /// same ending, so they are decided once here.
+    var doneSummary: String {
+        var parts: [String] = []
+        if !isSingleFile {
+            parts.append(S.transfers.fileCount(Int(filesTotal)))
+        }
+        parts.append(FerryFormat.bytes(bytesTotal))
+        if let duration {
+            parts.append(duration)
+        }
+        return parts.joined(separator: S.common.dotSeparator)
+    }
 }
 
 /// The bottom of the depth axis in docs/ia.md. Shown by the chunk

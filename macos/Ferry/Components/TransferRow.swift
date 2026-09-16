@@ -95,12 +95,12 @@ struct TransferRow: View {
             HStack(spacing: FerrySpace.s1) {
                 Image(systemName: FerryIcon.done)
                     .foregroundStyle(FerryColor.text)
-                Text(doneText)
+                Text(group.doneSummary)
                     .font(FerryFont.mono)
                     .foregroundStyle(FerryColor.text)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(doneText)
+            .accessibilityLabel(group.doneSummary)
 
         case .failed:
             if let error = group.error {
@@ -153,19 +153,5 @@ struct TransferRow: View {
     private var pausedText: String {
         guard let error = group.error else { return S.progressLine.paused }
         return [S.progressLine.paused, error.why, error.whatToDo].joined(separator: " ")
-    }
-
-    /// "12 files · 4.8 GB · 3 min". The duration is left out while the
-    /// engine carries no timestamps (docs/engine-contract.md, item 9).
-    private var doneText: String {
-        var parts: [String] = []
-        if !group.isSingleFile {
-            parts.append(S.transfers.fileCount(Int(group.filesTotal)))
-        }
-        parts.append(FerryFormat.bytes(group.bytesTotal))
-        if let duration = group.duration {
-            parts.append(duration)
-        }
-        return parts.joined(separator: S.common.dotSeparator)
     }
 }
