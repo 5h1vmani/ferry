@@ -142,6 +142,18 @@ enum S {
         static let nonFileURLWhy = "One of them was not a file on this Mac."
         static let nonFileURLToDo = "Use Send files… instead."
 
+        /// A drop on a device that is not reachable. `docs/audits/ux-gestures.md`,
+        /// finding 11.
+        static let deviceNotReachableStopped = "The files were not sent."
+        static let deviceNotReachableWhy = "The device is not reachable."
+        static let deviceNotReachableToDo = "Reconnect the device, then drop the files again."
+
+        /// A drop on the Dock icon with no device to send to.
+        /// `docs/audits/ux-gestures.md`, finding 11.
+        static let noDeviceStopped = "The files were not sent."
+        static let noDeviceWhy = "No device is paired."
+        static let noDeviceToDo = "Pair a phone, then try again."
+
         /// The folder name a gesture-started push always lands in, inside
         /// the first root the device lists. `docs/engine-contract.md`,
         /// item 5, "Where a push lands".

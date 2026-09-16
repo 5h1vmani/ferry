@@ -49,7 +49,10 @@ struct DeviceRow: View {
             )
         )
         .dropDestination(for: URL.self) { urls, _ in
-            guard device.isReachable else { return false }
+            guard device.isReachable else {
+                model.actionError = DropError.deviceNotReachable.threePart(canRetry: false)
+                return false
+            }
             model.send(urls: urls, toDevice: device.keyHex)
             return true
         }
