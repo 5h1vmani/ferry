@@ -40,6 +40,9 @@
     <string name="share_unreadable_stopped">The share stopped.</string>
     <string name="share_unreadable_why">Ferry could not read %1$s from the app that shared it.</string>
     <string name="share_unreadable_todo">Save the file to the phone, then share it again.</string>
+    <!-- The name share_unreadable_why names when the failure gives no file
+         of its own, audit finding 2. -->
+    <string name="share_generic_file_name">the shared file</string>
 
     <!-- A share whose intent carried no read grant, audit finding 1 of
          docs/audits/ux-gestures.md. -->

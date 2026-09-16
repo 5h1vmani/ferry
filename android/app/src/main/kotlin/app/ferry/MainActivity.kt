@@ -142,12 +142,25 @@ class MainActivity : ComponentActivity() {
         ShareIntake.requestNavigateHome()
         val context = applicationContext
         Thread {
-            // A file that cannot be read stops the whole share: nothing is
-            // sent, and ShareIntake.appError already carries why, for
-            // FerryApp to show through ErrorBlock. docs/voice.md rule 10.
-            val resolution = ShareIntake.resolve(context, uris, hasReadGrant)
-            if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
-                FerryEngine.pushShared(resolution.localPaths)
+            try {
+                // A file that cannot be read stops the whole share: nothing
+                // is sent, and ShareIntake.appError already carries why,
+                // for FerryApp to show through ErrorBlock. docs/voice.md
+                // rule 10.
+                val resolution = ShareIntake.resolve(context, uris, hasReadGrant)
+                if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
+                    FerryEngine.pushShared(resolution.localPaths)
+                }
+            } catch (t: Throwable) {
+                // Audit finding 2. Any app on the phone can hand a share
+                // intent to Ferry; a fault this deep must not crash the
+                // process. There is no one file to name here, so the error
+                // says as much through the same path a per-file failure
+                // uses.
+                android.util.Log.w("Ferry", "share handling failed", t)
+                ShareIntake.setAppError(
+                    ShareIntake.AppError.Unreadable(context.getString(R.string.share_generic_file_name)),
+                )
             }
         }.start()
     }

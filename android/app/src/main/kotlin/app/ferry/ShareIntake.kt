@@ -170,24 +170,30 @@ object ShareIntake {
     private fun nameForError(context: Context, uri: Uri): String {
         val name = try {
             displayNameOf(context.contentResolver, uri)
-        } catch (e: SecurityException) {
+        } catch (t: Throwable) {
             null
         }
         return name ?: uri.lastPathSegment ?: uri.toString()
     }
 
+    // Audit finding 2. `ContentResolver.query` and `openInputStream` throw
+    // `SecurityException` when the sender set no grant flag, and
+    // `IllegalArgumentException` for a malformed URI. Both `mediaStorePath`
+    // and `copyToCache` are inside this one try, not just the second of
+    // them, so a fault in either becomes an ordinary Unreadable result
+    // rather than an uncaught exception on the caller's thread.
     private fun resolveOne(context: Context, uri: Uri): String? {
-        val direct = mediaStorePath(context, uri)
-        if (direct != null && isUnderExternalStorage(direct)) {
-            val file = File(direct)
-            if (file.isFile && file.canRead()) {
-                return direct
-            }
-        }
         return try {
+            val direct = mediaStorePath(context, uri)
+            if (direct != null && isUnderExternalStorage(direct)) {
+                val file = File(direct)
+                if (file.isFile && file.canRead()) {
+                    return direct
+                }
+            }
             copyToCache(context, uri)
-        } catch (e: IOException) {
-            android.util.Log.w(LOG_TAG, "share content could not be read: $uri", e)
+        } catch (t: Throwable) {
+            android.util.Log.w(LOG_TAG, "share content could not be read: $uri", t)
             null
         }
     }
