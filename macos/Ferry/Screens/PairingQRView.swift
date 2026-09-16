@@ -57,6 +57,10 @@ struct PairingQRView: View {
                 .resizable()
                 .frame(width: 220, height: 220)
                 .padding(FerrySpace.s3)
+                // A phone's camera reads this code, not a person's eye, so
+                // it needs true black on true white. No theme colour
+                // applies here, the same choice the phone's scanner
+                // overlay makes for its own white frame.
                 .background(Color.white)
                 .overlay(
                     RoundedRectangle(cornerRadius: FerryRadius.medium)
