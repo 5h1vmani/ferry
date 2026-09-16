@@ -353,7 +353,13 @@ object FerryEngine {
         if (!_started.value) {
             return
         }
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         current.setReachable(on)
         readStatus(current)
         _shortCode.value = current.shortCode()
@@ -381,7 +387,13 @@ object FerryEngine {
     // but it runs on Dispatchers.IO with trustNetwork and forgetNetwork so
     // none of the three ever blocks the caller's thread.
     fun setNetwork(name: String?) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         scope.launch {
             current.setNetwork(name)
             readStatus(current)
@@ -391,7 +403,13 @@ object FerryEngine {
     // Adds a name to the trusted list. Refused with Runtime::NetworkName
     // for an empty name, a name over 32 bytes, or a 33rd name.
     fun trustNetwork(name: String) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         _error.value = null
         scope.launch {
             try {
@@ -406,7 +424,13 @@ object FerryEngine {
     // Removes a name from the trusted list. A name that is not trusted is
     // not an error and changes nothing.
     fun forgetNetwork(name: String) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         _error.value = null
         scope.launch {
             try {
@@ -432,7 +456,13 @@ object FerryEngine {
     // Both methods time out after two minutes and both end at Confirmed or
     // Failed, so nothing downstream of pairing knows which was used.
     fun startPairing(method: UiPairingMethod) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         _error.value = null
         _scanSent.value = false
         _pairingMethod.value = method
@@ -462,7 +492,13 @@ object FerryEngine {
     // stores the Mac, the same as the code method does. confirmPairing
     // answers it.
     fun offerScanned(payload: ByteArray) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         if (_scanSent.value) {
             return
         }
@@ -499,7 +535,13 @@ object FerryEngine {
     // Removes a device's key and every transfer record for it. This writes
     // the device list to disk, so it runs off the main thread.
     fun forget(keyHex: String) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         _error.value = null
         scope.launch {
             try {
@@ -514,7 +556,13 @@ object FerryEngine {
     // Restarts a failed transfer from its resume point. This dials the
     // device, so it runs off the main thread.
     fun retry(transferId: String) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         _error.value = null
         scope.launch {
             try {
@@ -530,7 +578,13 @@ object FerryEngine {
     // Restarts every failed transfer in a batch. One tap for a folder copy
     // where several files failed, instead of one tap per file.
     fun retryBatch(batchId: String) {
-        val current = engine ?: return
+        val current = engine ?: run {
+            // A tap reaching here found no engine built. Without this,
+            // the tap did nothing and said nothing. docs/audits/principles.md
+            // row P15.
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+            return
+        }
         _error.value = null
         scope.launch {
             try {

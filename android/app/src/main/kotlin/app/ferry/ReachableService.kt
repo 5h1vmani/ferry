@@ -459,17 +459,13 @@ class ReachableService : Service() {
     // FerryEngine.start() records its own failure in the error state every
     // other engine call already shows through, so nothing further is
     // posted here beyond not attempting the retry itself.
-    // A Retry tapped from the shade found an engine that could not start.
+    // A Retry tapped from the shade found an engine that could not start,
+    // or found no group id at all: docs/audits/principles.md row P16.
     // Nothing else is on screen, so the words go where the tap came from:
     // the same notification, on the same id. docs/voice.md rule 10.
-    private fun postRetryFailed(groupId: String) {
+    private fun postRetryFailed(notificationGroupId: String, code: String, detail: String?) {
         val manager = getSystemService(NotificationManager::class.java) ?: return
-        val failure = FerryEngine.error.value as? FerryException.Failed
-        val words = if (failure != null) {
-            errorWordsFor(failure.code, failure.detail)
-        } else {
-            errorWordsFor(FerryErrorCode.RUNTIME_NOT_STARTED, null)
-        }
+        val words = errorWordsFor(code, detail)
         val open = openAppIntent()
         val notification = Notification.Builder(this, TRANSFERS_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
@@ -478,13 +474,22 @@ class ReachableService : Service() {
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()
-        manager.notify(notificationIdFor(groupId), notification)
+        manager.notify(notificationIdFor(notificationGroupId), notification)
     }
 
     private fun handleRetryAction(intent: Intent) {
-        val groupId = intent.getStringExtra(EXTRA_GROUP_ID) ?: return
+        val groupId = intent.getStringExtra(EXTRA_GROUP_ID) ?: run {
+            // The extra is missing, which should never happen since this
+            // service builds every such intent itself. There is no group
+            // to update, so this names the fault as an app-side code, the
+            // same way FerryEngine's KeyRenameFailed does, and posts the
+            // unknown-code words instead of returning with nothing shown.
+            postRetryFailed(RETRY_MISSING_GROUP_ID_CODE, RETRY_MISSING_GROUP_ID_CODE, null)
+            return
+        }
         if (!FerryEngine.start()) {
-            postRetryFailed(groupId)
+            val failure = FerryEngine.error.value as? FerryException.Failed
+            postRetryFailed(groupId, failure?.code ?: FerryErrorCode.RUNTIME_NOT_STARTED, failure?.detail)
             return
         }
         if (intent.getBooleanExtra(EXTRA_IS_BATCH, false)) {
@@ -504,6 +509,12 @@ class ReachableService : Service() {
         // so a person can silence one without the other.
         private const val TRANSFERS_CHANNEL_ID = "transfers"
         private const val PROGRESS_MAX = 100
+
+        // Not an engine code: there is no entry in the generated table for
+        // a Retry tap whose own extra never arrived, so this falls back to
+        // the unknown-code words, the same way FerryEngine's
+        // KeyRenameFailed does.
+        private const val RETRY_MISSING_GROUP_ID_CODE = "Android::RetryMissingGroupId"
         private const val ACTION_RETRY_TRANSFER = "app.ferry.action.RETRY_TRANSFER"
         private const val EXTRA_GROUP_ID = "app.ferry.extra.GROUP_ID"
         private const val EXTRA_IS_BATCH = "app.ferry.extra.IS_BATCH"
