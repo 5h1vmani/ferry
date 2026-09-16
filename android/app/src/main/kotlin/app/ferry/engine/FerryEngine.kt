@@ -157,6 +157,13 @@ object FerryEngine {
     // it.
     val trustedNetworks: StateFlow<List<String>> = _trustedNetworks.asStateFlow()
 
+    private val _sharedRootNames = MutableStateFlow<List<String>>(emptyList())
+
+    // Every root this phone shares, by name, as the engine reports it.
+    // Settings shows these instead of typing the phone's own root name a
+    // second time.
+    val sharedRootNames: StateFlow<List<String>> = _sharedRootNames.asStateFlow()
+
     private val _started = MutableStateFlow(false)
 
     // True once start() has succeeded.
@@ -334,6 +341,7 @@ object FerryEngine {
             _network.value = null
             _wifiPresence.value = false
             _trustedNetworks.value = emptyList()
+            _sharedRootNames.value = emptyList()
         }
         current?.stop()
     }
@@ -353,15 +361,17 @@ object FerryEngine {
 
     // Reads what this engine currently is. One call for reachability, the
     // network name, Wi-Fi presence, the listen port, and whether adb was
-    // found, so no screen holds a copy of any of them. trustedNetworks() is
-    // its own call, read here too, because the trusted list changes on the
-    // same devicesChanged callback as the rest of this.
+    // found, so no screen holds a copy of any of them. trustedNetworks() and
+    // roots() are their own calls, read here too, because the trusted list
+    // and the shared roots change on the same devicesChanged callback as
+    // the rest of this.
     private fun readStatus(current: Engine) {
         val status = current.status()
         _reachable.value = status.reachable
         _network.value = status.network
         _wifiPresence.value = status.wifiPresence
         _trustedNetworks.value = current.trustedNetworks()
+        _sharedRootNames.value = current.roots().map { it.name }
     }
 
     // Hands the engine the phone's current Wi-Fi network name, or null

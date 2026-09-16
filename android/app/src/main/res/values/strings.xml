@@ -314,7 +314,6 @@
     <string name="settings_group_paired">Paired</string>
     <string name="settings_name_label">Name</string>
     <string name="settings_shared_storage_label">Shared storage</string>
-    <string name="settings_shared_storage_value">Internal storage</string>
     <string name="settings_shared_storage_caption">Not editable in phase 1.</string>
     <string name="settings_all_files_access_label">All files access</string>
     <string name="settings_status_granted">Granted</string>
