@@ -32,6 +32,10 @@ pub const MAX_FRAME_PAYLOAD: u32 = MAX_READ_LEN + 64 * 1024;
 /// This bounds the buffer a server must hold for a single request. A chunk
 /// larger than this is fetched with several reads, because reads carry a byte
 /// range.
+///
+/// One mebibyte, named here once. `docs/protocol.md`'s limits table and
+/// `design/errors.json`'s `Runtime::WriteTooLarge` message both restate this
+/// number in prose; both cite this constant instead of a bare "1 MiB".
 pub const MAX_READ_LEN: u32 = 1024 * 1024;
 
 /// The largest number of bytes one `write` may carry.
