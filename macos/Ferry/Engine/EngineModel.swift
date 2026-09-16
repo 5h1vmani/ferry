@@ -89,6 +89,11 @@ final class EngineModel: ObservableObject {
     /// stored history from a previous run cannot trigger it at launch.
     /// `docs/ux-fix-plan.md`, item 2; `docs/audits/ux-gestures.md`, finding 5.
     private var didRequestNotificationAuthorization = false
+    /// A finished single-file pull's file on disk, by transfer id.
+    /// Computed once, the moment a group reaches Done, so `DeviceDetail`
+    /// never runs a file system call in its body.
+    /// `docs/audits/ux-gestures.md`, finding 14.
+    private var revealPaths: [String: String] = [:]
 
     private var engine: Engine?
     private var events: EngineEvents?
@@ -202,6 +207,7 @@ final class EngineModel: ObservableObject {
         lastGroupStates = [:]
         hasSeededGroupStates = false
         didRequestNotificationAuthorization = false
+        revealPaths = [:]
         NSApp.dockTile.badgeLabel = nil
     }
 
@@ -243,9 +249,26 @@ final class EngineModel: ObservableObject {
         // A transfer moving changes a device's speed, which the badge and
         // the menu bar both state.
         refreshPresence()
+        updateRevealPaths()
         notifyEndedTransfers()
         updateDockBadge()
         objectWillChange.send()
+    }
+
+    /// Caches a finished single-file pull's file on disk, the moment its
+    /// transfer reaches Done, so `groups(forDevice:)` can hand the view a
+    /// value already known rather than a file system call to make.
+    /// `docs/audits/ux-gestures.md`, finding 14.
+    private func updateRevealPaths() {
+        for transfer in transferInfos {
+            guard transfer.batchId == nil, transfer.state == .done, transfer.direction == .pull else {
+                continue
+            }
+            guard revealPaths[transfer.id] == nil else { continue }
+            let path = downloadPath + "/" + transfer.fileName
+            guard FileManager.default.fileExists(atPath: path) else { continue }
+            revealPaths[transfer.id] = path
+        }
     }
 
     /// Every batch moving right now, across every device, for the menu
@@ -368,7 +391,8 @@ final class EngineModel: ObservableObject {
     func groups(forDevice keyHex: String) -> [TransferGroupSnapshot] {
         EngineAdapter.groups(
             transfers: transferInfos.filter { $0.deviceKeyHex == keyHex },
-            batches: batchInfos.filter { $0.deviceKeyHex == keyHex }
+            batches: batchInfos.filter { $0.deviceKeyHex == keyHex },
+            revealPaths: revealPaths
         )
     }
 
