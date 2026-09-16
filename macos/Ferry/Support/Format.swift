@@ -49,6 +49,12 @@ enum FerryFormat {
         return "\(minutes / 60) h \(minutes % 60) min"
     }
 
+    /// A plain digit count for a system badge, such as the Dock tile. No
+    /// grouping or rounding: a badge is short by nature.
+    static func badgeCount(_ count: Int) -> String {
+        String(count)
+    }
+
     /// "1:12" for the time a pairing code has left. Counted, not described,
     /// because "soon" is an adjective standing in for a number.
     static func countdown(seconds: Int64) -> String {

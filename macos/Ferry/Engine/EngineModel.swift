@@ -27,6 +27,7 @@
 //     the NetFS call in FinderMount.swift, and `set_mount_path` all happen
 //     in one detached task, off the main actor.
 
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -68,6 +69,14 @@ final class EngineModel: ObservableObject {
     /// reachable moment gets its own try. `docs/engine-contract.md`, item
     /// 6: "do not retry more than once per reachability change."
     private var mountAttempted: Set<String> = []
+    /// Each group's state as of the last `reloadTransfers`, so an ending is
+    /// announced once, and again if the group ends a second time after a
+    /// retry. `docs/ux-fix-plan.md`, item 2.
+    private var lastGroupStates: [String: TransferState] = [:]
+    /// True once `TransferNotifier.requestAuthorization` has been asked
+    /// for this run. `docs/ux-fix-plan.md`, item 2: asked the first time a
+    /// transfer starts, not at launch.
+    private var didRequestNotificationAuthorization = false
 
     private var engine: Engine?
     private var events: EngineEvents?
@@ -178,6 +187,9 @@ final class EngineModel: ObservableObject {
         offeringTimer = nil
         presence = .unknown
         mountAttempted = []
+        lastGroupStates = [:]
+        didRequestNotificationAuthorization = false
+        NSApp.dockTile.badgeLabel = nil
     }
 
     // MARK: - What the listener calls
@@ -218,7 +230,46 @@ final class EngineModel: ObservableObject {
         // A transfer moving changes a device's speed, which the badge and
         // the menu bar both state.
         refreshPresence()
+        requestNotificationAuthorizationIfNeeded()
+        notifyEndedTransfers()
+        updateDockBadge()
         objectWillChange.send()
+    }
+
+    /// Every batch moving right now, across every device, for the menu
+    /// bar's one line per running batch. `docs/ux-fix-plan.md`, item 2.
+    var runningBatches: [TransferGroupSnapshot] {
+        EngineAdapter.groups(transfers: transferInfos, batches: batchInfos)
+            .filter { $0.state == .active }
+    }
+
+    /// Asks for notification authorization the first time this run sees a
+    /// transfer. `docs/ux-fix-plan.md`, item 2.
+    private func requestNotificationAuthorizationIfNeeded() {
+        guard !didRequestNotificationAuthorization else { return }
+        guard !transferInfos.isEmpty || !batchInfos.isEmpty else { return }
+        didRequestNotificationAuthorization = true
+        TransferNotifier.requestAuthorization()
+    }
+
+    /// Posts one notification for every batch or single transfer that just
+    /// moved to Done or Failed since the last read. `docs/ux-fix-plan.md`,
+    /// item 2.
+    private func notifyEndedTransfers() {
+        let groups = EngineAdapter.groups(transfers: transferInfos, batches: batchInfos)
+        for group in groups {
+            let previous = lastGroupStates[group.id]
+            lastGroupStates[group.id] = group.state
+            guard previous != group.state, group.state == .done || group.state == .failed else { continue }
+            TransferNotifier.notify(group: group)
+        }
+    }
+
+    /// Sets the Dock badge to the count of running transfers, and clears
+    /// it at zero. `docs/ux-fix-plan.md`, item 2.
+    private func updateDockBadge() {
+        let running = transferInfos.filter { $0.state == .active }.count
+        NSApp.dockTile.badgeLabel = running > 0 ? FerryFormat.badgeCount(running) : nil
     }
 
     /// `EngineEvents.accessLogChanged` calls this at most once every 250

@@ -5,9 +5,11 @@
 // is finished by plugging in a cable, and a person who has just done that
 // looks for confirmation, not for a window.
 //
-// One rule keeps this from becoming a second window: it shows state and the
-// privacy mode, never history and never a transfer list. The moment it
-// needs a scroll view, it has become the thing it was built to avoid.
+// One rule keeps this from becoming a second window: it shows state, the
+// privacy mode, and one line per batch moving right now: label, progress,
+// speed. It never shows a finished transfer or the access log
+// (docs/ux-fix-plan.md, item 2). The moment it needs a scroll view, it has
+// become the thing it was built to avoid.
 
 import SwiftUI
 import AppKit
@@ -25,6 +27,14 @@ struct MenuBarPresence: View {
             } else {
                 ForEach(model.devices) { device in
                     DeviceRow(device: device)
+                        .padding(.horizontal, FerrySpace.s2)
+                }
+            }
+
+            if !model.runningBatches.isEmpty {
+                Divider()
+                ForEach(model.runningBatches) { group in
+                    RunningBatchLine(group: group)
                         .padding(.horizontal, FerrySpace.s2)
                 }
             }
@@ -76,5 +86,36 @@ struct MenuBarLabel: View {
             }
         }
         .accessibilityLabel(S.menuBar.accessibilityLabel)
+    }
+}
+
+/// One running batch's line in the menu bar dropdown: its label, a
+/// progress bar, and its speed. `docs/ux-fix-plan.md`, item 2.
+private struct RunningBatchLine: View {
+    let group: TransferGroupSnapshot
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: FerrySpace.s1) {
+            Text(group.label)
+                .font(FerryFont.label)
+                .foregroundStyle(FerryColor.text)
+                .lineLimit(1)
+            HStack(spacing: FerrySpace.s2) {
+                ProgressView(value: group.fraction)
+                    .tint(FerryColor.accent)
+                if let speed = group.speedBytesPerSec, speed > 0 {
+                    Text(FerryFormat.speed(bytesPerSec: speed))
+                        .font(FerryFont.caption)
+                        .foregroundStyle(FerryColor.textSecondary)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            [
+                group.label,
+                S.progressLine.accessibilityTransferring(percent: group.percent),
+            ].joined(separator: ". ")
+        )
     }
 }
