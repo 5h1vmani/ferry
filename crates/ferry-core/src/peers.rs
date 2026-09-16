@@ -328,10 +328,6 @@ fn encode_peers(peers: &BTreeMap<PublicKey, Peer>) -> Vec<u8> {
     e.finish()
 }
 
-// `Encoder` and `Decoder` have no signed integer methods, so a Unix second
-// count is carried as its bit pattern instead. An `as` cast between `i64`
-// and `u64` would be a truncating cast in clippy's eyes even though no bits
-// are lost, so the bits are reinterpreted explicitly. `ops.rs` does the same.
 /// Where this device's own static key lives.
 ///
 /// The real implementations are the macOS Keychain and Android's

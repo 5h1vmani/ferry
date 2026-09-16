@@ -680,10 +680,6 @@ fn decode_path(d: &mut Decoder) -> Result<RemotePath, WireError> {
     RemotePath::parse(text).map_err(|_| WireError::InvalidPath)
 }
 
-// `Encoder` and `Decoder` have no signed-integer methods. An `as` cast from
-// `i64` to `u64` would be a truncating cast in clippy's eyes even though no
-// bits are lost, so the bits are reinterpreted explicitly instead. This keeps
-// negative values exact.
 #[cfg(test)]
 mod tests {
     use super::{Entry, FileKind, OpError, Request, Response, WireError};

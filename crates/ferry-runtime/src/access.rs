@@ -349,9 +349,6 @@ fn day_key(unix_secs: i64) -> String {
     format!("{year:04}{month:02}{day:02}")
 }
 
-/// `Encoder` has no signed integer method, so a Unix second count is carried
-/// as its bit pattern. `ferry-core`'s `peers.rs` does the same, for the same
-/// reason.
 /// Write an optional byte count as a presence byte followed by the value, or
 /// a zero value when there is none.
 fn encode_option_u64(encoder: &mut Encoder, value: Option<u64>) {
