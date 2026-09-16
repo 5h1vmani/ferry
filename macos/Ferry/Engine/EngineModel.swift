@@ -655,23 +655,6 @@ final class EngineModel: ObservableObject {
         }
     }
 
-    /// Starts copying one or more local files into a folder on a paired
-    /// device, as one batch. `docs/engine-contract.md`, item 5.
-    func pushFiles(deviceKeyHex: String, localPaths: [String], remoteFolder: String) {
-        guard let engine else { return }
-        Task.detached { [weak self] in
-            do {
-                _ = try engine.pushFiles(
-                    deviceKeyHex: deviceKeyHex,
-                    localPaths: localPaths,
-                    remoteFolder: remoteFolder
-                )
-            } catch {
-                await self?.report(error)
-            }
-        }
-    }
-
     // MARK: - Sending files by drop, Send files, or a Finder service
 
     /// Where a gesture-started push lands on one device: the first root it
