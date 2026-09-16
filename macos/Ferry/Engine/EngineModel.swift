@@ -748,7 +748,7 @@ final class EngineModel: ObservableObject {
                 do {
                     try engine.mkdir(deviceKeyHex: keyHex, remotePath: folder)
                 } catch let error as FerryError {
-                    if case let .Failed(code, _) = error, code == "OpError::AlreadyExists" {
+                    if case let .Failed(code, _) = error, code == FerryErrorCode.opErrorAlreadyExists {
                         // The folder is already there, which is the
                         // outcome this call asked for.
                     } else {
