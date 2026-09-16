@@ -139,3 +139,22 @@ system's read grant, a share is capped at 100 files, 4 GiB per copy, and
 512 MiB free, and the target device is the only paired one or the first
 reachable one. Both branches are merged on main and the full gate ran
 once on the merged tree.
+
+## Narrow verification, 16 September 2026
+
+The orchestrator read the fix hunks for rows 1 to 7, 9, and 16 on the
+phone and rows 4 and 5 on the Mac against the Fix column. Rows 1 to 6, 16,
+4, and 5 hold as written. Two did not:
+
+- Row 7. `FerryEngine.start()` set `started` before it loaded the batch
+  list. `ShareIntake` sweeps the cache on that signal and keeps only what
+  the batch list names, so an empty list would delete a paused push's
+  source file. The flag now turns true after the loads, commit cc27cee.
+- Row 9. A Retry tapped from the shade returned silently when the engine
+  could not start. It now posts the engine's error words on the same
+  notification, commit 043f8c4.
+
+Row 17 was wider than the audit said. A grep for a quoted `X::Y` code
+found twenty-two sites across both apps, not two. All now read the
+generated `FerryErrorCode` constant, commit 9d522ec. The one code with no
+table row, `Android::KeyRenameFailed`, stays a literal.
