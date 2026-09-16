@@ -75,10 +75,25 @@ class ReachableService : Service() {
     override fun onCreate() {
         super.onCreate()
         createTransfersChannel()
+        cancelStaleTransferNotifications()
         notifyJob = notifyScope.launch {
             combine(FerryEngine.batches, FerryEngine.transfers) { batches, transfers ->
                 allGroups(batches, transfers)
             }.collect { groups -> updateTransferNotifications(groups) }
+        }
+    }
+
+    // A running transfer's notification is ongoing, but this service
+    // instance is gone if the process died mid-transfer, with no one left
+    // to cancel it: audit finding 16. lastNotified starts empty on a fresh
+    // instance too, so without this a stale notification would sit in the
+    // shade forever, never matching a state this instance thinks it holds.
+    private fun cancelStaleTransferNotifications() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        for (posted in manager.activeNotifications) {
+            if (posted.notification.channelId == TRANSFERS_CHANNEL_ID) {
+                manager.cancel(posted.id)
+            }
         }
     }
 
