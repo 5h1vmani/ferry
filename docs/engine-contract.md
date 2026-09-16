@@ -711,18 +711,24 @@ item 4. Rows show the direction through the existing `TransferRow`.
 item 1.
 
 **Where a push lands.** A push started by a gesture, not by a folder a
-person is looking at, lands in one fixed place per platform. On the Mac, a
-file from the phone lands in the root named `Downloads`, in a folder named
-`Ferry`: `Downloads/Ferry/<name>`. When no root is named `Downloads`, it
-lands in the first root the Mac lists, in `Ferry`; a peer cannot see the
-`writable` flag, so a read-only root fails the share with
-`PermissionDenied` and the app shows that error. On the phone,
-a file from the Mac lands in the first root the phone lists, in `Download`:
-`Internal storage/Download/<name>`. The sender calls `mkdir` on that folder
-first and treats `OpError::AlreadyExists` as success, because `push` does
-not create the parent folder (`push.rs`, `open_local`). Root names match
-ignoring case, as item 15 says. A push to a device that is not reachable
-fails outright, unlike a pull. `push_files` dials the device first, to
+person is looking at, lands in one fixed place per platform. The engine
+decides the place, through `landing_folder(device_key_hex)`
+(`engine/api/transfers.rs`), so a Mac, a phone, or any future caller asks
+the same way instead of picking the folder itself. `landing_folder` lists
+the peer's roots, picks the folder, calls `mkdir` on it, and returns the
+root-relative folder string. On a Mac peer, the folder is the root named
+`Downloads`, ignoring case as item 15 says, or the first root when none is
+named that, then `Ferry`: `Downloads/Ferry/<name>`. On a phone peer, the
+folder is the first root, then `Download`: `Internal storage/Download/<name>`.
+`landing_folder` treats `OpError::AlreadyExists` as success, so a caller
+may call it again before every push into the folder it names, because
+`push` does not create the parent folder on its own (`push.rs`,
+`open_local`). A peer cannot see the `writable` flag, so a read-only root
+answers `OpError::PermissionDenied`, which `landing_folder` returns and
+the app shows. The Mac's `EngineModel.swift` and the phone's
+`FerryEngine.kt` call `landing_folder` instead of each picking the folder
+in its own language. A push to a device that is not reachable fails
+outright, unlike a pull. `push_files` dials the device first, to
 confirm the remote folder is really a folder, before it queues anything
 (`push.rs`, `push_files`, near line 198); that dial returns
 `Runtime::NotReachable` when no address connects (`transfer.rs`, `dial`,

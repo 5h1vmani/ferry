@@ -719,6 +719,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_access_log(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_access_log_retention_days(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_auto_copy(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_set_auto_copy(
@@ -785,6 +787,8 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_forget(
     ): Int
+    external fun uniffi_ferry_runtime_checksum_method_engine_landing_folder(
+    ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pull(
     ): Int
     external fun uniffi_ferry_runtime_checksum_method_engine_pull_folder(
@@ -836,6 +840,8 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_ferry_runtime_fn_method_engine_access_log(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ferry_runtime_fn_method_engine_access_log_retention_days(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Int
     external fun uniffi_ferry_runtime_fn_method_engine_auto_copy(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_set_auto_copy(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`enabled`: Byte,uniffi_out_err: UniffiRustCallStatus, 
@@ -902,6 +908,8 @@ internal object UniffiLib {
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_forget(`ptr`: Long,`keyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
+    external fun uniffi_ferry_runtime_fn_method_engine_landing_folder(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_pull(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,`localName`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ferry_runtime_fn_method_engine_pull_folder(`ptr`: Long,`deviceKeyHex`: RustBuffer.ByValue,`remotePath`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1050,6 +1058,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_access_log() and 0xFFFF) != 52600) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_access_log_retention_days() and 0xFFFF) != 58095) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_auto_copy() and 0xFFFF) != 3246) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1147,6 +1158,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_forget() and 0xFFFF) != 16254) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_landing_folder() and 0xFFFF) != 36668) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pull() and 0xFFFF) != 23002) {
@@ -1679,6 +1693,14 @@ public interface EngineInterface {
     fun `accessLog`(`deviceKeyHex`: kotlin.String?, `limit`: kotlin.UInt): List<AccessEntry>
     
     /**
+     * How many days an access log entry is kept before it is pruned.
+     *
+     * `docs/engine-contract.md`, batch E, item 13. The app formats "Kept
+     * for {days} days" from this number, rather than typing 30 itself.
+     */
+    fun `accessLogRetentionDays`(): kotlin.UInt
+    
+    /**
      * Job 7: whether this device copies a paired device's camera folder to
      * itself on its own, and what its last run did.
      *
@@ -2095,6 +2117,33 @@ public interface EngineInterface {
     fun `forget`(`keyHex`: kotlin.String)
     
     /**
+     * Where a push started by a gesture, not by a folder a person is
+     * looking at, lands on a paired device. Made if it does not exist yet.
+     *
+     * `docs/engine-contract.md`, item 5, "Where a push lands": the engine
+     * owns this rule, so a Mac, a phone, and any future caller ask it the
+     * same way instead of each typing it.
+     *
+     * Lists the peer's roots with [`Engine::list`]. On a Mac peer, the
+     * folder is the root named `Downloads`, ignoring case, or the first
+     * root when none is named that, then [`crate::engine::LANDING_SUBFOLDER_MAC`].
+     * On a phone peer, the folder is the first root, then
+     * [`crate::engine::LANDING_SUBFOLDER_PHONE`]. Either way, `mkdir` is
+     * called on the folder, and `OpError::AlreadyExists` counts as
+     * success, so this is safe to call before every push into the folder
+     * it names.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
+     * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
+     * root is not writable, and `RootsError::NoRoots`, the closest
+     * existing code to "there is nowhere for this to land", when the
+     * peer's own root list is empty.
+     */
+    fun `landingFolder`(`deviceKeyHex`: kotlin.String): kotlin.String
+    
+    /**
      * Fetch one file from a paired device into the shared root.
      *
      * Returns the transfer identifier. The work runs on its own thread and
@@ -2356,6 +2405,25 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
         
         FfiConverterOptionalString.lower(`deviceKeyHex`),
         FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * How many days an access log entry is kept before it is pruned.
+     *
+     * `docs/engine-contract.md`, batch E, item 13. The app formats "Kept
+     * for {days} days" from this number, rather than typing 30 itself.
+     */override fun `accessLogRetentionDays`(): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_access_log_retention_days(
+        it,
+        _status)
 }
     }
     )
@@ -3176,6 +3244,46 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
 }
     }
     
+    
+
+    
+    /**
+     * Where a push started by a gesture, not by a folder a person is
+     * looking at, lands on a paired device. Made if it does not exist yet.
+     *
+     * `docs/engine-contract.md`, item 5, "Where a push lands": the engine
+     * owns this rule, so a Mac, a phone, and any future caller ask it the
+     * same way instead of each typing it.
+     *
+     * Lists the peer's roots with [`Engine::list`]. On a Mac peer, the
+     * folder is the root named `Downloads`, ignoring case, or the first
+     * root when none is named that, then [`crate::engine::LANDING_SUBFOLDER_MAC`].
+     * On a phone peer, the folder is the first root, then
+     * [`crate::engine::LANDING_SUBFOLDER_PHONE`]. Either way, `mkdir` is
+     * called on the folder, and `OpError::AlreadyExists` counts as
+     * success, so this is safe to call before every push into the folder
+     * it names.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
+     * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
+     * root is not writable, and `RootsError::NoRoots`, the closest
+     * existing code to "there is nowhere for this to land", when the
+     * peer's own root list is empty.
+     */
+    @Throws(FerryException::class)override fun `landingFolder`(`deviceKeyHex`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithHandle {
+    uniffiRustCallWithError(FerryException) { _status ->
+    UniffiLib.uniffi_ferry_runtime_fn_method_engine_landing_folder(
+        it,
+        
+        FfiConverterString.lower(`deviceKeyHex`),_status)
+}
+    }
+    )
+    }
     
 
     

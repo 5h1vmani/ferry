@@ -638,6 +638,14 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func accessLog(deviceKeyHex: String?, limit: UInt32)  -> [AccessEntry]
     
     /**
+     * How many days an access log entry is kept before it is pruned.
+     *
+     * `docs/engine-contract.md`, batch E, item 13. The app formats "Kept
+     * for {days} days" from this number, rather than typing 30 itself.
+     */
+    func accessLogRetentionDays()  -> UInt32
+    
+    /**
      * Job 7: whether this device copies a paired device's camera folder to
      * itself on its own, and what its last run did.
      *
@@ -1054,6 +1062,33 @@ public protocol EngineProtocol: AnyObject, Sendable {
     func forget(keyHex: String) throws 
     
     /**
+     * Where a push started by a gesture, not by a folder a person is
+     * looking at, lands on a paired device. Made if it does not exist yet.
+     *
+     * `docs/engine-contract.md`, item 5, "Where a push lands": the engine
+     * owns this rule, so a Mac, a phone, and any future caller ask it the
+     * same way instead of each typing it.
+     *
+     * Lists the peer's roots with [`Engine::list`]. On a Mac peer, the
+     * folder is the root named `Downloads`, ignoring case, or the first
+     * root when none is named that, then [`crate::engine::LANDING_SUBFOLDER_MAC`].
+     * On a phone peer, the folder is the first root, then
+     * [`crate::engine::LANDING_SUBFOLDER_PHONE`]. Either way, `mkdir` is
+     * called on the folder, and `OpError::AlreadyExists` counts as
+     * success, so this is safe to call before every push into the folder
+     * it names.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
+     * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
+     * root is not writable, and `RootsError::NoRoots`, the closest
+     * existing code to "there is nowhere for this to land", when the
+     * peer's own root list is empty.
+     */
+    func landingFolder(deviceKeyHex: String) throws  -> String
+    
+    /**
      * Fetch one file from a paired device into the shared root.
      *
      * Returns the transfer identifier. The work runs on its own thread and
@@ -1263,6 +1298,21 @@ open func accessLog(deviceKeyHex: String?, limit: UInt32) -> [AccessEntry]  {
             self.uniffiCloneHandle(),
         FfiConverterOptionString.lower(deviceKeyHex),
         FfiConverterUInt32.lower(limit),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * How many days an access log entry is kept before it is pruned.
+     *
+     * `docs/engine-contract.md`, batch E, item 13. The app formats "Kept
+     * for {days} days" from this number, rather than typing 30 itself.
+     */
+open func accessLogRetentionDays() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_access_log_retention_days(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1930,6 +1980,41 @@ open func forget(keyHex: String)throws   {try rustCallWithError(FfiConverterType
         FfiConverterString.lower(keyHex),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Where a push started by a gesture, not by a folder a person is
+     * looking at, lands on a paired device. Made if it does not exist yet.
+     *
+     * `docs/engine-contract.md`, item 5, "Where a push lands": the engine
+     * owns this rule, so a Mac, a phone, and any future caller ask it the
+     * same way instead of each typing it.
+     *
+     * Lists the peer's roots with [`Engine::list`]. On a Mac peer, the
+     * folder is the root named `Downloads`, ignoring case, or the first
+     * root when none is named that, then [`crate::engine::LANDING_SUBFOLDER_MAC`].
+     * On a phone peer, the folder is the first root, then
+     * [`crate::engine::LANDING_SUBFOLDER_PHONE`]. Either way, `mkdir` is
+     * called on the folder, and `OpError::AlreadyExists` counts as
+     * success, so this is safe to call before every push into the folder
+     * it names.
+     *
+     * # Errors
+     *
+     * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
+     * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
+     * root is not writable, and `RootsError::NoRoots`, the closest
+     * existing code to "there is nowhere for this to land", when the
+     * peer's own root list is empty.
+     */
+open func landingFolder(deviceKeyHex: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
+        uniffiCallStatus in
+    uniffi_ferry_runtime_fn_method_engine_landing_folder(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(deviceKeyHex),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -5423,6 +5508,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_access_log() != 52600) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ferry_runtime_checksum_method_engine_access_log_retention_days() != 58095) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ferry_runtime_checksum_method_engine_auto_copy() != 3246) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -5520,6 +5608,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_forget() != 16254) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ferry_runtime_checksum_method_engine_landing_folder() != 36668) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pull() != 23002) {
