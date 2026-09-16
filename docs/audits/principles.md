@@ -183,3 +183,26 @@ Held: the two bare threads that stop the engine are explained in place; no `runC
 | E18 | `common/engines.rs:96` `wait_until`, `item_17_prefetch.rs:53`, `item_6_spool_count.rs:51`, `resume_sweep.rs:341` `poll_until`, and `common/paths.rs` `poll_until` and `poll_until_or_describe` | Six versions of poll, sleep, panic past a deadline. | One free function in `tests/common/mod.rs`, with the describe variant, called by all. |
 
 Held: workers, backoff floor, and chunk size are single-sourced; the two DAV status maps differ on purpose; no dead `pub(crate)` item among 327; `rpc.rs`'s "not built" notes are true; no test file over 1000 lines.
+
+## Fix pass, 16 September 2026
+
+Every row is fixed and merged on main, one commit per row or per group of
+like rows. Mac rows M2 to M23 are commits a41d4b9 to ca140a2 on branch
+`tidy-mac`; `EngineModel.swift` went from 979 lines to 229 plus six
+extension files. Phone rows P1 to P19 are commits ab0a84a to 5caf6a7 on
+`tidy-phone`; `FerryEngine.kt` went from 760 lines to 615,
+`ReachableService.kt` from 524 to 351, with eight new files by concern.
+Engine rows E1 to E18 and E-new are commits dc36f3b to b85d899 on
+`tidy-rust`; the engine gained `landing_folder` and
+`access_log_retention_days`, and `ci.yml` now calls `scripts/gate.sh`.
+Row M1 and the app halves of E2 and E-new landed after the bindings
+regenerated: the Mac in edeb98b and 7443820, the phone in 91d02c3 and
+ac64e55. Both apps deleted their landing constants, their `mkdir` step, and
+their `AlreadyExists` check, and both format the retention line from the
+engine's number.
+
+Found during the pass, outside the review: the CI job had failed on every
+run since 11 September in one test that assumed a 4 MiB pull finishes
+within the one second backoff floor. Fixed in 513bf60. The hung adb test
+flaked once under parallel load with a bare assertion; 273ed1c makes it
+name the value it got.
