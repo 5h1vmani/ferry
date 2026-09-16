@@ -29,14 +29,10 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
           restore-keys: cargo-${{ runner.os }}-
 
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Lint
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Test
-        run: cargo test --all --all-features
+      # Format, lint, and test the Rust workspace with all features. Each
+      # step's own output prints as "gate: <step> ok" or "gate: <step> FAIL".
+      - name: Run the Rust gate
+        run: scripts/gate.sh rust
 
       # A plain run catches a feature gate that hides a compile error.
       - name: Test without optional features
