@@ -87,7 +87,10 @@ class ReachableService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_RETRY_TRANSFER) {
             handleRetryAction(intent)
-            return START_NOT_STICKY
+            // Audit finding 9. Android keeps whichever value onStartCommand
+            // last returned, so this used to turn off the sticky restart
+            // for the whole service on one Retry tap.
+            return START_STICKY
         }
         if (intent?.action == ACTION_STOP_ADVERTISING) {
             advertising = false
@@ -421,8 +424,18 @@ class ReachableService : Service() {
         )
     }
 
+    // Audit finding 9. A process death since the notification was posted
+    // leaves this service's own engine created but not started, so retry
+    // would otherwise fail silently: retry and retryBatch call the
+    // engine's own methods, which do nothing before start() has run.
+    // FerryEngine.start() records its own failure in the error state every
+    // other engine call already shows through, so nothing further is
+    // posted here beyond not attempting the retry itself.
     private fun handleRetryAction(intent: Intent) {
         val groupId = intent.getStringExtra(EXTRA_GROUP_ID) ?: return
+        if (!FerryEngine.start()) {
+            return
+        }
         if (intent.getBooleanExtra(EXTRA_IS_BATCH, false)) {
             FerryEngine.retryBatch(groupId)
         } else {
