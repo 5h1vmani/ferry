@@ -1,5 +1,6 @@
 package app.ferry.screens
 
+import app.ferry.FerryErrorCode
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -316,7 +317,7 @@ private const val CONFIRMED_MILLIS = 1_000L
 
 // The one code this screen names directly. Its words, like every other
 // error's, come from the generated table.
-private const val CAMERA_REFUSED_CODE = "PairingError::CameraRefused"
+private const val CAMERA_REFUSED_CODE = FerryErrorCode.PAIRING_ERROR_CAMERA_REFUSED
 
 @Composable
 private fun Padded(content: @Composable () -> Unit) {

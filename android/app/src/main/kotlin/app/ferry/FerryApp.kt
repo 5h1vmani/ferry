@@ -163,7 +163,7 @@ fun FerryApp(
     var errorActionLabel: String? = null
     var errorAction: (() -> Unit)? = null
     if (!allFilesAccess) {
-        errorWords = threePartError("Runtime::AllFilesAccess")
+        errorWords = threePartError(FerryErrorCode.RUNTIME_ALL_FILES_ACCESS)
         errorActionLabel = stringResource(R.string.action_open_settings)
         errorAction = onOpenAllFilesAccess
     } else {

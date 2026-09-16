@@ -1,5 +1,6 @@
 package app.ferry.provider
 
+import app.ferry.FerryErrorCode
 import android.content.Context
 import android.database.Cursor
 import android.database.MatrixCursor
@@ -502,19 +503,19 @@ private fun refused(documentId: String, error: FerryException): FileNotFoundExce
 private fun errnoOf(function: String, error: FerryException): ErrnoException {
     val code = (error as? FerryException.Failed)?.code.orEmpty()
     val errno = when (code) {
-        "OpError::NotFound" -> OsConstants.ENOENT
-        "OpError::AlreadyExists" -> OsConstants.EEXIST
-        "OpError::NotEmpty" -> OsConstants.ENOTEMPTY
-        "OpError::PermissionDenied" -> OsConstants.EACCES
-        "OpError::IsADirectory" -> OsConstants.EISDIR
-        "OpError::NotADirectory" -> OsConstants.ENOTDIR
-        "OpError::Unsupported" -> OsConstants.EOPNOTSUPP
-        "OpError::InvalidPath" -> OsConstants.EINVAL
-        "OpError::RangeTooLarge" -> OsConstants.EINVAL
-        "Runtime::WriteTooLarge" -> OsConstants.EINVAL
-        "Runtime::NotReachable" -> OsConstants.EHOSTUNREACH
-        "Runtime::NotPaired" -> OsConstants.ENODEV
-        "Runtime::NotStarted" -> OsConstants.EAGAIN
+        FerryErrorCode.OP_ERROR_NOT_FOUND -> OsConstants.ENOENT
+        FerryErrorCode.OP_ERROR_ALREADY_EXISTS -> OsConstants.EEXIST
+        FerryErrorCode.OP_ERROR_NOT_EMPTY -> OsConstants.ENOTEMPTY
+        FerryErrorCode.OP_ERROR_PERMISSION_DENIED -> OsConstants.EACCES
+        FerryErrorCode.OP_ERROR_IS_A_DIRECTORY -> OsConstants.EISDIR
+        FerryErrorCode.OP_ERROR_NOT_A_DIRECTORY -> OsConstants.ENOTDIR
+        FerryErrorCode.OP_ERROR_UNSUPPORTED -> OsConstants.EOPNOTSUPP
+        FerryErrorCode.OP_ERROR_INVALID_PATH -> OsConstants.EINVAL
+        FerryErrorCode.OP_ERROR_RANGE_TOO_LARGE -> OsConstants.EINVAL
+        FerryErrorCode.RUNTIME_WRITE_TOO_LARGE -> OsConstants.EINVAL
+        FerryErrorCode.RUNTIME_NOT_REACHABLE -> OsConstants.EHOSTUNREACH
+        FerryErrorCode.RUNTIME_NOT_PAIRED -> OsConstants.ENODEV
+        FerryErrorCode.RUNTIME_NOT_STARTED -> OsConstants.EAGAIN
         else -> if (code.startsWith(PATH_ERROR_PREFIX)) OsConstants.EINVAL else OsConstants.EIO
     }
     return ErrnoException(function, errno)

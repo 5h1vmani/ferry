@@ -642,7 +642,7 @@ final class EngineModel: ObservableObject {
     /// so it runs off the main thread and the caller awaits it.
     func list(deviceKeyHex: String, remotePath: String) async throws -> [Entry] {
         guard let engine else {
-            throw FerryError.Failed(code: "Runtime::NotStarted", detail: nil)
+            throw FerryError.Failed(code: FerryErrorCode.runtimeNotStarted, detail: nil)
         }
         return try await Task.detached {
             try engine.list(deviceKeyHex: deviceKeyHex, remotePath: remotePath)
@@ -687,7 +687,7 @@ final class EngineModel: ObservableObject {
     /// trip off the main thread, the same as `list`.
     func landingFolder(forDevice keyHex: String) async throws -> String {
         guard let engine else {
-            throw FerryError.Failed(code: "Runtime::NotStarted", detail: nil)
+            throw FerryError.Failed(code: FerryErrorCode.runtimeNotStarted, detail: nil)
         }
         return try await Task.detached {
             let roots = try engine.list(deviceKeyHex: keyHex, remotePath: "")
