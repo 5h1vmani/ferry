@@ -360,7 +360,7 @@ private fun ChoosingContent(
             onClick = onScan,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(MIN_TARGET),
+                .height(FerrySpace.s7),
             colors = ButtonDefaults.buttonColors(containerColor = FerryColor.accent()),
         ) {
             Text(stringResource(R.string.pairing_scan_the_code))
@@ -519,15 +519,12 @@ private fun AlternativeButton(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(MIN_TARGET),
+            .height(FerrySpace.s7),
         colors = ButtonDefaults.textButtonColors(contentColor = FerryColor.accentText()),
     ) {
         Text(label)
     }
 }
-
-// Material's minimum touch target. Nothing a finger lands on is smaller.
-private val MIN_TARGET = 48.dp
 
 private val FRAME = 240.dp
 

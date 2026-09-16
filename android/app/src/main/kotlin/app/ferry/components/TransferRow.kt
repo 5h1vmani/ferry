@@ -16,7 +16,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
 import app.ferry.FerryColor
 import app.ferry.FerryFont
 import app.ferry.FerryIcon
@@ -117,7 +116,7 @@ private fun GroupProgress(group: TransferGroup, onRetry: () -> Unit) {
                     progress = { group.fraction },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp),
+                        .height(FerrySpace.s1),
                     color = FerryColor.accent(),
                     trackColor = FerryColor.border(),
                 )
@@ -136,7 +135,7 @@ private fun GroupProgress(group: TransferGroup, onRetry: () -> Unit) {
                     progress = { group.fraction },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp),
+                        .height(FerrySpace.s1),
                     color = FerryColor.borderStrong(),
                     trackColor = FerryColor.border(),
                 )
