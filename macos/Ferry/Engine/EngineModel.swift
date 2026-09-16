@@ -78,9 +78,16 @@ final class EngineModel: ObservableObject {
     /// announced once, and again if the group ends a second time after a
     /// retry. `docs/ux-fix-plan.md`, item 2.
     private var lastGroupStates: [String: TransferState] = [:]
+    /// True once `lastGroupStates` has been filled by one `reloadTransfers`.
+    /// The first read after `start()` can hold a run's whole stored
+    /// history, already Done or Failed; that read seeds the dictionary
+    /// without notifying. `docs/audits/ux-gestures.md`, finding 5.
+    private var hasSeededGroupStates = false
     /// True once `TransferNotifier.requestAuthorization` has been asked
-    /// for this run. `docs/ux-fix-plan.md`, item 2: asked the first time a
-    /// transfer starts, not at launch.
+    /// for this run. Asked only from a gesture that starts a transfer —
+    /// `pull`, `pullFolder`, `send` — never from `reloadTransfers`, so
+    /// stored history from a previous run cannot trigger it at launch.
+    /// `docs/ux-fix-plan.md`, item 2; `docs/audits/ux-gestures.md`, finding 5.
     private var didRequestNotificationAuthorization = false
 
     private var engine: Engine?
@@ -193,6 +200,7 @@ final class EngineModel: ObservableObject {
         presence = .unknown
         mountAttempted = []
         lastGroupStates = [:]
+        hasSeededGroupStates = false
         didRequestNotificationAuthorization = false
         NSApp.dockTile.badgeLabel = nil
     }
@@ -235,7 +243,6 @@ final class EngineModel: ObservableObject {
         // A transfer moving changes a device's speed, which the badge and
         // the menu bar both state.
         refreshPresence()
-        requestNotificationAuthorizationIfNeeded()
         notifyEndedTransfers()
         updateDockBadge()
         objectWillChange.send()
@@ -248,20 +255,32 @@ final class EngineModel: ObservableObject {
             .filter { $0.state == .active }
     }
 
-    /// Asks for notification authorization the first time this run sees a
-    /// transfer. `docs/ux-fix-plan.md`, item 2.
+    /// Asks for notification authorization the first time a gesture in
+    /// this session starts a transfer. Called from `pull`, `pullFolder`,
+    /// and `send`, never from `reloadTransfers`: stored history read at
+    /// launch is not a gesture. `docs/ux-fix-plan.md`, item 2;
+    /// `docs/audits/ux-gestures.md`, finding 5.
     private func requestNotificationAuthorizationIfNeeded() {
         guard !didRequestNotificationAuthorization else { return }
-        guard !transferInfos.isEmpty || !batchInfos.isEmpty else { return }
         didRequestNotificationAuthorization = true
         TransferNotifier.requestAuthorization()
     }
 
     /// Posts one notification for every batch or single transfer that just
-    /// moved to Done or Failed since the last read. `docs/ux-fix-plan.md`,
-    /// item 2.
+    /// moved to Done or Failed since the last read. The first call after
+    /// `start()` only seeds `lastGroupStates`: it never notifies, because a
+    /// group already Done or Failed there is stored history, not an
+    /// ending this run watched happen. `docs/ux-fix-plan.md`, item 2;
+    /// `docs/audits/ux-gestures.md`, finding 5.
     private func notifyEndedTransfers() {
         let groups = EngineAdapter.groups(transfers: transferInfos, batches: batchInfos)
+        guard hasSeededGroupStates else {
+            for group in groups {
+                lastGroupStates[group.id] = group.state
+            }
+            hasSeededGroupStates = true
+            return
+        }
         for group in groups {
             let previous = lastGroupStates[group.id]
             lastGroupStates[group.id] = group.state
@@ -609,6 +628,7 @@ final class EngineModel: ObservableObject {
     /// Starts copying one file from a paired device into the shared folder.
     func pull(deviceKeyHex: String, remotePath: String, localName: String) {
         guard let engine else { return }
+        requestNotificationAuthorizationIfNeeded()
         Task.detached { [weak self] in
             do {
                 _ = try engine.pull(
@@ -625,6 +645,7 @@ final class EngineModel: ObservableObject {
     /// Starts copying a whole folder from a paired device into one batch.
     func pullFolder(deviceKeyHex: String, remotePath: String) {
         guard let engine else { return }
+        requestNotificationAuthorizationIfNeeded()
         Task.detached { [weak self] in
             do {
                 _ = try engine.pullFolder(deviceKeyHex: deviceKeyHex, remotePath: remotePath)
@@ -703,6 +724,7 @@ final class EngineModel: ObservableObject {
             return
         }
         guard let engine else { return }
+        requestNotificationAuthorizationIfNeeded()
         let localPaths = urls.map(\.path)
         Task.detached { [weak self] in
             do {
