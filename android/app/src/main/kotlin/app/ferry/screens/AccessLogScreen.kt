@@ -16,6 +16,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.ferry.FerryColor
@@ -24,6 +26,7 @@ import app.ferry.FerrySpace
 import app.ferry.R
 import app.ferry.components.AccessLogRow
 import app.ferry.components.EmptyState
+import app.ferry.engine.FerryEngine
 import app.ferry.formatDate
 import app.ferry.model.AccessDay
 import app.ferry.model.DayKind
@@ -53,6 +56,11 @@ fun AccessLogScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // How many days the engine keeps one entry, read once when the
+    // engine started. Null for the short moment before that read lands,
+    // in which case the footer below draws nothing rather than a guess.
+    val retentionDays by FerryEngine.accessLogRetentionDays.collectAsState()
+
     Scaffold(
         modifier = modifier,
         containerColor = FerryColor.background(),
@@ -111,13 +119,16 @@ fun AccessLogScreen(
             }
 
             // Stated because a log that quietly forgets is worse than no
-            // log. The engine prunes; this says so.
-            Text(
-                text = stringResource(R.string.access_log_retention),
-                style = FerryFont.caption(),
-                color = FerryColor.textSecondary(),
-                modifier = Modifier.padding(FerrySpace.s4),
-            )
+            // log. The engine prunes; this says so, with the day count
+            // the engine itself reported, not one typed here by hand.
+            retentionDays?.let { count ->
+                Text(
+                    text = stringResource(R.string.access_log_retention, count.toInt()),
+                    style = FerryFont.caption(),
+                    color = FerryColor.textSecondary(),
+                    modifier = Modifier.padding(FerrySpace.s4),
+                )
+            }
         }
     }
 }

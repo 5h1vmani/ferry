@@ -162,7 +162,7 @@
          say the same word. -->
     <string name="access_log_title">Access log</string>
     <string name="access_log_empty">No access yet.</string>
-    <string name="access_log_retention">Kept for 30 days.</string>
+    <string name="access_log_retention">Kept for %1$d days.</string>
     <string name="access_log_today">Today</string>
     <string name="access_log_yesterday">Yesterday</string>
     <string name="access_log_this_phone">This phone</string>
