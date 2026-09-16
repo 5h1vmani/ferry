@@ -205,4 +205,8 @@ Found during the pass, outside the review: the CI job had failed on every
 run since 11 September in one test that assumed a 4 MiB pull finishes
 within the one second backoff floor. Fixed in 513bf60. The hung adb test
 flaked once under parallel load with a bare assertion; 273ed1c makes it
-name the value it got.
+name the value it got. Reading it further found a real defect: the call
+joined adb's output readers after a timeout, and the shell's `sleep` child
+kept the pipes open, so every such call, and that test, lasted 30 seconds.
+The call now returns at the deadline without the join, and two tests
+assert it returns within five seconds.

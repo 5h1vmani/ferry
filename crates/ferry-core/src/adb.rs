@@ -11,6 +11,10 @@
 //!
 //! It shells out to the `adb` binary. It never bundles one in version 1.
 //!
+//! A call ends within its timeout. At the deadline `adb` is killed and the
+//! call returns `Timeout` without waiting for its output pipes to close, so a
+//! child that `adb` left behind holding those pipes cannot hold the call.
+//!
 //! Public shape:
 //!
 //! ```text
@@ -35,6 +39,7 @@
 //! "allow" on it.
 
 use std::env;
+use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -50,7 +55,18 @@ use std::time::{Duration, Instant};
 /// Returns `None` when neither place holds an executable file named `adb`.
 #[must_use]
 pub fn find_adb() -> Option<PathBuf> {
-    find_on_path().or_else(find_in_default_sdk_location)
+    find_adb_in(
+        env::var_os("PATH").as_deref(),
+        env::var_os("HOME").as_deref(),
+    )
+}
+
+/// The finder with its two inputs passed in.
+///
+/// A test hands it any PATH and HOME without touching the process's own,
+/// which other tests read while they spawn processes.
+fn find_adb_in(path: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    find_on_path(path).or_else(|| find_in_default_sdk_location(home))
 }
 
 /// Check every directory on PATH for an executable named `adb`.
@@ -61,9 +77,9 @@ pub fn find_adb() -> Option<PathBuf> {
 /// relative name such as `adb`. A relative path would resolve against
 /// whatever the working directory happens to be later, at spawn time, which
 /// may not be the file that was just checked here.
-fn find_on_path() -> Option<PathBuf> {
-    let path = env::var_os("PATH")?;
-    env::split_paths(&path)
+fn find_on_path(path: Option<&OsStr>) -> Option<PathBuf> {
+    let path = path?;
+    env::split_paths(path)
         .filter(|dir| !dir.as_os_str().is_empty())
         .map(|dir| dir.join("adb"))
         .find(|candidate| candidate.is_absolute() && is_executable_file(candidate))
@@ -75,14 +91,14 @@ fn find_on_path() -> Option<PathBuf> {
 /// platforms Ferry supports. On any other target it reports nothing, since
 /// PATH is the only source there.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn find_in_default_sdk_location() -> Option<PathBuf> {
-    let home = env::var_os("HOME")?;
-    let candidate = default_sdk_adb_path(Path::new(&home));
+fn find_in_default_sdk_location(home: Option<&OsStr>) -> Option<PathBuf> {
+    let home = home?;
+    let candidate = default_sdk_adb_path(Path::new(home));
     is_executable_file(&candidate).then_some(candidate)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn find_in_default_sdk_location() -> Option<PathBuf> {
+fn find_in_default_sdk_location(_home: Option<&OsStr>) -> Option<PathBuf> {
     None
 }
 
@@ -286,16 +302,22 @@ impl Adb {
         let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
         let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
 
-        let status = self.wait_with_timeout(&mut child);
+        let status = match self.wait_with_timeout(&mut child) {
+            Ok(status) => status,
+            Err(error) => {
+                // Do not join the readers after a timeout. `adb` is dead,
+                // but a child it started can still hold the write end of
+                // each pipe, and a join would block until that child exits.
+                // A shell's `sleep` did exactly that for 30 seconds. The
+                // reader threads end on their own when the pipe closes.
+                drop(stdout_reader);
+                drop(stderr_reader);
+                return Err(error);
+            }
+        };
 
-        // The readers are joined whether the wait succeeded or timed out.
-        // On a timeout, `wait_with_timeout` has already killed and waited
-        // for the child, so both pipes are already at end of file and these
-        // joins return right away.
         let stdout_bytes = join_pipe_reader(stdout_reader);
         let stderr_bytes = join_pipe_reader(stderr_reader);
-
-        let status = status?;
 
         let stdout = bytes_to_output(stdout_bytes)?;
         let stderr = bytes_to_output(stderr_bytes)?;
@@ -413,63 +435,15 @@ fn parse_devices(output: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Adb, AdbError, find_adb};
+    use super::{Adb, AdbError, find_adb_in};
     use std::env;
-    use std::ffi::OsString;
+    use std::ffi::{OsStr, OsString};
     use std::fs;
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use std::time::Duration;
-
-    /// Serializes tests that change PATH or the current directory.
-    ///
-    /// Both are process-wide state, and cargo runs tests on several threads
-    /// of the same process by default, so two such tests running at once
-    /// would corrupt each other's environment.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
-
-    /// Restores PATH and the working directory when it drops, even if the
-    /// test panics first.
-    ///
-    /// PATH and the working directory are process-wide. A test that changes
-    /// either one has to put it back, and Rust runs destructors during a
-    /// panic's unwind, so a `Drop` impl is the way to make that happen
-    /// regardless of how the test ends.
-    struct EnvGuard {
-        path: Option<OsString>,
-        dir: PathBuf,
-    }
-
-    impl EnvGuard {
-        /// Record the current PATH and working directory, to restore later.
-        fn capture() -> Self {
-            Self {
-                path: env::var_os("PATH"),
-                dir: env::current_dir().expect("read the current directory"),
-            }
-        }
-    }
-
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            // Safety: the caller holds `ENV_MUTEX` for as long as this guard
-            // lives, which keeps any other test from reading or writing PATH
-            // at the same time.
-            #[allow(unsafe_code)]
-            unsafe {
-                match &self.path {
-                    Some(value) => env::set_var("PATH", value),
-                    None => env::remove_var("PATH"),
-                }
-            }
-            // The working directory has no equivalent of "unset"; if it was
-            // readable at capture time, setting it back is expected to work.
-            let _ = env::set_current_dir(&self.dir);
-        }
-    }
+    use std::time::{Duration, Instant};
 
     /// A fresh directory under the system temp directory, unique to one call.
     ///
@@ -572,56 +546,51 @@ mod tests {
 
     #[test]
     fn a_hung_adb_times_out_instead_of_blocking_forever() {
-        let binary = fake_adb("timeout", "sleep 30\n");
+        let binary = fake_adb("timeout", "/bin/sleep 30\n");
         // A short timeout, so this test does not itself take 10 seconds.
         let adb = Adb::with_timeout(binary, Duration::from_millis(200));
+        let started = Instant::now();
         match adb.devices() {
             Err(AdbError::Timeout) => {}
             other => panic!("expected AdbError::Timeout, got {other:?}"),
         }
+        // The shell dies at 200 ms, but its `sleep` child lives on for 30
+        // seconds holding the pipes. The call must not wait for it. The
+        // budget is many times the expected 200 ms, for a loaded machine.
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the call waited {:?} past a 200 ms timeout",
+            started.elapsed()
+        );
     }
 
     #[test]
-    #[allow(unsafe_code)]
+    fn a_hung_adb_whose_own_child_holds_the_pipes_still_times_out_promptly() {
+        // A child put in the background outlives the shell for certain, even
+        // on a shell that would exec its last command in place.
+        let binary = fake_adb("timeout-child", "/bin/sleep 30 &\n/bin/sleep 30\n");
+        let adb = Adb::with_timeout(binary, Duration::from_millis(200));
+        let started = Instant::now();
+        match adb.devices() {
+            Err(AdbError::Timeout) => {}
+            other => panic!("expected AdbError::Timeout, got {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the call waited {:?} past a 200 ms timeout",
+            started.elapsed()
+        );
+    }
+
+    #[test]
     fn find_adb_returns_none_when_path_and_home_hold_nothing() {
-        let _lock = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
         let empty_home = unique_temp_dir("find-adb-empty-home");
-        let original_path = env::var_os("PATH");
-        let original_home = env::var_os("HOME");
-
-        // Safety: `ENV_MUTEX` above keeps this from running alongside
-        // another test that reads or writes PATH or HOME, and both are
-        // restored before this test returns.
-        unsafe {
-            env::set_var("PATH", "");
-            env::set_var("HOME", &empty_home);
-        }
-
-        let found = find_adb();
-
-        // Safety: restoring the variables this same test just changed.
-        unsafe {
-            match original_path {
-                Some(value) => env::set_var("PATH", value),
-                None => env::remove_var("PATH"),
-            }
-            match original_home {
-                Some(value) => env::set_var("HOME", value),
-                None => env::remove_var("HOME"),
-            }
-        }
-
+        let found = find_adb_in(Some(OsStr::new("")), Some(empty_home.as_os_str()));
         assert_eq!(found, None);
     }
 
     #[test]
     fn a_child_that_prints_more_than_a_pipe_buffer_does_not_deadlock() {
-        let _lock = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // A pipe buffer is a few tens of KiB on every platform Ferry
         // supports, so 256 KiB on stdout and 256 KiB on stderr both overflow
         // it. Before the fix, `Adb::run` only read a pipe after the child
@@ -645,40 +614,27 @@ mod tests {
 
     #[test]
     fn an_empty_path_element_never_yields_a_relative_binary() {
-        let _lock = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _guard = EnvGuard::capture();
-
+        // An empty element in PATH means the working directory to a shell.
+        // The finder skips it, so nothing relative can come back, whatever
+        // the working directory holds.
         let dir = unique_temp_dir("empty-path-element");
         write_fake_adb(&dir, "printf 'List of devices attached\\n'\n");
-        env::set_current_dir(&dir).expect("switch to the temp dir with the fake adb");
+        let only_empty_and_missing = OsString::from("/nonexistent-a::/nonexistent-b:");
+        assert_eq!(find_adb_in(Some(&only_empty_and_missing), None), None);
 
-        // Safety: `ENV_MUTEX` above keeps this from running alongside
-        // another test that reads or writes PATH, and `_guard` restores the
-        // original PATH and working directory when this test ends, even if
-        // an assertion below panics.
-        #[allow(unsafe_code)]
-        unsafe {
-            env::set_var("PATH", "/nonexistent-a::/nonexistent-b");
-        }
-
-        let found = find_adb();
-
-        if let Some(path) = found {
-            assert!(
-                path.is_absolute(),
-                "find_adb returned a relative path: {path:?}"
-            );
-        }
+        let mut empty_then_dir = OsString::from(":");
+        empty_then_dir.push(dir.as_os_str());
+        let found = find_adb_in(Some(&empty_then_dir), None)
+            .expect("the fake adb in an absolute element is found");
+        assert!(
+            found.is_absolute(),
+            "find_adb returned a relative path: {found:?}"
+        );
+        assert_eq!(found, dir.join("adb"));
     }
 
     #[test]
     fn an_adb_built_from_a_relative_path_is_refused() {
-        let _lock = ENV_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
         let binary = PathBuf::from("adb");
         if std::fs::canonicalize(&binary).is_ok() {
             // The current directory happens to hold a file named `adb`, so
