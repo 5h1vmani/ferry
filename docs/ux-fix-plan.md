@@ -145,6 +145,6 @@ Where a gesture-started push lands, and the mkdir rule, are in
 | 3. Mac drop and service | Built, 16 September 2026, branch `ux-mac` merged. Not run on a device. |
 | 4. Files section removed | Done, 16 September 2026. |
 | 5. Menus and shortcuts | Built, 16 September 2026. Not run on a device. |
-| 6. Shiva looks | Waits on the full gate and the audit. The steps are `docs/manual-checks.md` task 7. |
+| 6. Shiva looks | Ready. The audit's 17 findings are fixed and merged. The steps are `docs/manual-checks.md` task 7. |
 
-The audit of the merged range is `docs/audits/ux-gestures.md`.
+The audit of the merged range is `docs/audits/ux-gestures.md`, with its fix pass recorded at the end.

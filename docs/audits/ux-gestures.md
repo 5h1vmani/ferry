@@ -124,3 +124,18 @@ for the error codes. "Confirmed" means the whole path was read in the repo.
   changed in this range but sit outside the gesture paths.
 - Whether AppKit or SwiftUI can deliver a non file URL to the service or to
   `dropDestination`. Finding 4 rests on the missing check, not on that step.
+
+## Fix pass, 16 September 2026
+
+All 17 rows are fixed, one commit each. Rows 1, 2, 3, 6, 7, 8, 9, 10, and
+16 are on branch `ux-phone`, commits 0176a3f to 8f27c36. Rows 4, 5, 11,
+12, 13, 14, and 15 are on branch `ux-mac`, commits fab1bd4 to 86f1455.
+Row 17 took a generator change: `scripts/gen_errors.py` now emits
+`FerryErrorCode` in both generated error files, one constant per row of
+`design/errors.json`, and both apps compare against it, commits 5e765c8,
+45c73f3, and the phone's twin. Rows 1, 3, and 6 added their rules to
+`docs/engine-contract.md`, item 5, "Where a push lands": a share needs the
+system's read grant, a share is capped at 100 files, 4 GiB per copy, and
+512 MiB free, and the target device is the only paired one or the first
+reachable one. Both branches are merged on main and the full gate ran
+once on the merged tree.
