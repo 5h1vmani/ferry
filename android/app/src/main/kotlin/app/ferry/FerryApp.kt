@@ -299,4 +299,10 @@ private fun appErrorWords(error: ShareIntake.AppError): ThreePartError = when (e
         why = stringResource(R.string.share_too_many_why, error.count, error.max),
         todo = stringResource(R.string.share_too_many_todo),
     )
+
+    is ShareIntake.AppError.NoLandingFolder -> ThreePartError(
+        stopped = stringResource(R.string.share_no_landing_folder_stopped),
+        why = stringResource(R.string.share_no_landing_folder_why, error.deviceName),
+        todo = stringResource(R.string.share_no_landing_folder_todo),
+    )
 }

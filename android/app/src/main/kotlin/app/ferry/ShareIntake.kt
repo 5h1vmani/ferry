@@ -81,6 +81,9 @@ object ShareIntake {
 
         // The share named more than MAX_SHARE_URIS files: audit finding 3.
         data class TooMany(val count: Int, val max: Int) : AppError()
+
+        // The target device lists no shared root at all: audit finding 8.
+        data class NoLandingFolder(val deviceName: String) : AppError()
     }
 
     private val _appError = MutableStateFlow<AppError?>(null)

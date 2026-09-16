@@ -583,7 +583,14 @@ object FerryEngine {
         }
         scope.launch {
             try {
-                val folder = landingFolder(keyHex)
+                val folder = landingFolder(keyHex) ?: run {
+                    // The Mac lists no root at all: audit finding 8. Not
+                    // an engine code, so this is an app-side fault shown
+                    // the same way the Mac's own DropError.noLandingFolder
+                    // is, naming the device.
+                    ShareIntake.setAppError(ShareIntake.AppError.NoLandingFolder(device.name))
+                    return@launch
+                }
                 try {
                     mkdir(keyHex, folder)
                 } catch (e: FerryException) {
@@ -615,15 +622,16 @@ object FerryEngine {
     }
 
     // The root named "Downloads", matched ignoring case, else the first
-    // root the peer lists, each in a folder named "Ferry".
-    // docs/engine-contract.md item 5, "Where a push lands". `list` always
-    // returns at least one root for a device that started (item 15), so
-    // the fallback below is never expected to run.
-    private fun landingFolder(keyHex: String): String {
+    // root the peer lists, each in a folder named "Ferry". Null when the
+    // peer lists no root at all: a Mac with nothing shared in Settings.
+    // docs/engine-contract.md item 5, "Where a push lands". Audit finding
+    // 8: this used to throw the pairing code Runtime::NoCandidate here,
+    // whose words say nothing true about a share.
+    private fun landingFolder(keyHex: String): String? {
         val roots = list(keyHex, "")
         val chosen = roots.firstOrNull { it.name.equals(LANDING_ROOT_NAME, ignoreCase = true) }
             ?: roots.firstOrNull()
-            ?: throw FerryException.Failed("Runtime::NoCandidate", null)
+            ?: return null
         return "${chosen.name}/$LANDING_SUBFOLDER"
     }
 
