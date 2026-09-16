@@ -730,7 +730,9 @@ by that URI's last path segment alone, sanitized, inside a folder made
 for that one copy, so nothing the sharing app names can land outside it.
 It refuses the whole share unless the share's own intent carries
 `FLAG_GRANT_READ_URI_PERMISSION`, since the system sets that flag only for
-a sender that could read the file itself.
+a sender that could read the file itself. A share naming more than 100
+files is refused whole, and a copy stops and is deleted if it would pass
+4 GiB or leave the phone with less than 512 MiB free.
 
 ### 6. The mount: built
 

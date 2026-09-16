@@ -11,6 +11,8 @@ import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,6 +40,14 @@ object ShareIntake {
     private const val REGISTRY_SUBDIR = "share_cache_registry"
     private const val LOG_TAG = "Ferry"
 
+    // Audit finding 3, the three constants docs/engine-contract.md item 5
+    // records. A hostile provider could otherwise serve an endless stream,
+    // fill the phone's storage, or make a share out of hundreds of files.
+    private const val MAX_SHARE_URIS = 100
+    private const val MAX_SHARE_COPY_BYTES = 4L * 1024 * 1024 * 1024
+    private const val MIN_FREE_BYTES_AFTER_COPY = 512L * 1024 * 1024
+    private const val COPY_BUFFER_BYTES = 1 shl 20
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     @Volatile
@@ -64,6 +74,13 @@ object ShareIntake {
         // finding 1.
         data object NotGranted : AppError()
         data class Unreadable(val name: String) : AppError()
+
+        // The file passed MAX_SHARE_COPY_BYTES, or copying it would have
+        // left under MIN_FREE_BYTES_AFTER_COPY free: audit finding 3.
+        data class TooLarge(val name: String) : AppError()
+
+        // The share named more than MAX_SHARE_URIS files: audit finding 3.
+        data class TooMany(val count: Int, val max: Int) : AppError()
     }
 
     private val _appError = MutableStateFlow<AppError?>(null)
@@ -84,6 +101,8 @@ object ShareIntake {
     sealed class Resolution {
         data class Success(val localPaths: List<String>) : Resolution()
         data object Unreadable : Resolution()
+        data object TooLarge : Resolution()
+        data object TooMany : Resolution()
         data object NotGranted : Resolution()
     }
 
@@ -152,9 +171,18 @@ object ShareIntake {
             setAppError(AppError.NotGranted)
             return Resolution.NotGranted
         }
+        if (uris.size > MAX_SHARE_URIS) {
+            setAppError(AppError.TooMany(uris.size, MAX_SHARE_URIS))
+            return Resolution.TooMany
+        }
         val paths = mutableListOf<String>()
         for (uri in uris) {
-            val path = resolveOne(context, uri)
+            val path = try {
+                resolveOne(context, uri)
+            } catch (e: CopyTooLargeException) {
+                setAppError(AppError.TooLarge(nameForError(context, uri)))
+                return Resolution.TooLarge
+            }
             if (path == null) {
                 setAppError(AppError.Unreadable(nameForError(context, uri)))
                 return Resolution.Unreadable
@@ -192,6 +220,10 @@ object ShareIntake {
                 }
             }
             copyToCache(context, uri)
+        } catch (e: CopyTooLargeException) {
+            // Caught by name in resolve, not folded into the generic
+            // unreadable case below: audit finding 3.
+            throw e
         } catch (t: Throwable) {
             android.util.Log.w(LOG_TAG, "share content could not be read: $uri", t)
             null
@@ -256,9 +288,45 @@ object ShareIntake {
         }
         val input = context.contentResolver.openInputStream(uri)
             ?: throw IOException("no stream for $uri")
-        input.use { source -> FileOutputStream(target).use { output -> source.copyTo(output) } }
+        try {
+            input.use { source ->
+                FileOutputStream(target).use { output -> copyWithLimit(source, output, target) }
+            }
+        } catch (t: Throwable) {
+            target.delete()
+            dir.delete()
+            throw t
+        }
         return target.absolutePath
     }
+
+    // Audit finding 3. A hostile provider could serve an endless stream and
+    // fill the phone's storage, whether or not it declared a size, so this
+    // is checked as bytes arrive rather than trusted from a header. The
+    // partial file is removed by copyToCache's own catch once this throws.
+    private fun copyWithLimit(input: InputStream, output: OutputStream, target: File) {
+        val buffer = ByteArray(COPY_BUFFER_BYTES)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) {
+                break
+            }
+            total += read
+            if (total > MAX_SHARE_COPY_BYTES) {
+                throw CopyTooLargeException("copy of ${target.name} passed $MAX_SHARE_COPY_BYTES bytes")
+            }
+            val free = target.parentFile?.usableSpace ?: 0L
+            if (free < MIN_FREE_BYTES_AFTER_COPY) {
+                throw CopyTooLargeException(
+                    "copy of ${target.name} would leave under $MIN_FREE_BYTES_AFTER_COPY bytes free",
+                )
+            }
+            output.write(buffer, 0, read)
+        }
+    }
+
+    private class CopyTooLargeException(message: String) : IOException(message)
 
     // Reduces a name from another app to a plain file name: its last path
     // segment, or a fresh UUID when that segment is empty, ".", "..", or

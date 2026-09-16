@@ -287,4 +287,16 @@ private fun appErrorWords(error: ShareIntake.AppError): ThreePartError = when (e
         why = stringResource(R.string.share_unreadable_why, error.name),
         todo = stringResource(R.string.share_unreadable_todo),
     )
+
+    is ShareIntake.AppError.TooLarge -> ThreePartError(
+        stopped = stringResource(R.string.share_too_large_stopped),
+        why = stringResource(R.string.share_too_large_why, error.name),
+        todo = stringResource(R.string.share_too_large_todo),
+    )
+
+    is ShareIntake.AppError.TooMany -> ThreePartError(
+        stopped = stringResource(R.string.share_too_many_stopped),
+        why = stringResource(R.string.share_too_many_why, error.count, error.max),
+        todo = stringResource(R.string.share_too_many_todo),
+    )
 }
