@@ -43,20 +43,10 @@ jobs:
         run: cargo test --all
 
       # The apps are generated from the Rust surface, the design tokens, and
-      # the error table. Each generator has a check mode, and these steps
-      # fail when a committed generated file no longer matches its source.
-      - name: Check the generated tokens and error words
-        run: |
-          python3 scripts/gen_tokens.py --check
-          python3 scripts/gen_errors.py --check
-
-      - name: Check the generated app bindings
-        run: |
-          scripts/gen_bindings.sh /tmp/bindings
-          for f in ferry_runtime.swift ferry_runtimeFFI.h ferry_runtimeFFI.modulemap; do
-            diff "/tmp/bindings/macos/Ferry/Generated/$f" "macos/Ferry/Generated/$f"
-          done
-          diff -r /tmp/bindings/android/app/src/main/kotlin/uniffi android/app/src/main/kotlin/uniffi
+      # the error table. Each generator has a check mode, and this gate
+      # fails when a committed generated file no longer matches its source.
+      - name: Run the generated-file gate
+        run: scripts/gate.sh gen
 
   advisories:
     name: dependency advisories
