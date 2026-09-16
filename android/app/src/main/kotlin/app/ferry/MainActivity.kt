@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import app.ferry.engine.FerryEngine
+import app.ferry.engine.pushShared
 
 // The one activity. Everything else is Compose, switched by FerryApp's own
 // screen state, not by the Android framework's back stack.

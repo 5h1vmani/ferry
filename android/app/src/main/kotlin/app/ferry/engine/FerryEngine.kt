@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import android.util.Log
-import android.provider.DocumentsContract
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -14,8 +13,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import app.ferry.FerryErrorCode
 import app.ferry.NetworkName
-import app.ferry.ShareCacheRegistry
-import app.ferry.ShareIntake
 import uniffi.ferry_runtime.AccessEntry
 import uniffi.ferry_runtime.BatchInfo
 import uniffi.ferry_runtime.Config
@@ -23,17 +20,12 @@ import uniffi.ferry_runtime.DeviceInfo
 import uniffi.ferry_runtime.DeviceKind
 import uniffi.ferry_runtime.Engine
 import uniffi.ferry_runtime.EngineListener
-import uniffi.ferry_runtime.Entry
 import uniffi.ferry_runtime.FerryException
-import uniffi.ferry_runtime.KeyPair
 import uniffi.ferry_runtime.PairingState
 import uniffi.ferry_runtime.Root
 import uniffi.ferry_runtime.TransferInfo
-import uniffi.ferry_runtime.generateKey
 import uniffi.ferry_runtime.phonePort
 import java.io.File
-import java.io.FileOutputStream
-import java.util.UUID
 import uniffi.ferry_runtime.PairingMethod as EnginePairingMethod
 import app.ferry.model.PairingMethod as UiPairingMethod
 
@@ -68,15 +60,6 @@ object FerryEngine {
     private fun describe(e: FerryException): String =
         (e as? FerryException.Failed)?.let { "${it.code} ${it.detail ?: ""}" } ?: e.toString()
 
-    // The 64 byte key file: 32 private bytes, then 32 public bytes.
-    private const val KEY_FILE_NAME = "device.key"
-    private const val KEY_PART_BYTES = 32
-
-    // Not an engine code: there is no entry for a phone-side rename
-    // failure in the generated table, so this falls back to the unknown
-    // code words, which is a fault the person cannot fix by retrying.
-    private const val KEY_RENAME_FAILED_CODE = "Android::KeyRenameFailed"
-
     // What the peer sees as the first segment of every path it asks for.
     // The phone serves one root, and this is the name a person recognises.
     private const val PHONE_ROOT_NAME = "Internal storage"
@@ -86,7 +69,9 @@ object FerryEngine {
     // not being read, it is being searched, and searching is not job 9.
     private const val ACCESS_LOG_LIMIT = 200u
 
-    private val _devices = MutableStateFlow<List<DeviceInfo>>(emptyList())
+    // Internal: FerryEngineShare.kt's pushShared reads this to find a
+    // target device for a share.
+    internal val _devices = MutableStateFlow<List<DeviceInfo>>(emptyList())
 
     // Every paired device, as the engine reports it.
     val devices: StateFlow<List<DeviceInfo>> = _devices.asStateFlow()
@@ -170,7 +155,9 @@ object FerryEngine {
     // True once start() has succeeded.
     val started: StateFlow<Boolean> = _started.asStateFlow()
 
-    private val _error = MutableStateFlow<FerryException?>(null)
+    // Internal: FerryEngineShare.kt's pushShared sets this on a fault
+    // that has no code of its own, the same way every catch here does.
+    internal val _error = MutableStateFlow<FerryException?>(null)
 
     // The last error the engine returned: building it, starting it, or
     // running forget or retry. Null when the last such call succeeded.
@@ -179,12 +166,14 @@ object FerryEngine {
     // create and stop write this under @Synchronized. Listener callbacks
     // read it on engine threads with no such lock, so @Volatile is what
     // gives those reads a happens-before edge against the last write.
+    // Internal: FerryEngineDocuments.kt's required() reads this too.
     @Volatile
-    private var engine: Engine? = null
+    internal var engine: Engine? = null
 
     // forget, retry and offerScanned block on the network or the disk, so
-    // they run here.
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // they run here. Internal: FerryEngineShare.kt's pushShared launches
+    // its own dial-then-push work on this same scope.
+    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val listener = object : EngineListener {
         override fun devicesChanged() {
@@ -196,7 +185,9 @@ object FerryEngine {
             }
             // A root's summary in the Files app is that device's
             // reachability, so the picker is told whenever it changes.
-            notifyRoots()
+            // notifyRoots is an extension function, FerryEngineDocuments.kt,
+            // so it is named through FerryEngine here rather than bare.
+            FerryEngine.notifyRoots()
         }
 
         override fun transfersChanged() {
@@ -604,222 +595,21 @@ object FerryEngine {
         _error.value = null
     }
 
-    // ---- Sending files the OS gestures gather: docs/ux-fix-plan.md, item 1 ----
-
-    // The root a gesture-started push lands in when the peer has one named
-    // this, ignoring case; otherwise the first root the peer lists.
-    // docs/engine-contract.md item 5, "Where a push lands".
-    private const val LANDING_ROOT_NAME = "Downloads"
-    private const val LANDING_SUBFOLDER = "Ferry"
-
-    // Sends several files into one folder on a paired device, as one batch.
-    // Returns the batch id. In the same style as list, stat, and mkdir
-    // below: a passthrough that throws the engine's own FerryException.
-    fun pushFiles(keyHex: String, localPaths: List<String>, remoteFolder: String): String =
-        required().pushFiles(keyHex, localPaths, remoteFolder)
-
-    // Sends every path to the target device's landing folder. Called by a
-    // share from another app and by the Devices screen's "Send files"
-    // control; both hand this the same list of absolute paths.
-    //
-    // Does nothing when no Mac is paired: Devices already shows that state
-    // on its own once ShareIntake asks it to. Otherwise this dials the
-    // target to list its roots, makes the landing folder, then pushes, and
-    // every one of those calls blocks, so it runs on scope, off the
-    // caller's thread.
-    fun pushShared(localPaths: List<String>) {
-        val devices = _devices.value
-        if (devices.isEmpty()) {
-            return
-        }
-        val device = targetDevice(devices) ?: run {
-            // Several are paired and none is reachable: audit finding 6.
-            // The same fault a dial would hit anyway, shown at once rather
-            // than after picking one of several devices arbitrarily.
-            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_REACHABLE, null)
-            return
-        }
-        val keyHex = device.keyHex
-        _error.value = null
-        // Registered under a request id before the push, not only after
-        // with the real batch id: audit finding 7. A throw below, or one
-        // this coroutine never reaches because pushFiles itself never
-        // returns, must not leave an unregistered copy on disk forever.
-        val requestId = UUID.randomUUID().toString()
-        val context = appContext
-        if (context != null) {
-            ShareCacheRegistry.registerBatch(context, requestId, localPaths)
-        }
-        scope.launch {
-            try {
-                val folder = landingFolder(keyHex) ?: run {
-                    // The Mac lists no root at all: audit finding 8. Not
-                    // an engine code, so this is an app-side fault shown
-                    // the same way the Mac's own DropError.noLandingFolder
-                    // is, naming the device.
-                    ShareIntake.setAppError(ShareIntake.AppError.NoLandingFolder(device.name))
-                    return@launch
-                }
-                try {
-                    mkdir(keyHex, folder)
-                } catch (e: FerryException) {
-                    val code = (e as? FerryException.Failed)?.code
-                    // push does not create the parent folder itself
-                    // (docs/engine-contract.md item 5), so this call makes
-                    // it first. A folder already there is success, not a
-                    // fault.
-                    if (code != FerryErrorCode.OP_ERROR_ALREADY_EXISTS) {
-                        throw e
-                    }
-                }
-                val batchId = pushFiles(keyHex, localPaths, folder)
-                context?.let { ShareCacheRegistry.renameRegistration(it, requestId, batchId) }
-            } catch (e: FerryException) {
-                _error.value = e
-            }
-        }
-    }
-
-    // The only paired device, else the first reachable one: audit finding
-    // 6, the same rule the Mac's EngineModel.targetDevice uses. Null when
-    // several are paired and none is reachable.
-    private fun targetDevice(devices: List<DeviceInfo>): DeviceInfo? {
-        if (devices.size == 1) {
-            return devices.first()
-        }
-        return devices.firstOrNull { it.reachableVia != null }
-    }
-
-    // The root named "Downloads", matched ignoring case, else the first
-    // root the peer lists, each in a folder named "Ferry". Null when the
-    // peer lists no root at all: a Mac with nothing shared in Settings.
-    // docs/engine-contract.md item 5, "Where a push lands". Audit finding
-    // 8: this used to throw the pairing code Runtime::NoCandidate here,
-    // whose words say nothing true about a share.
-    private fun landingFolder(keyHex: String): String? {
-        val roots = list(keyHex, "")
-        val chosen = roots.firstOrNull { it.name.equals(LANDING_ROOT_NAME, ignoreCase = true) }
-            ?: roots.firstOrNull()
-            ?: return null
-        return "${chosen.name}/$LANDING_SUBFOLDER"
-    }
-
-    // Reads the key from filesDir, or makes one on first run and writes it.
-    //
-    // The Android Keystore is not used. It keeps a key inside hardware and
-    // signs or encrypts on the app's behalf; it never hands back the raw
-    // bytes. The engine needs the raw 32 private bytes for the Noise
-    // handshake, so the key has to live where the app can read it. filesDir
-    // is private to this app, which is the strongest storage that still
-    // returns bytes.
-    //
-    // The bytes are never logged and never shown.
-    private fun loadOrCreateKey(context: Context): KeyPair {
-        val file = File(context.filesDir, KEY_FILE_NAME)
-        val wholeSize = (KEY_PART_BYTES * 2).toLong()
-        if (file.isFile && file.length() == wholeSize) {
-            val bytes = file.readBytes()
-            return KeyPair(
-                `private` = bytes.copyOfRange(0, KEY_PART_BYTES),
-                `public` = bytes.copyOfRange(KEY_PART_BYTES, KEY_PART_BYTES * 2),
-            )
-        }
-        val fresh = generateKey()
-        val whole = ByteArray(KEY_PART_BYTES * 2)
-        fresh.`private`.copyInto(whole, 0)
-        fresh.`public`.copyInto(whole, KEY_PART_BYTES)
-        // Written to a temporary name and renamed, so a crash part way
-        // through leaves the old file whole rather than half a key.
-        //
-        // The temporary file is synced to disk before the rename. Without
-        // that, a power loss right after the rename can leave a zero
-        // length file at the final name on ext4 and f2fs, and the length
-        // check above then treats it as missing and generates a new key.
-        // This is the same fsync-then-rename shape record.rs's
-        // write_and_sync uses on the engine side.
-        val temporary = File(context.filesDir, "$KEY_FILE_NAME.new")
-        FileOutputStream(temporary).use { out ->
-            out.write(whole)
-            out.fd.sync()
-        }
-        if (!temporary.renameTo(file)) {
-            // A failed rename here means the next launch finds no
-            // device.key, generates another, and every paired Mac stops
-            // recognising this phone. create()'s catch reports this the
-            // same way it reports any other failure to build the engine.
-            throw FerryException.Failed(KEY_RENAME_FAILED_CODE, null)
-        }
-        return fresh
-    }
-
-    // ---- The Mac's folders in the phone's Files app ----
-    //
-    // docs/engine-contract.md item 19, job 8. FerryDocumentsProvider is the
-    // only caller. It runs in this process on binder threads, which may
-    // block, and every call below blocks for at least one round trip.
-    //
-    // Each one is a passthrough. The engine's error is thrown on unchanged,
-    // because only the provider knows whether a refusal becomes an errno or
-    // a FileNotFoundException. Nothing here decides what a refusal means.
+    // Sending files the OS gestures gather (docs/ux-fix-plan.md, item 1),
+    // and the Mac's folders in the phone's Files app (docs/engine-contract.md
+    // item 19, job 8), are FerryEngineShare.kt and FerryEngineDocuments.kt,
+    // both extension functions on this object: docs/audits/principles.md
+    // row P9.
 
     // The authority the manifest declares for FerryDocumentsProvider. The
-    // manifest holds the same text, because XML cannot read Kotlin.
+    // manifest holds the same text, because XML cannot read Kotlin. Stays
+    // here, not with the rest of FerryEngineDocuments.kt, so every other
+    // file keeps reading it as FerryEngine.DOCUMENTS_AUTHORITY.
     const val DOCUMENTS_AUTHORITY = "app.ferry.documents"
 
-    // What a call made before the engine exists reports. It is the engine's
-    // own code for the same state, so the words are already in the table.
-    private const val NOT_STARTED_CODE = FerryErrorCode.RUNTIME_NOT_STARTED
-
     // Set by create, so notifyRoots has a context on an engine thread.
+    // Internal: FerryEngineDocuments.kt's notifyRoots and
+    // FerryEngineShare.kt's pushShared both read this.
     @Volatile
-    private var appContext: Context? = null
-
-    // Every entry in one folder on a paired device. The empty path names
-    // that device's shared roots.
-    fun list(keyHex: String, remotePath: String): List<Entry> =
-        required().list(keyHex, remotePath)
-
-    // One file or folder on a paired device.
-    fun stat(keyHex: String, remotePath: String): Entry =
-        required().stat(keyHex, remotePath)
-
-    // At most one mebibyte. A longer ask is clamped by the engine, and a
-    // short answer means the end of the file.
-    fun readAt(keyHex: String, remotePath: String, offset: ULong, len: UInt): ByteArray =
-        required().readAt(keyHex, remotePath, offset, len)
-
-    // Creates the file when it does not exist. More than one mebibyte in
-    // one call is refused with Runtime::WriteTooLarge and writes nothing.
-    fun writeAt(keyHex: String, remotePath: String, offset: ULong, bytes: ByteArray) =
-        required().writeAt(keyHex, remotePath, offset, bytes)
-
-    // Sets a file's length. The provider truncates to zero on a truncating
-    // open mode.
-    fun truncate(keyHex: String, remotePath: String, len: ULong) =
-        required().truncate(keyHex, remotePath, len)
-
-    // Makes one folder. The parent must already exist.
-    fun mkdir(keyHex: String, remotePath: String) = required().mkdir(keyHex, remotePath)
-
-    // Deletes one file, or one empty folder.
-    fun delete(keyHex: String, remotePath: String) = required().delete(keyHex, remotePath)
-
-    // Moves or renames within one root.
-    fun rename(keyHex: String, from: String, to: String) = required().rename(keyHex, from, to)
-
-    // The engine, or the engine's own code for not being there yet. Every
-    // call above reaches the network, and there is no network before
-    // create has built the engine.
-    private fun required(): Engine =
-        engine ?: throw FerryException.Failed(NOT_STARTED_CODE, null)
-
-    // Tells the Files app that a root's summary has changed. Runs on an
-    // engine thread, from devicesChanged, and does nothing before create.
-    private fun notifyRoots() {
-        val context = appContext ?: return
-        context.contentResolver.notifyChange(
-            DocumentsContract.buildRootsUri(DOCUMENTS_AUTHORITY),
-            null,
-        )
-    }
+    internal var appContext: Context? = null
 }
