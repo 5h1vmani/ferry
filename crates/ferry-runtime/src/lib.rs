@@ -272,6 +272,7 @@ mod held;
 mod networks;
 mod notify;
 mod pool;
+mod privatefile;
 mod push;
 mod record;
 mod state;

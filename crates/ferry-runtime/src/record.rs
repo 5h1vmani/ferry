@@ -17,24 +17,23 @@
 //! `std::fs::write` truncates the file first and then writes. A process that
 //! dies in the middle of that leaves a short file behind, and a record that
 //! does not decode is skipped for ever: the transfer then starts again from
-//! the first byte, or stops for good. So the bytes go to a temporary name
-//! chosen at random, are flushed to the disk, and only then renamed over the
-//! real name. A rename is one step, so the real name always holds either the
-//! whole old record or the whole new one.
+//! the first byte, or stops for good. So [`write_record`] hands the bytes to
+//! `privatefile::write_atomic`, which writes them to a temporary name, flushes
+//! them to disk, and only then renames the temporary file over the real one.
+//! A rename is one step, so the real name always holds either the whole old
+//! record or the whole new one.
 //!
-//! This is the pattern `write_private_file` in `ferry-core`'s `peers.rs`
-//! uses for the paired device list. It is written again here rather than
-//! shared, because that function is private to the core and this crate does
-//! not change the core.
+//! `ferry-core`'s `peers.rs` writes its own paired device list the same way,
+//! but keeps its own copy of the pattern: that function is private to the
+//! core crate, and this crate does not change the core.
 
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 use ferry_core::limits;
 use ferry_core::path::RemotePath;
-use ferry_core::session::{SessionId, Transfer};
+use ferry_core::session::Transfer;
 use ferry_core::wire::{Decoder, Encoder};
 
 use crate::errors::failed;
@@ -304,41 +303,7 @@ fn fallback_started_unix_secs(path: &Path) -> i64 {
 /// write, and a `TransferError::NoRandomness` code when the temporary name
 /// cannot be made.
 pub(crate) fn write_record(path: &Path, record: &Record) -> Result<(), FerryError> {
-    let bytes = record.encode();
-    let temporary = temporary_name(path)?;
-    let written = write_and_sync(&temporary, &bytes).and_then(|()| fs::rename(&temporary, path));
-    if written.is_err() {
-        // A temporary file that is left behind is never read again, but it
-        // would sit in the app's own folder for ever.
-        drop(fs::remove_file(&temporary));
-        return Err(failed("TransferError::Local"));
-    }
-    Ok(())
-}
-
-/// Create the file, write every byte through that one handle, and flush it
-/// to the disk.
-///
-/// `create_new` refuses to write through anything already at the name,
-/// including a symbolic link someone planted there.
-fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-/// A name next to `path` that nothing can be waiting at.
-///
-/// The random part comes from the same generator that names a transfer, so
-/// this needs no new dependency.
-fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
-    let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{session}.tmp"));
-    Ok(PathBuf::from(name))
+    crate::privatefile::write_atomic(path, &record.encode())
 }
 
 #[cfg(test)]

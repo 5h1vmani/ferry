@@ -129,7 +129,7 @@ impl AutoCopyStore {
     /// and `TransferError::NoRandomness` when the temporary name cannot be
     /// made.
     pub(crate) fn save(&self) -> Result<(), FerryError> {
-        write_private_file(&self.path, &encode_rows(&self.rows))
+        crate::privatefile::write_atomic_private(&self.path, &encode_rows(&self.rows))
     }
 
     pub(crate) fn get(&self, device_key_hex: &str) -> Option<AutoCopyRow> {
@@ -216,52 +216,6 @@ fn encode_rows(rows: &BTreeMap<String, AutoCopyRow>) -> Vec<u8> {
         }
     }
     e.finish()
-}
-
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), FerryError> {
-    let temporary = temporary_name(path)?;
-    let written = write_and_sync(&temporary, bytes).and_then(|()| fs::rename(&temporary, path));
-    if written.is_err() {
-        drop(fs::remove_file(&temporary));
-        return Err(failed("TransferError::Local"));
-    }
-    Ok(())
-}
-
-fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let mut file = open_new_private_file(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-// G4: create `path` in mode `0o600` on Unix, the same private mode
-// `ferry-core`'s `peers.rs` gives its own file, set as part of the same
-// syscall that creates it so there is no moment where the file exists with
-// a wider mode. `create_new` already refuses to touch anything already
-// there, temporary name or not.
-#[cfg(unix)]
-fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_new_private_file(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-}
-
-fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
-    let session = SessionId::generate().map_err(|_| failed("TransferError::NoRandomness"))?;
-    let mut name = path.as_os_str().to_os_string();
-    name.push(format!(".{session}.tmp"));
-    Ok(PathBuf::from(name))
 }
 
 // ---------------------------------------------------------------------------
