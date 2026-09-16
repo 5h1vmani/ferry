@@ -261,6 +261,12 @@
          way back. -->
     <string name="notification_not_advertising">Not advertising. %1$s cannot be found on Wi-Fi.</string>
 
+    <!-- Transfer notifications, docs/ux-fix-plan.md item 2. One per batch,
+         or per transfer outside a batch. Its title, progress line, and
+         error words are the ones TransferRow already draws, from the
+         strings above and the generated error table. -->
+    <string name="notification_channel_transfers">Transfers</string>
+
     <!-- Settings screen, docs-v2/ia.md, Settings, the phone.
 
          Reachability has left this screen. It was a switch filed under

@@ -1,5 +1,6 @@
 package app.ferry
 
+import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -45,6 +46,30 @@ fun formatSize(bytes: Long): String {
     return stringResource(templates[index], number)
 }
 
+// The same rule as the Composable formatSize above, for a caller with no
+// Compose context: ReachableService, building a transfer notification's
+// text off the main thread. The templates are the same strings.xml
+// entries, read through Context.getString instead of stringResource.
+fun formatSize(context: Context, bytes: Long): String {
+    if (bytes < BYTES_PER_KILOBYTE) {
+        return context.getString(R.string.size_bytes, bytes)
+    }
+    var value = bytes.toDouble() / BYTES_PER_KILOBYTE
+    val templates = listOf(
+        R.string.size_kilobytes,
+        R.string.size_megabytes,
+        R.string.size_gigabytes,
+        R.string.size_terabytes,
+    )
+    var index = 0
+    while (value >= BYTES_PER_KILOBYTE && index < templates.size - 1) {
+        value /= BYTES_PER_KILOBYTE
+        index += 1
+    }
+    val number = String.format(Locale.getDefault(), "%.1f", value)
+    return context.getString(templates[index], number)
+}
+
 // How long ago a moment was, as one number and one unit: "2 hours".
 @Composable
 fun formatAgo(unixSecs: Long): String {
@@ -78,6 +103,23 @@ fun formatDuration(seconds: Long): String {
         return stringResource(R.string.duration_minutes_short, minutes)
     }
     return stringResource(
+        R.string.duration_hours_short,
+        minutes / SECONDS_PER_MINUTE,
+        minutes % SECONDS_PER_MINUTE,
+    )
+}
+
+// The same rule as the Composable formatDuration above, for ReachableService.
+fun formatDuration(context: Context, seconds: Long): String {
+    val clamped = seconds.coerceAtLeast(0L)
+    if (clamped < SECONDS_PER_MINUTE) {
+        return context.getString(R.string.duration_seconds, clamped)
+    }
+    val minutes = clamped / SECONDS_PER_MINUTE
+    if (minutes < SECONDS_PER_MINUTE) {
+        return context.getString(R.string.duration_minutes_short, minutes)
+    }
+    return context.getString(
         R.string.duration_hours_short,
         minutes / SECONDS_PER_MINUTE,
         minutes % SECONDS_PER_MINUTE,

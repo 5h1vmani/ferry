@@ -12,6 +12,19 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.os.IBinder
 import app.ferry.engine.FerryEngine
+import app.ferry.model.Direction
+import app.ferry.model.Origin
+import app.ferry.model.TransferGroup
+import app.ferry.model.TransferState
+import app.ferry.model.toUi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
+import uniffi.ferry_runtime.BatchInfo
+import uniffi.ferry_runtime.TransferInfo
 
 // The foreground service that keeps the phone reachable, and the
 // notification that says so.
@@ -43,9 +56,39 @@ class ReachableService : Service() {
     // service holds rather than ending.
     private var advertising = false
 
+    // Watches every transfer and batch while this service is alive, and
+    // posts the "transfers" notifications: docs/ux-fix-plan.md item 2. A
+    // plain scope, not one scoped to this service's own lifecycle, so
+    // cancelling it in onDestroy is this object's own choice, the same
+    // reasoning FerryEngine.scope documents.
+    private val notifyScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var notifyJob: Job? = null
+
+    // The state last posted for each notification id, so a row already
+    // shown Done or Failed is not re-posted on every later change to some
+    // other transfer, while a running row keeps updating as its percent
+    // moves.
+    private val lastNotified = mutableMapOf<Int, NotifiedState>()
+
+    private data class NotifiedState(val state: TransferState, val percent: Int)
+
+    override fun onCreate() {
+        super.onCreate()
+        createTransfersChannel()
+        notifyJob = notifyScope.launch {
+            combine(FerryEngine.batches, FerryEngine.transfers) { batches, transfers ->
+                allGroups(batches, transfers)
+            }.collect { groups -> updateTransferNotifications(groups) }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_RETRY_TRANSFER) {
+            handleRetryAction(intent)
+            return START_NOT_STICKY
+        }
         if (intent?.action == ACTION_STOP_ADVERTISING) {
             advertising = false
             FerryEngine.setReachable(false)
@@ -95,6 +138,7 @@ class ReachableService : Service() {
     }
 
     override fun onDestroy() {
+        notifyJob?.cancel()
         FerryEngine.setReachable(false)
         running = false
         // The activity can have finished while this service kept running.
@@ -120,6 +164,19 @@ class ReachableService : Service() {
             CHANNEL_ID,
             getString(R.string.notification_channel_reachable),
             NotificationManager.IMPORTANCE_LOW,
+        )
+        manager.createNotificationChannel(channel)
+    }
+
+    // docs/ux-fix-plan.md item 2. A transfer starting or finishing is worth
+    // a heads-up the first time; setOnlyAlertOnce on every notification
+    // built from it keeps a moving progress bar from alerting again.
+    private fun createTransfersChannel() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val channel = NotificationChannel(
+            TRANSFERS_CHANNEL_ID,
+            getString(R.string.notification_channel_transfers),
+            NotificationManager.IMPORTANCE_DEFAULT,
         )
         manager.createNotificationChannel(channel)
     }
@@ -181,11 +238,211 @@ class ReachableService : Service() {
             .build()
     }
 
+    // ---- Transfer notifications: docs/ux-fix-plan.md item 2 ----
+    //
+    // One row of the Transfers section, wherever it is: every batch, and
+    // every transfer that belongs to no batch. Mirrors
+    // model/Mapping.kt's transferGroupsFor, without filtering by device,
+    // because a notification is not filed under a device row.
+    private fun allGroups(batches: List<BatchInfo>, transfers: List<TransferInfo>): List<TransferGroup> {
+        val batchGroups = batches.map { it.toUi() }
+        val loneGroups = transfers.filter { it.batchId == null }.map { it.toUi() }
+        return batchGroups + loneGroups
+    }
+
+    private fun updateTransferNotifications(groups: List<TransferGroup>) {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val currentIds = mutableSetOf<Int>()
+        for (group in groups) {
+            val id = notificationIdFor(group.id)
+            currentIds += id
+            val running = group.state == TransferState.Queued ||
+                group.state == TransferState.Active ||
+                group.state == TransferState.Paused
+            val last = lastNotified[id]
+            // A running row keeps updating as its percent moves. A row
+            // already shown Done or Failed is left alone, so it is not
+            // re-posted every time some other transfer changes.
+            val changed = last == null || last.state != group.state || (running && last.percent != group.percent)
+            if (changed) {
+                manager.notify(id, buildTransferNotification(group))
+                lastNotified[id] = NotifiedState(group.state, group.percent)
+            }
+        }
+        val stale = lastNotified.keys - currentIds
+        for (id in stale) {
+            manager.cancel(id)
+            lastNotified.remove(id)
+        }
+    }
+
+    // A stable id per group, clear of the "reachable" notification's own id.
+    private fun notificationIdFor(groupId: String): Int {
+        val hash = groupId.hashCode() and 0x7fffffff
+        return if (hash == NOTIFICATION_ID) hash + 1 else hash
+    }
+
+    private fun buildTransferNotification(group: TransferGroup): Notification {
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val builder = Notification.Builder(this, TRANSFERS_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(group.label)
+            .setSubText(directionLineFor(group))
+            .setContentIntent(open)
+            .setOnlyAlertOnce(true)
+
+        when (group.state) {
+            TransferState.Queued -> {
+                builder.setContentText(getString(R.string.progress_queued))
+                builder.setProgress(0, 0, true)
+                builder.setOngoing(true)
+            }
+
+            TransferState.Active -> {
+                builder.setContentText(activeLineFor(group))
+                builder.setProgress(PROGRESS_MAX, group.percent, false)
+                builder.setOngoing(true)
+            }
+
+            TransferState.Paused -> {
+                builder.setContentText(pausedLineFor(group))
+                builder.setProgress(PROGRESS_MAX, group.percent, false)
+                builder.setOngoing(true)
+            }
+
+            TransferState.Done -> {
+                builder.setContentText(doneLineFor(group))
+                builder.setOngoing(false)
+                builder.setAutoCancel(true)
+            }
+
+            TransferState.Failed -> {
+                val code = group.errorCode
+                val stopped = if (code != null) {
+                    errorWordsFor(code, group.errorDetail).stopped
+                } else {
+                    getString(R.string.error_unknown_stopped)
+                }
+                builder.setContentText(stopped)
+                builder.setOngoing(false)
+                val retry = PendingIntent.getService(
+                    this,
+                    notificationIdFor(group.id),
+                    Intent(this, ReachableService::class.java)
+                        .setAction(ACTION_RETRY_TRANSFER)
+                        .putExtra(EXTRA_GROUP_ID, group.id)
+                        .putExtra(EXTRA_IS_BATCH, !group.isSingleFile),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+                builder.addAction(
+                    Notification.Action.Builder(
+                        Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                        getString(R.string.action_retry),
+                        retry,
+                    ).build(),
+                )
+            }
+        }
+        return builder.build()
+    }
+
+    // "Automatic · Phone to Mac", or just the direction: the same words
+    // TransferRow's own originAndDirection composes, from strings.xml.
+    private fun directionLineFor(group: TransferGroup): String {
+        val direction = when (group.direction) {
+            Direction.Pull -> getString(R.string.transfers_direction_mac_to_phone)
+            Direction.Push -> getString(R.string.transfers_direction_phone_to_mac)
+        }
+        if (group.origin != Origin.Automatic) {
+            return direction
+        }
+        return getString(R.string.transfers_origin_automatic) +
+            getString(R.string.dot_separator) +
+            direction
+    }
+
+    // "43 of 120 files · 2.1 GB remaining · 38 MB/s": TransferRow's own
+    // activeLine, built the same way without a Compose context.
+    private fun activeLineFor(group: TransferGroup): String {
+        val parts = mutableListOf<String>()
+        if (!group.isSingleFile) {
+            parts += getString(R.string.transfers_files_progress, group.filesDone, group.filesTotal)
+        }
+        val remaining = (group.bytesTotal - group.bytesDone).coerceAtLeast(0L)
+        parts += getString(R.string.progress_remaining, formatSize(this, remaining))
+        val speed = group.speedMBps
+        if (speed != null && speed > 0) {
+            parts += getString(R.string.transport_speed_value, speed)
+        }
+        return parts.joinToString(getString(R.string.dot_separator))
+    }
+
+    // TransferRow's own pausedLine.
+    private fun pausedLineFor(group: TransferGroup): String {
+        val code = group.errorCode ?: return getString(R.string.progress_paused_plain)
+        val words = errorWordsFor(code, group.errorDetail)
+        val reason = listOfNotNull(words.why, words.todo).joinToString(" ")
+        return getString(R.string.progress_paused, reason)
+    }
+
+    // "12 files · 4.8 GB · 3 min": TransferRow's own doneLine.
+    private fun doneLineFor(group: TransferGroup): String {
+        val parts = mutableListOf<String>()
+        if (!group.isSingleFile) {
+            parts += getString(R.string.transfers_file_count, group.filesTotal)
+        }
+        parts += formatSize(this, group.bytesTotal)
+        val duration = group.durationSecs
+        if (duration != null) {
+            parts += formatDuration(this, duration)
+        }
+        return parts.joinToString(getString(R.string.dot_separator))
+    }
+
+    // The three-part words for one error code, from the generated table,
+    // with `{detail}` filled the same way ErrorWords.kt fills it for
+    // ErrorBlock. Falls back to the unknown-code words for a code the
+    // table does not hold.
+    private fun errorWordsFor(code: String, detail: String?): FerryErrors.Words {
+        val words = FerryErrors.wordsFor(code) ?: return FerryErrors.Words(
+            stopped = getString(R.string.error_unknown_stopped),
+            why = getString(R.string.error_unknown_why, code),
+            todo = getString(R.string.error_unknown_todo),
+        )
+        return FerryErrors.Words(
+            stopped = FerryErrors.fill(words.stopped, detail).trim(),
+            why = FerryErrors.fill(words.why, detail).trim(),
+            todo = FerryErrors.fill(words.todo, detail).trim(),
+        )
+    }
+
+    private fun handleRetryAction(intent: Intent) {
+        val groupId = intent.getStringExtra(EXTRA_GROUP_ID) ?: return
+        if (intent.getBooleanExtra(EXTRA_IS_BATCH, false)) {
+            FerryEngine.retryBatch(groupId)
+        } else {
+            FerryEngine.retry(groupId)
+        }
+    }
+
     companion object {
         private const val CHANNEL_ID = "reachable"
         private const val NOTIFICATION_ID = 1
         private const val ACTION_STOP_ADVERTISING = "app.ferry.action.STOP_ADVERTISING"
         private const val ACTION_START_ADVERTISING = "app.ferry.action.START_ADVERTISING"
+
+        // docs/ux-fix-plan.md item 2. A separate channel from "reachable",
+        // so a person can silence one without the other.
+        private const val TRANSFERS_CHANNEL_ID = "transfers"
+        private const val PROGRESS_MAX = 100
+        private const val ACTION_RETRY_TRANSFER = "app.ferry.action.RETRY_TRANSFER"
+        private const val EXTRA_GROUP_ID = "app.ferry.extra.GROUP_ID"
+        private const val EXTRA_IS_BATCH = "app.ferry.extra.IS_BATCH"
 
         // True while the service runs, in either state. MainActivity reads
         // it to decide whether the engine may be stopped.
