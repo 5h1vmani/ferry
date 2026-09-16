@@ -12,10 +12,11 @@ mod common;
 
 use common::paths::{
     Inbox, MIB, build, code_of_error, key_hex, make_engine, mib, pair_two_engines, pair_with_peer,
-    poll_until, sample_bytes, start_peer_with, wait_transfer,
+    poll_until, poll_until_or_describe, sample_bytes, start_peer_with, wait_transfer,
 };
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use ferry_core::chunk::Manifest;
 use ferry_core::ops::{Entry, FileKind, OpError};
@@ -183,6 +184,13 @@ fn a_batch_with_some_files_done_before_a_restart_still_reports_them_done_after()
     // nothing armed and runs to completion. 2 MiB is short of each file's
     // 4 MiB, so the cut one pauses partway rather than finishing anyway.
     mac.engine.set_cut(2 * MIB);
+    // The cut file must still be Paused when the other one reaches Done.
+    // The backoff floor is one second, and a debug build on a slow machine
+    // cannot move the other file's 4 MiB through Noise in that time, so the
+    // cut file resumed and finished first. CI's x86 runner failed here on
+    // every run. A long floor takes speed out of the test. The engine built
+    // after the restart below has the default floor again.
+    mac.engine.set_backoff(Duration::from_secs(60));
 
     let batch_id = mac
         .engine
@@ -191,20 +199,39 @@ fn a_batch_with_some_files_done_before_a_restart_still_reports_them_done_after()
 
     let engine = Arc::clone(&mac.engine);
     let wanted = batch_id.clone();
-    poll_until("one file to finish and the other to pause", move || {
-        let transfers = engine.transfers();
-        let done = transfers
-            .iter()
-            .filter(|t| t.batch_id.as_deref() == Some(wanted.as_str()))
-            .filter(|t| t.state == TransferState::Done)
-            .count();
-        let paused = transfers
-            .iter()
-            .filter(|t| t.batch_id.as_deref() == Some(wanted.as_str()))
-            .filter(|t| t.state == TransferState::Paused)
-            .count();
-        done == 1 && paused == 1
-    });
+    let describing = Arc::clone(&mac.engine);
+    let described = batch_id.clone();
+    poll_until_or_describe(
+        "one file to finish and the other to pause",
+        move || {
+            let transfers = engine.transfers();
+            let done = transfers
+                .iter()
+                .filter(|t| t.batch_id.as_deref() == Some(wanted.as_str()))
+                .filter(|t| t.state == TransferState::Done)
+                .count();
+            let paused = transfers
+                .iter()
+                .filter(|t| t.batch_id.as_deref() == Some(wanted.as_str()))
+                .filter(|t| t.state == TransferState::Paused)
+                .count();
+            done == 1 && paused == 1
+        },
+        move || {
+            describing
+                .transfers()
+                .iter()
+                .filter(|t| t.batch_id.as_deref() == Some(described.as_str()))
+                .map(|t| {
+                    format!(
+                        "{} {:?} {}/{} {:?}",
+                        t.file_name, t.state, t.bytes_done, t.bytes_total, t.error
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ")
+        },
+    );
     let before_stop = mac
         .engine
         .batches()

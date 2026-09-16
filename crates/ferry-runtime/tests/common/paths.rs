@@ -172,6 +172,24 @@ pub(crate) fn poll_until(what: &str, check: impl Fn() -> bool) {
     panic!("waited {PATIENCE:?} for {what}");
 }
 
+/// Like [`poll_until`], but the panic also carries what `describe` saw at
+/// the deadline, so a failure on a slower machine says which state the
+/// engine was in instead of only how long the test waited.
+pub(crate) fn poll_until_or_describe(
+    what: &str,
+    check: impl Fn() -> bool,
+    describe: impl Fn() -> String,
+) {
+    let deadline = Instant::now() + PATIENCE;
+    while Instant::now() < deadline {
+        if check() {
+            return;
+        }
+        std::thread::sleep(POLL_TICK);
+    }
+    panic!("waited {PATIENCE:?} for {what}; saw: {}", describe());
+}
+
 /// Engines under test.
 ///
 /// One engine, its inbox, and the folders it owns.
