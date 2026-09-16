@@ -31,9 +31,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -41,15 +38,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import app.ferry.FerryColor
 import app.ferry.FerryFont
-import app.ferry.FerryIcon
 import app.ferry.FerryRadius
 import app.ferry.FerrySpace
 import app.ferry.R
 import app.ferry.components.ErrorBlock
-import app.ferry.components.PairingCode
-import app.ferry.components.ferryIconFor
 import app.ferry.engine.FerryEngine
-import app.ferry.formatCountdown
 import app.ferry.model.PairingMethod
 import app.ferry.model.PairingStep
 import app.ferry.model.pairingStepOf
@@ -259,8 +252,9 @@ fun PairingScreen(
                 }
 
                 is PairingStep.Code -> Padded {
-                    PairingCode(
-                        code = step.digits,
+                    CodeContent(
+                        digits = step.digits,
+                        expiresUnixSecs = step.expiresUnixSecs,
                         onConfirm = { FerryEngine.confirmPairing(true) },
                         onCancel = {
                             // Rejecting drops the device the code belongs
@@ -270,8 +264,6 @@ fun PairingScreen(
                             cancel()
                         },
                     )
-                    Spacer(Modifier.height(FerrySpace.s3))
-                    Countdown(expiresUnixSecs = step.expiresUnixSecs)
                 }
 
                 is PairingStep.Confirmed -> Padded {
@@ -311,9 +303,6 @@ fun PairingScreen(
         }
     }
 }
-
-// How long the paired icon stays before Devices comes back.
-private const val CONFIRMED_MILLIS = 1_000L
 
 // The one code this screen names directly. Its words, like every other
 // error's, come from the generated table.
@@ -360,7 +349,7 @@ private fun ChoosingContent(
             onClick = onScan,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(MIN_TARGET),
+                .height(FerrySpace.s7),
             colors = ButtonDefaults.buttonColors(containerColor = FerryColor.accent()),
         ) {
             Text(stringResource(R.string.pairing_scan_the_code))
@@ -416,101 +405,11 @@ private fun ScanningContent(onScanned: (ByteArray) -> Unit, onUseCode: () -> Uni
     }
 }
 
-@Composable
-private fun WaitingContent(
-    starting: Boolean,
-    shortCode: String?,
-    expiresUnixSecs: Long,
-    onCancel: () -> Unit,
-    onScan: () -> Unit,
-) {
-    Column {
-        Text(
-            text = stringResource(
-                if (starting) R.string.pairing_starting else R.string.pairing_waiting_title,
-            ),
-            style = FerryFont.title(),
-            color = FerryColor.text(),
-        )
-        Spacer(Modifier.height(FerrySpace.s4))
-        if (shortCode != null) {
-            // The only place this phone's random mDNS name is ever shown. A
-            // person in a room with three phones can tell which is theirs,
-            // and a wrong pick is safe anyway, because the six digits will
-            // not match.
-            Text(
-                text = stringResource(R.string.pairing_short_code_is),
-                style = FerryFont.body(),
-                color = FerryColor.textSecondary(),
-            )
-            Text(
-                text = shortCode,
-                style = FerryFont.display(),
-                color = FerryColor.text(),
-            )
-        }
-        Spacer(Modifier.height(FerrySpace.s3))
-        Countdown(expiresUnixSecs = expiresUnixSecs)
-        Spacer(Modifier.height(FerrySpace.s5))
-        TextButton(onClick = onCancel) {
-            Text(stringResource(R.string.action_cancel))
-        }
-        Spacer(Modifier.height(FerrySpace.s2))
-        AlternativeButton(
-            label = stringResource(R.string.pairing_scan_instead),
-            onClick = onScan,
-        )
-    }
-}
-
-// The two minute timeout, counted. Not "soon", which is an adjective
-// standing in for a number.
-//
-// The engine publishes the deadline on every pairing state, so this counts
-// down from that rather than from when the screen opened: a screen reopened
-// mid-pairing shows the time that is actually left.
-@Composable
-private fun Countdown(expiresUnixSecs: Long) {
-    if (expiresUnixSecs <= 0L) {
-        return
-    }
-    var now by remember { mutableLongStateOf(System.currentTimeMillis() / 1_000L) }
-    LaunchedEffect(expiresUnixSecs) {
-        while (true) {
-            delay(TICK_MILLIS)
-            now = System.currentTimeMillis() / 1_000L
-        }
-    }
-    val remaining = (expiresUnixSecs - now).coerceAtLeast(0L)
-    Text(
-        text = stringResource(R.string.pairing_stops_in, formatCountdown(remaining)),
-        style = FerryFont.caption(),
-        color = FerryColor.textSecondary(),
-    )
-}
-
-@Composable
-private fun ConfirmedContent() {
-    Column {
-        Icon(
-            imageVector = ferryIconFor(FerryIcon.paired),
-            contentDescription = null,
-            tint = FerryColor.accent(),
-            modifier = Modifier.size(FerrySpace.s7),
-        )
-        Spacer(Modifier.height(FerrySpace.s3))
-        Text(
-            text = stringResource(R.string.pairing_confirmed_label),
-            style = FerryFont.title(),
-            color = FerryColor.text(),
-        )
-    }
-}
-
 // The other way in. One shape for it, used on every step, so it reads as
 // the same offer each time rather than as a different control.
+// Not private: PairingWaitingContent.kt's WaitingContent uses it too.
 @Composable
-private fun AlternativeButton(
+fun AlternativeButton(
     label: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
@@ -519,18 +418,13 @@ private fun AlternativeButton(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(MIN_TARGET),
+            .height(FerrySpace.s7),
         colors = ButtonDefaults.textButtonColors(contentColor = FerryColor.accentText()),
     ) {
         Text(label)
     }
 }
 
-// Material's minimum touch target. Nothing a finger lands on is smaller.
-private val MIN_TARGET = 48.dp
-
 private val FRAME = 240.dp
 
 private const val SCRIM_ALPHA = 0.6f
-
-private const val TICK_MILLIS = 1_000L

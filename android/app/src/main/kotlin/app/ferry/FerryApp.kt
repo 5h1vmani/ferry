@@ -146,6 +146,7 @@ fun FerryApp(
     val currentNetwork by FerryEngine.network.collectAsState()
     val wifiPresence by FerryEngine.wifiPresence.collectAsState()
     val trustedNetworks by FerryEngine.trustedNetworks.collectAsState()
+    val sharedRootNames by FerryEngine.sharedRootNames.collectAsState()
 
     val devices = engineDevices.map { it.toUi() }
     val accessDays = accessDaysOf(engineAccessLog.map { it.toUi() })
@@ -246,7 +247,7 @@ fun FerryApp(
 
             is Screen.Settings -> SettingsScreen(
                 deviceName = android.os.Build.MODEL,
-                sharedRootName = stringResource(R.string.settings_shared_storage_value),
+                sharedRootName = sharedRootNames.joinToString(", "),
                 devices = devices,
                 allFilesAccessGranted = allFilesAccess,
                 notificationsAllowed = notificationsAllowed,

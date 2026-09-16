@@ -2,7 +2,7 @@
 <!--
     Every user-facing string in the Ferry Android app. A string inline in a
     view is a bug (docs/design.md). Words follow docs/voice.md; most are
-    taken directly from docs-v2/ia.md and docs-v2/components.md.
+    taken directly from docs/ia.md and docs/components.md.
 
     Text that describes one error is not here. It lives in the generated
     table in Errors.kt, built from design/errors.json, so the phone and the
@@ -71,7 +71,7 @@
     <!-- Between two facts on one line: "14:31 · 48 KB". -->
     <string name="dot_separator"> · </string>
 
-    <!-- TransportBadge, docs-v2/components.md. -->
+    <!-- TransportBadge, docs/components.md. -->
     <string name="transport_usb">USB</string>
     <string name="transport_wifi">Wi-Fi</string>
     <string name="transport_connecting">Connecting</string>
@@ -84,14 +84,14 @@
     <string name="cd_transport_connecting">Connecting</string>
     <string name="cd_transport_not_reachable">Not reachable</string>
 
-    <!-- DeviceRow, docs-v2/components.md. The spare transport is stated
+    <!-- DeviceRow, docs/components.md. The spare transport is stated
          beside the badge, never inside it: a badge that names two paths
          stops answering which one is carrying this. -->
     <string name="device_last_seen">Last seen %1$s ago</string>
     <string name="devices_spare_transport_wifi">Wi-Fi also available</string>
     <string name="devices_spare_transport_usb">USB also available</string>
 
-    <!-- PresenceControl, docs-v2/components.md. Job 5's only control. It
+    <!-- PresenceControl, docs/components.md. Job 5's only control. It
          appears on Devices and in the notification, and both read one
          value, so both read these words. -->
     <string name="presence_advertising">Advertising</string>
@@ -136,14 +136,14 @@
     <string name="duration_minutes_short">%1$d min</string>
     <string name="duration_hours_short">%1$d h %2$d min</string>
 
-    <!-- ProgressLine and TransferRow, docs-v2/components.md. -->
+    <!-- ProgressLine and TransferRow, docs/components.md. -->
     <string name="progress_queued">Queued.</string>
     <string name="progress_remaining">%1$s remaining</string>
     <string name="progress_paused">Paused. %1$s</string>
     <string name="progress_paused_plain">Paused.</string>
     <string name="cd_progress_transferring_percent">Transferring, %1$d percent</string>
 
-    <!-- The Transfers section, docs-v2/ia.md. Origin is a word in the same
+    <!-- The Transfers section, docs/ia.md. Origin is a word in the same
          type as the direction, because it is the same kind of fact: how
          this transfer came to exist. Job 7. -->
     <string name="transfers_direction_phone_to_mac">Phone to Mac</string>
@@ -152,14 +152,14 @@
     <string name="transfers_files_progress">%1$d of %2$d files</string>
     <string name="transfers_file_count">%1$d files</string>
 
-    <!-- The chunk disclosure, docs-v2/ia.md. The bottom of the depth axis,
+    <!-- The chunk disclosure, docs/ia.md. The bottom of the depth axis,
          one tap away and never in the way. -->
     <string name="chunks_show">Show chunks</string>
     <string name="chunks_verified">%1$d of %2$d verified</string>
     <string name="chunks_verified_summary">%1$d of %2$d chunks verified.</string>
     <string name="chunks_failed_chunk">Chunk %1$d failed to verify.</string>
 
-    <!-- The access log, docs-v2/ia.md. L5, job 9.
+    <!-- The access log, docs/ia.md. L5, job 9.
 
          The subject is always named, never "you" and never an arrow: a log
          is read months later, out of context. The verbs are the file
@@ -191,7 +191,7 @@
     <string name="error_unknown_why">Ferry has no words for the code %1$s.</string>
     <string name="error_unknown_todo">Report this code.</string>
 
-    <!-- PairingCode, docs-v2/components.md. Digit words spell the code for
+    <!-- PairingCode, docs/components.md. Digit words spell the code for
          a screen reader, one digit at a time, so it can be compared
          against the other screen. -->
     <string-array name="digit_words">
@@ -212,7 +212,7 @@
     <string name="pairing_code_instruction">Confirm this matches on the Mac.</string>
     <string name="pairing_confirmed_label">Confirmed.</string>
 
-    <!-- Pairing, docs-v2/ia.md, Pairing, the phone.
+    <!-- Pairing, docs/ia.md, Pairing, the phone.
 
          Two ways in, and every step offers the other one. Scanning is
          fewer steps when both devices are in reach, which is when pairing
@@ -222,7 +222,7 @@
          go back a screen to get there. -->
     <string name="pairing_title">Pairing</string>
     <string name="pairing_choose_title">Pair with a Mac.</string>
-    <!-- No body line here: docs-v2/ia.md, Pairing, the phone, Choosing,
+    <!-- No body line here: docs/ia.md, Pairing, the phone, Choosing,
          lists the title and two controls only. The line this screen once
          carried, "Scanning is quicker...", named no count for "quicker",
          which docs/voice.md rule 5 refuses. -->
@@ -253,7 +253,7 @@
          standing in for a number. -->
     <string name="pairing_stops_in">Pairing stops in %1$s.</string>
 
-    <!-- First run, docs-v2/ia.md, First run, phone.
+    <!-- First run, docs/ia.md, First run, phone.
 
          The control is "Grant access", not "Continue": rule 9 of
          docs/voice.md bans that word by name, and this button does one
@@ -275,17 +275,17 @@
     <string name="first_run_grant">Grant access</string>
     <string name="first_run_skip">Skip</string>
 
-    <!-- EmptyState, docs-v2/components.md. -->
+    <!-- EmptyState, docs/components.md. -->
     <string name="devices_empty_line">No Mac paired.</string>
     <string name="transfers_empty_line">No transfers.</string>
 
-    <!-- Devices screen, docs-v2/ia.md. -->
+    <!-- Devices screen, docs/ia.md. -->
     <string name="devices_title">Devices</string>
     <string name="cd_settings_action">Settings</string>
     <string name="device_section_transfers">Transfers</string>
     <string name="device_info_paired_label">Paired %1$s</string>
 
-    <!-- The reachable foreground service, docs-v2/ia.md. While it runs the
+    <!-- The reachable foreground service, docs/ia.md. While it runs the
          phone is advertising, so the notification states that and offers
          the one action that changes it. The device is named rather than
          called "your phone", because a person may have two. -->
@@ -302,7 +302,7 @@
          strings above and the generated error table. -->
     <string name="notification_channel_transfers">Transfers</string>
 
-    <!-- Settings screen, docs-v2/ia.md, Settings, the phone.
+    <!-- Settings screen, docs/ia.md, Settings, the phone.
 
          Reachability has left this screen. It was a switch filed under
          preferences; it is a mode with a consequence, and it now lives
@@ -314,7 +314,6 @@
     <string name="settings_group_paired">Paired</string>
     <string name="settings_name_label">Name</string>
     <string name="settings_shared_storage_label">Shared storage</string>
-    <string name="settings_shared_storage_value">Internal storage</string>
     <string name="settings_shared_storage_caption">Not editable in phase 1.</string>
     <string name="settings_all_files_access_label">All files access</string>
     <string name="settings_status_granted">Granted</string>

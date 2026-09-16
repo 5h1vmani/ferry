@@ -16,16 +16,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.unit.dp
 import app.ferry.FerryColor
 import app.ferry.FerryFont
 import app.ferry.FerryIcon
 import app.ferry.FerrySpace
 import app.ferry.R
+import app.ferry.buildActiveLine
+import app.ferry.buildDirectionLine
+import app.ferry.buildDoneLine
+import app.ferry.buildPausedLine
 import app.ferry.formatDuration
 import app.ferry.formatSize
 import app.ferry.model.Direction
-import app.ferry.model.Origin
 import app.ferry.model.TransferGroup
 import app.ferry.model.TransferState
 import app.ferry.threePartError
@@ -89,12 +91,12 @@ private fun originAndDirection(group: TransferGroup): String {
         Direction.Pull -> stringResource(R.string.transfers_direction_mac_to_phone)
         Direction.Push -> stringResource(R.string.transfers_direction_phone_to_mac)
     }
-    if (group.origin != Origin.Automatic) {
-        return direction
-    }
-    return stringResource(R.string.transfers_origin_automatic) +
-        stringResource(R.string.dot_separator) +
-        direction
+    return buildDirectionLine(
+        origin = group.origin,
+        direction = direction,
+        automaticLabel = stringResource(R.string.transfers_origin_automatic),
+        dotSeparator = stringResource(R.string.dot_separator),
+    )
 }
 
 @Composable
@@ -117,7 +119,7 @@ private fun GroupProgress(group: TransferGroup, onRetry: () -> Unit) {
                     progress = { group.fraction },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp),
+                        .height(FerrySpace.s1),
                     color = FerryColor.accent(),
                     trackColor = FerryColor.border(),
                 )
@@ -136,7 +138,7 @@ private fun GroupProgress(group: TransferGroup, onRetry: () -> Unit) {
                     progress = { group.fraction },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp),
+                        .height(FerrySpace.s1),
                     color = FerryColor.borderStrong(),
                     trackColor = FerryColor.border(),
                 )
@@ -180,21 +182,20 @@ private fun GroupProgress(group: TransferGroup, onRetry: () -> Unit) {
 // is the three-part rule applied to a progress line.
 @Composable
 private fun activeLine(group: TransferGroup): String {
-    val parts = mutableListOf<String>()
-    if (!group.isSingleFile) {
-        parts += stringResource(
-            R.string.transfers_files_progress,
-            group.filesDone,
-            group.filesTotal,
-        )
+    val filesProgress = if (!group.isSingleFile) {
+        stringResource(R.string.transfers_files_progress, group.filesDone, group.filesTotal)
+    } else {
+        null
     }
     val remaining = (group.bytesTotal - group.bytesDone).coerceAtLeast(0L)
-    parts += stringResource(R.string.progress_remaining, formatSize(remaining))
+    val remainingText = stringResource(R.string.progress_remaining, formatSize(remaining))
     val speed = group.speedMBps
-    if (speed != null && speed > 0) {
-        parts += stringResource(R.string.transport_speed_value, speed)
+    val speedText = if (speed != null && speed > 0) {
+        stringResource(R.string.transport_speed_value, speed)
+    } else {
+        null
     }
-    return parts.joinToString(stringResource(R.string.dot_separator))
+    return buildActiveLine(filesProgress, remainingText, speedText, stringResource(R.string.dot_separator))
 }
 
 // "Paused." and then why and what to do, from the error table. A pause the
@@ -202,23 +203,26 @@ private fun activeLine(group: TransferGroup): String {
 // not known.
 @Composable
 private fun pausedLine(group: TransferGroup): String {
-    val code = group.errorCode ?: return stringResource(R.string.progress_paused_plain)
-    val words = threePartError(code, group.errorDetail)
-    val reason = listOfNotNull(words.why, words.todo).joinToString(" ")
-    return stringResource(R.string.progress_paused, reason)
+    val code = group.errorCode
+    val words = code?.let { threePartError(it, group.errorDetail) }
+    return buildPausedLine(
+        code = code,
+        why = words?.why,
+        todo = words?.todo,
+        pausedPlain = stringResource(R.string.progress_paused_plain),
+        pausedTemplate = stringResource(R.string.progress_paused),
+    )
 }
 
 // "12 files · 4.8 GB · 3 min".
 @Composable
 private fun doneLine(group: TransferGroup): String {
-    val parts = mutableListOf<String>()
-    if (!group.isSingleFile) {
-        parts += stringResource(R.string.transfers_file_count, group.filesTotal)
+    val fileCount = if (!group.isSingleFile) {
+        stringResource(R.string.transfers_file_count, group.filesTotal)
+    } else {
+        null
     }
-    parts += formatSize(group.bytesTotal)
-    val duration = group.durationSecs
-    if (duration != null) {
-        parts += formatDuration(duration)
-    }
-    return parts.joinToString(stringResource(R.string.dot_separator))
+    val size = formatSize(group.bytesTotal)
+    val duration = group.durationSecs?.let { formatDuration(it) }
+    return buildDoneLine(fileCount, size, duration, stringResource(R.string.dot_separator))
 }

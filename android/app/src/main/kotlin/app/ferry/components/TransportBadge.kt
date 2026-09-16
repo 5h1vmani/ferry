@@ -75,6 +75,7 @@ fun TransportBadge(
     val monoStyle = FerryFont.mono()
     val connectingLabel = stringResource(R.string.transport_connecting)
     val notReachableLabel = stringResource(R.string.transport_not_reachable)
+    val dotSeparator = stringResource(R.string.dot_separator)
     val speedText = if (state is ConnectionState.Moving) {
         stringResource(R.string.transport_speed_value, state.speedMBps)
     } else {
@@ -87,7 +88,7 @@ fun TransportBadge(
             }
             is ConnectionState.Moving -> {
                 withStyle(labelStyle.toSpanStyle()) { append(transportLabel) }
-                withStyle(labelStyle.toSpanStyle()) { append(" · ") }
+                withStyle(labelStyle.toSpanStyle()) { append(dotSeparator) }
                 withStyle(monoStyle.toSpanStyle()) { append(speedText.orEmpty()) }
             }
             is ConnectionState.Connecting -> {

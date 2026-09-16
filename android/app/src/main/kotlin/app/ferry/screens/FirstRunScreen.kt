@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import app.ferry.FerryColor
 import app.ferry.FerryFont
 import app.ferry.FerrySpace
@@ -93,7 +92,7 @@ fun FirstRunScreen(
             onClick = onGrantAccess,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(MIN_TARGET),
+                .height(FerrySpace.s7),
             colors = ButtonDefaults.buttonColors(containerColor = FerryColor.accent()),
         ) {
             Text(stringResource(R.string.first_run_grant))
@@ -103,7 +102,7 @@ fun FirstRunScreen(
             onClick = onSkip,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(MIN_TARGET),
+                .height(FerrySpace.s7),
             colors = ButtonDefaults.textButtonColors(contentColor = FerryColor.accentText()),
         ) {
             Text(stringResource(R.string.first_run_skip))
@@ -129,6 +128,3 @@ private fun Requirement(icon: ImageVector, title: String, why: String) {
         }
     }
 }
-
-// Material's minimum touch target.
-private val MIN_TARGET = 48.dp
