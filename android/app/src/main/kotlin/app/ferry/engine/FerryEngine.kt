@@ -272,7 +272,6 @@ object FerryEngine {
         val current = engine ?: return false
         return try {
             current.start()
-            _started.value = true
             _error.value = null
             _devices.value = current.devices()
             _transfers.value = current.transfers()
@@ -284,6 +283,10 @@ object FerryEngine {
             // is not lost: it is held there and pushed again here, which
             // is the "once after start" half of setNetwork's contract.
             setNetwork(NetworkName.current())
+            // Last, so a collector that waits on `started` reads loaded
+            // lists. ShareIntake sweeps the cache against `batches` on this
+            // signal; an empty list there would delete a paused push's file.
+            _started.value = true
             true
         } catch (e: FerryException) {
             _error.value = e
@@ -568,7 +571,7 @@ object FerryEngine {
             // Several are paired and none is reachable: audit finding 6.
             // The same fault a dial would hit anyway, shown at once rather
             // than after picking one of several devices arbitrarily.
-            _error.value = FerryException.Failed("Runtime::NotReachable", null)
+            _error.value = FerryException.Failed(FerryErrorCode.RUNTIME_NOT_REACHABLE, null)
             return
         }
         val keyHex = device.keyHex
@@ -700,7 +703,7 @@ object FerryEngine {
 
     // What a call made before the engine exists reports. It is the engine's
     // own code for the same state, so the words are already in the table.
-    private const val NOT_STARTED_CODE = "Runtime::NotStarted"
+    private const val NOT_STARTED_CODE = FerryErrorCode.RUNTIME_NOT_STARTED
 
     // Set by create, so notifyRoots has a context on an engine thread.
     @Volatile
