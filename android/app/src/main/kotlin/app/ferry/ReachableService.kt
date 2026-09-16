@@ -23,6 +23,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import uniffi.ferry_runtime.FerryException
 import uniffi.ferry_runtime.BatchInfo
 import uniffi.ferry_runtime.TransferInfo
 
@@ -446,9 +447,37 @@ class ReachableService : Service() {
     // FerryEngine.start() records its own failure in the error state every
     // other engine call already shows through, so nothing further is
     // posted here beyond not attempting the retry itself.
+    // A Retry tapped from the shade found an engine that could not start.
+    // Nothing else is on screen, so the words go where the tap came from:
+    // the same notification, on the same id. docs/voice.md rule 10.
+    private fun postRetryFailed(groupId: String) {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val failure = FerryEngine.error.value as? FerryException.Failed
+        val words = if (failure != null) {
+            errorWordsFor(failure.code, failure.detail)
+        } else {
+            errorWordsFor(FerryErrorCode.RUNTIME_NOT_STARTED, null)
+        }
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = Notification.Builder(this, TRANSFERS_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle(words.stopped)
+            .setContentText(listOf(words.why, words.todo).filter { it.isNotEmpty() }.joinToString(" "))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(notificationIdFor(groupId), notification)
+    }
+
     private fun handleRetryAction(intent: Intent) {
         val groupId = intent.getStringExtra(EXTRA_GROUP_ID) ?: return
         if (!FerryEngine.start()) {
+            postRetryFailed(groupId)
             return
         }
         if (intent.getBooleanExtra(EXTRA_IS_BATCH, false)) {
