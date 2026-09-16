@@ -97,11 +97,6 @@ const PAIRING_TIMEOUT: Duration = Duration::from_secs(120);
 /// How often the engine asks `adb` which devices are plugged in.
 const ADB_POLL: Duration = Duration::from_secs(3);
 
-/// How often the access log roll-up is ticked, so an idle entry is
-/// finalised within this long of going quiet, and the listener is told
-/// within this long of that. Matches `notify.rs`'s own `HOLD`.
-const ACCESS_LOG_TICK: Duration = Duration::from_millis(250);
-
 /// How often the access log is pruned of day files past its retention
 /// window, after the pass `start` already ran.
 const ACCESS_LOG_PRUNE: Duration = Duration::from_secs(3600);
