@@ -362,6 +362,11 @@ pub struct AccessEntry {
 /// `limit` is capped at 1,000.
 fn access_log(&self, device_key_hex: Option<String>, limit: u32) -> Vec<AccessEntry>;
 
+/// How many days an access log entry is kept before it is pruned. Always
+/// 30. The app formats "Kept for {days} days" from this, rather than
+/// typing the number itself.
+fn access_log_retention_days(&self) -> u32;
+
 // on EngineListener
 /// At most once every 250 milliseconds. The app then calls `access_log`.
 fn access_log_changed(&self);
@@ -411,7 +416,8 @@ entries: a log that erases the record of the device you just distrusted
 is not a log.
 
 **Thirty days.** Stated on screen, because a log that quietly forgets is
-worse than no log.
+worse than no log. The app reads the number from `access_log_retention_days()`
+rather than typing 30 itself.
 
 ## The second run: items 16, 14, 5, 6 and 12
 

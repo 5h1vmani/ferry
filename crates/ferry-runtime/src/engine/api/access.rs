@@ -22,4 +22,13 @@ impl Engine {
             .map(access_entry_from_core)
             .collect()
     }
+
+    /// How many days an access log entry is kept before it is pruned.
+    ///
+    /// `docs/engine-contract.md`, batch E, item 13. The app formats "Kept
+    /// for {days} days" from this number, rather than typing 30 itself.
+    #[must_use]
+    pub fn access_log_retention_days(&self) -> u32 {
+        u32::try_from(crate::access::RETENTION_DAYS).unwrap_or(u32::MAX)
+    }
 }

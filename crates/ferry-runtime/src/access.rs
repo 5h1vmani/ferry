@@ -124,7 +124,11 @@ const MAX_ENTRIES_PER_DAY: u32 = 10_000;
 const MAX_QUERY_LIMIT: u32 = 1_000;
 
 /// How many days a day file is kept before [`AccessLog::prune`] removes it.
-const RETENTION_DAYS: i64 = 30;
+///
+/// `pub(crate)` so `engine/api/access.rs` can export it as
+/// `access_log_retention_days()`, `docs/engine-contract.md` item 13, rather
+/// than the apps typing the number 30 themselves.
+pub(crate) const RETENTION_DAYS: i64 = 30;
 
 /// Seconds in one day, for turning a Unix time into a day index.
 const SECS_PER_DAY: i64 = 86_400;
