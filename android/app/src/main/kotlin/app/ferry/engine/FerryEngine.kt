@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import app.ferry.FerryErrorCode
 import app.ferry.NetworkName
+import app.ferry.ShareCacheRegistry
 import app.ferry.ShareIntake
 import uniffi.ferry_runtime.AccessEntry
 import uniffi.ferry_runtime.BatchInfo
@@ -647,7 +648,7 @@ object FerryEngine {
         val requestId = UUID.randomUUID().toString()
         val context = appContext
         if (context != null) {
-            ShareIntake.registerBatch(context, requestId, localPaths)
+            ShareCacheRegistry.registerBatch(context, requestId, localPaths)
         }
         scope.launch {
             try {
@@ -672,7 +673,7 @@ object FerryEngine {
                     }
                 }
                 val batchId = pushFiles(keyHex, localPaths, folder)
-                context?.let { ShareIntake.renameRegistration(it, requestId, batchId) }
+                context?.let { ShareCacheRegistry.renameRegistration(it, requestId, batchId) }
             } catch (e: FerryException) {
                 _error.value = e
             }
