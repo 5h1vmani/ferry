@@ -34,3 +34,10 @@ travel inside the encrypted channel after pairing, because the mDNS name is
 deliberately random and the adb serial is not a name. The protocol has no
 message for that yet. It is recorded in `docs/ia.md` and in `PLAN.md` as
 phase 1 work.
+
+## Step 8, 16 September 2026
+
+An assessment found that the screens above did not reach the engine's
+transfer path from the surfaces people use. The fix, its reasons, and its
+status are in `docs/ux-fix-plan.md`. Step 6, Shiva's own look, is now item
+6 of that plan and runs after the fix builds.

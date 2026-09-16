@@ -339,7 +339,7 @@ and what it read from it. Job 9.
 | One row | The time in mono, then a sentence, then the amount in mono. "14:31 · Pixel 3 XL read Desktop/Q3 notes.md · 48 KB" **new** |
 | A list operation | "Pixel 3 XL listed Desktop" and the count: "31 entries". **new** |
 | This device's own reads | "This Mac read DCIM/Camera, 120 files" and "4.8 GB". **new** |
-| Footer | "Kept for 30 days." **new** On the Mac, also "Reveal in Finder" **new** for the file the engine prunes. |
+| Footer | "Kept for 30 days." **new** |
 
 The subject is always named: "Pixel 3 XL read" or "This Mac read". Never
 "you", and never a direction icon — a log is read months later, out of

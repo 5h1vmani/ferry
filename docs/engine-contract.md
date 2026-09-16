@@ -693,10 +693,32 @@ cut at three points of a push resumes and rewrites at most one chunk. No full
 sweep for push: the resume rule is the same code path as the pull sweep
 already proves, and the sweep is the most expensive test in the suite.
 
-**The Mac.** The Files section gains "Copy to phone" beside the folder
-controls. It opens the file panel for one or more files and calls
-`push_files` into the folder the section is showing. One string added.
-Rows show the direction through the existing `TransferRow`.
+**The Mac.** A drop on a device row, on the detail pane, or on the Dock
+icon, the "Send files" control, and the Finder Services entry "Send with
+Ferry" all call `push_files` into the phone's landing folder below. The
+Files section that called it before is removed; `docs/ux-fix-plan.md`,
+item 4. Rows show the direction through the existing `TransferRow`.
+
+**The phone.** A share from another app, `ACTION_SEND` or
+`ACTION_SEND_MULTIPLE`, and the "Send files" control on Devices call
+`push_files` into the Mac's landing folder below. `docs/ux-fix-plan.md`,
+item 1.
+
+**Where a push lands.** A push started by a gesture, not by a folder a
+person is looking at, lands in one fixed place per platform. On the Mac, a
+file from the phone lands in the root named `Downloads`, in a folder named
+`Ferry`: `Downloads/Ferry/<name>`. When no root is named `Downloads`, it
+lands in the first root the Mac lists, in `Ferry`; a peer cannot see the
+`writable` flag, so a read-only root fails the share with
+`PermissionDenied` and the app shows that error. On the phone,
+a file from the Mac lands in the first root the phone lists, in `Download`:
+`Internal storage/Download/<name>`. The sender calls `mkdir` on that folder
+first and treats `OpError::AlreadyExists` as success, because `push` does
+not create the parent folder (`push.rs`, `open_local`). Root names match
+ignoring case, as item 15 says. A push to a device that is not reachable
+follows the same rule as a pull: the builder of item 1 reads
+`transfer.rs`, records here whether it queues or fails, and the app shows
+the answer.
 
 ### 6. The mount: built
 
