@@ -510,7 +510,11 @@ fn random_tmp_path(path: &Path) -> Result<PathBuf, PeerError> {
 // Sixteen lowercase hex characters from eight random bytes. Only ever
 // called on the output of `getrandom::fill`, so it does not need to handle
 // arbitrary input.
-fn to_hex(bytes: [u8; 8]) -> String {
+//
+// `pub(crate)` because `discovery.rs` uses the same encoding for its own
+// random instance name, and used to carry an identical copy of this
+// function.
+pub(crate) fn to_hex(bytes: [u8; 8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

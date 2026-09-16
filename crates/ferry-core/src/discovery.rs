@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 
+use crate::peers::to_hex;
 use crate::version::VERSION_MAX;
 
 /// The mDNS service type Ferry advertises and browses for.
@@ -249,17 +250,6 @@ fn random_instance_name() -> Result<String, DiscoveryError> {
     let mut bytes = [0u8; 8];
     getrandom::fill(&mut bytes).map_err(|_| DiscoveryError::NoRandomness)?;
     Ok(to_hex(bytes))
-}
-
-/// Encode bytes as lowercase hex, two characters per byte.
-fn to_hex(bytes: [u8; 8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
-        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
-    }
-    out
 }
 
 #[cfg(test)]
