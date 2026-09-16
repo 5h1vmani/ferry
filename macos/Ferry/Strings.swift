@@ -30,7 +30,6 @@ enum S {
         static let cancel = "Cancel"
         static let confirm = "Confirm"
         static let retry = "Retry"
-        static let connecting = "Connecting"
         static let notReachable = "Not reachable"
         static let dotSeparator = " · "
 
@@ -388,7 +387,6 @@ enum S {
         static let scanThis = "Scan this with the phone."
         static let scanTheCode = "Scan the Mac's code"
         static let useCodeInstead = "Use a pairing code instead"
-        static let showANewCode = "Show a new code"
         static let accessibilityCode = "Pairing code, as a square code for the phone's camera"
 
         static let expiresInFormat = "The code expires in %@."
@@ -415,20 +413,10 @@ enum S {
         static let codeNotShownStopped = "The code could not be shown."
         static let codeNotShownWhy = ""
         static let codeNotShownToDo = "Use a pairing code."
-
-        /// The two minute timeout, as a count. The engine does not publish
-        /// the deadline yet (docs/engine-contract.md, item 10), so nothing calls
-        /// this on the Mac; the phone's screen is designed against it and
-        /// its twin is already in strings.xml.
-        static let stopsInFormat = "Pairing stops in %@."
-        static func stopsIn(_ countdown: String) -> String {
-            String(format: stopsInFormat, countdown)
-        }
     }
 
     enum deviceDetail {
         static let transfersSection = "Transfers"
-        static let infoSection = "Info"
         static let noTransfers = "No transfers."
         static let pairedLabel = "Paired"
         static let keyFingerprintLabel = "Key fingerprint"

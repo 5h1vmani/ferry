@@ -29,12 +29,6 @@ struct PresenceSnapshot: Equatable {
     let activeTransport: Transport?
     let speedBytesPerSec: UInt64?
 
-    /// True once `EngineAdapter.presence` has built this snapshot from a
-    /// real `status()`. False only in `.unknown`, before `start()` has
-    /// produced a first one. A view does not read this to change what it
-    /// shows: the words are the same either way.
-    let isReportedByEngine: Bool
-
     /// The Wi-Fi network name the app last set. Nil when unknown: Wi-Fi
     /// off, the location permission refused, or the name unreadable.
     /// `docs/engine-contract.md`, item 18.
@@ -52,7 +46,6 @@ struct PresenceSnapshot: Equatable {
         isAdvertising: false,
         activeTransport: nil,
         speedBytesPerSec: nil,
-        isReportedByEngine: false,
         networkName: nil,
         isWifiPresenceOn: false
     )
@@ -76,7 +69,6 @@ struct DeviceSnapshot: Equatable, Identifiable {
     /// "Last seen 2 hours ago", already formatted. Nil while reachable.
     let lastSeen: String?
     let pairedDate: String
-    let speedBytesPerSec: UInt64?
 
     var id: String { keyHex }
 }
@@ -89,8 +81,6 @@ struct DeviceSnapshot: Equatable, Identifiable {
 struct MountSnapshot: Equatable {
     /// "/Volumes/Pixel 3 XL" while mounted.
     let path: String?
-
-    var isReady: Bool { path != nil }
 
     static let notMounted = MountSnapshot(path: nil)
 }

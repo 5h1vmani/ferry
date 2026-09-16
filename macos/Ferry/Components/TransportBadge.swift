@@ -9,7 +9,6 @@ enum TransportBadgeState: Equatable {
     case usbMoving(speedBytesPerSec: UInt64)
     case wifiIdle
     case wifiMoving(speedBytesPerSec: UInt64)
-    case connecting
     case notReachable
 }
 
@@ -38,7 +37,6 @@ struct TransportBadge: View {
         switch state {
         case .usbIdle, .usbMoving: return FerryIcon.usb
         case .wifiIdle, .wifiMoving: return FerryIcon.wifi
-        case .connecting: return FerryIcon.wifi
         case .notReachable: return FerryIcon.notReachable
         }
     }
@@ -53,8 +51,6 @@ struct TransportBadge: View {
             return S.transportBadge.wifi
         case .wifiMoving(let speed):
             return S.transportBadge.wifiMoving(speed: FerryFormat.speed(bytesPerSec: speed))
-        case .connecting:
-            return S.common.connecting
         case .notReachable:
             return S.common.notReachable
         }
@@ -73,8 +69,6 @@ struct TransportBadge: View {
             return S.transportBadge.accessibilityWifi
         case .wifiMoving(let speed):
             return S.transportBadge.accessibilityWifiSpeed(FerryFormat.speedSpoken(bytesPerSec: speed))
-        case .connecting:
-            return S.common.connecting
         case .notReachable:
             return S.common.notReachable
         }
@@ -115,7 +109,6 @@ extension TransportBadgeState {
         TransportBadge(state: .usbMoving(speedBytesPerSec: 38_000_000))
         TransportBadge(state: .wifiIdle)
         TransportBadge(state: .wifiMoving(speedBytesPerSec: 24_000_000))
-        TransportBadge(state: .connecting)
         TransportBadge(state: .notReachable)
     }
     .padding()

@@ -33,8 +33,7 @@ enum EngineAdapter {
             badge: TransportBadgeState(device: info),
             spareTransport: spareTransport(for: info),
             lastSeen: info.lastSeenUnixSecs.map { S.devices.lastSeen(FerryFormat.relative(unixSecs: $0)) },
-            pairedDate: FerryFormat.longDate(unixSecs: info.pairedUnixSecs),
-            speedBytesPerSec: info.speedBytesPerSec
+            pairedDate: FerryFormat.longDate(unixSecs: info.pairedUnixSecs)
         )
     }
 
@@ -223,7 +222,6 @@ enum EngineAdapter {
             isAdvertising: status.reachable,
             activeTransport: moving?.reachableVia,
             speedBytesPerSec: moving?.speedBytesPerSec,
-            isReportedByEngine: true,
             networkName: status.network,
             isWifiPresenceOn: status.wifiPresence
         )

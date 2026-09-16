@@ -114,7 +114,6 @@ struct PresenceControl: View {
                 isAdvertising: true,
                 activeTransport: .usb,
                 speedBytesPerSec: 38_000_000,
-                isReportedByEngine: false,
                 networkName: "Home",
                 isWifiPresenceOn: true
             ),
@@ -126,7 +125,6 @@ struct PresenceControl: View {
                 isAdvertising: true,
                 activeTransport: nil,
                 speedBytesPerSec: nil,
-                isReportedByEngine: true,
                 networkName: "Café Wifi",
                 isWifiPresenceOn: false
             ),

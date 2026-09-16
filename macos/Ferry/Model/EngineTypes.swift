@@ -16,9 +16,3 @@ extension DeviceInfo: Identifiable {
 extension TransferInfo: Identifiable {}
 
 extension PairingCandidate: Identifiable {}
-
-extension Entry: Identifiable {
-    /// A name is unique inside one folder, and one folder is all a list
-    /// shows at a time.
-    public var id: String { name }
-}
