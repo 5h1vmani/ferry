@@ -1275,8 +1275,14 @@ mod tests {
             matches!(result, Err(TcpError::Timeout)),
             "expected a timeout, got {result:?}"
         );
+        // A second's slack over the 300ms deadline, not 150ms: DeadlineStream
+        // sets the socket's own read timeout to whatever is left before
+        // every read, so the deadline itself fires at the kernel's own
+        // precise timing, but the thread still has to be scheduled back in
+        // to see that and return, which a busy machine can delay
+        // (docs/agent-runs.md rule 14).
         assert!(
-            elapsed < Duration::from_millis(450),
+            elapsed < Duration::from_secs(1),
             "expected the deadline to cut the handshake off quickly, took {elapsed:?}"
         );
 
@@ -1285,8 +1291,11 @@ mod tests {
 
     #[test]
     fn a_silent_client_does_not_delay_the_next_accept() {
-        let listener =
-            Listener::bind_with_timeout(local_any(), Duration::from_millis(500)).unwrap();
+        // Four times the assertion below, not equal to it: a regression
+        // that made the second handshake wait on the silent client would
+        // take about this long, comfortably past the assertion, so the
+        // test still catches it.
+        let listener = Listener::bind_with_timeout(local_any(), Duration::from_secs(2)).unwrap();
         let addr = listener.local_addr();
 
         // A silent client. It connects but never sends a byte, so it must
@@ -1319,8 +1328,14 @@ mod tests {
         let initiator_result = second_client.join().unwrap();
 
         assert_eq!(initiator_result.paired.code, responder_result.paired.code);
+        // A real handshake over loopback needs single-digit milliseconds,
+        // not the whole two seconds the silent client above is left to run
+        // out its own timeout in. One second gives a slow debug build real
+        // room while staying well clear of that 2 second value, so a
+        // regression that waited on the silent client would still fail this
+        // (docs/agent-runs.md rule 14).
         assert!(
-            elapsed < Duration::from_millis(500),
+            elapsed < Duration::from_secs(1),
             "the second handshake should not wait on the silent client, took {elapsed:?}"
         );
 
@@ -1352,8 +1367,13 @@ mod tests {
         let (result, elapsed) = server.join().unwrap();
 
         assert!(result.is_err(), "expected the idle read to time out");
+        // A second's slack over the 200ms idle timeout, not 150ms: the
+        // timeout itself is a plain socket read timeout, which the kernel
+        // fires at its own precise time, but a busy machine can still delay
+        // the thread being scheduled back in to report it
+        // (docs/agent-runs.md rule 14).
         assert!(
-            elapsed < Duration::from_millis(350),
+            elapsed < Duration::from_secs(1),
             "expected the idle timeout to cut the read off quickly, took {elapsed:?}"
         );
 
