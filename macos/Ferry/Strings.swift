@@ -150,10 +150,14 @@ enum S {
         static let noDeviceToDo = "Pair a phone, then try again."
 
         /// The caption at the top of a device's detail, while it is
-        /// reachable: where a drop lands. `docs/ux-fix-plan.md`, item 4.
-        static let captionFormat = "Files dropped on %1$@ land in %2$@."
-        static func caption(deviceName: String, folder: String) -> String {
-            String(format: captionFormat, deviceName, folder)
+        /// reachable. Names only the device, not the landing folder: naming
+        /// the folder needs `landingFolder`, which makes the folder on the
+        /// peer's disk as a side effect, and a caption is not a push.
+        /// `docs/ux-fix-plan.md`, item 4; `docs/audits/principles-fixes.md`,
+        /// finding 2.
+        static let captionFormat = "Drop files here to copy them to %@."
+        static func caption(deviceName: String) -> String {
+            String(format: captionFormat, deviceName)
         }
     }
 

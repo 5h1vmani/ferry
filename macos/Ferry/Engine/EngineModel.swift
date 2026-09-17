@@ -14,8 +14,10 @@
 // engine enum directly, such as `DeviceKind` or `TransferState`, when the
 // engine's own cases are already exactly what a view needs, with nothing to
 // decide and so nothing to map. DeviceDetail no longer browses `Entry`
-// live: it reads the landing folder name model.landingFolder(forDevice:)
-// already resolved.
+// live: its caption names the device only, never the landing folder.
+// Naming the folder means calling it, which makes it on the peer's disk,
+// so that call happens only inside `send`, on the way to a real push.
+// `docs/audits/principles-fixes.md`, finding 2.
 //
 // Which thread runs what:
 //

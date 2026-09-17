@@ -40,20 +40,6 @@ extension EngineModel {
 
     // MARK: - Sending files by drop, Send files, or a Finder service
 
-    /// Where a gesture-started push lands on one device, as the engine
-    /// decides (docs/engine-contract.md, item 5, "Where a push lands").
-    /// The engine also makes the folder, so this is safe to call again
-    /// before every push. Runs the round trip off the main thread, the
-    /// same as `list`.
-    func landingFolder(forDevice keyHex: String) async throws -> String {
-        guard let engine else {
-            throw FerryError.Failed(code: FerryErrorCode.runtimeNotStarted, detail: nil)
-        }
-        return try await Task.detached {
-            try engine.landingFolder(deviceKeyHex: keyHex)
-        }.value
-    }
-
     /// Whether `url` names a folder on disk right now.
     nonisolated private static func isFolder(_ url: URL) -> Bool {
         var isDirectory: ObjCBool = false

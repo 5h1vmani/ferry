@@ -14,7 +14,9 @@
 // The Files section that used to sit here is removed
 // (docs/decisions/0011-gestures-not-a-file-manager.md). A drop, "Send
 // files…", and the Finder mount cover what it did. A caption at the top
-// states where a drop lands, while the device is reachable.
+// names the device a drop copies to, while it is reachable. It does not
+// name the landing folder: that call makes the folder on the peer's disk,
+// and a caption is not a push. `docs/audits/principles-fixes.md`, finding 2.
 //
 // Five sections is the most this shape will carry. A sixth section would
 // turn the pane into a list of destinations. That is a bigger change than
@@ -26,16 +28,14 @@ struct DeviceDetail: View {
     @EnvironmentObject private var model: EngineModel
     let device: DeviceSnapshot
 
-    @State private var landingFolder: String?
-
     private var groups: [TransferGroupSnapshot] {
         model.groups(forDevice: device.keyHex)
     }
 
     var body: some View {
         Form {
-            if device.isReachable, let landingFolder {
-                Text(S.drop.caption(deviceName: device.name, folder: landingFolder))
+            if device.isReachable {
+                Text(S.drop.caption(deviceName: device.name))
                     .font(FerryFont.caption)
                     .foregroundStyle(FerryColor.textSecondary)
             }
@@ -83,9 +83,6 @@ struct DeviceDetail: View {
         .formStyle(.grouped)
         .navigationTitle(device.name)
         .navigationSubtitle(subtitle)
-        .task(id: landingFolderReloadKey) {
-            await loadLandingFolder()
-        }
         .onChange(of: device.keyHex) { _, _ in
             model.actionError = nil
         }
@@ -109,13 +106,6 @@ struct DeviceDetail: View {
         return parts.joined(separator: S.common.dotSeparator)
     }
 
-    /// Changes whenever the device switches, or flips reachable, so the
-    /// caption refetches instead of keeping a stale answer from before the
-    /// device was reachable.
-    private var landingFolderReloadKey: String {
-        device.keyHex + "\u{0000}" + String(device.isReachable)
-    }
-
     /// Four facts and one destructive control, in a footer rather than a
     /// section of its own.
     private var infoFooter: some View {
@@ -130,19 +120,6 @@ struct DeviceDetail: View {
             Button(S.deviceDetail.forgetThisPhone, role: .destructive) {
                 model.forget(keyHex: device.keyHex)
             }
-        }
-    }
-
-    private func loadLandingFolder() async {
-        guard device.isReachable else {
-            landingFolder = nil
-            return
-        }
-        do {
-            landingFolder = try await model.landingFolder(forDevice: device.keyHex)
-        } catch {
-            landingFolder = nil
-            model.actionError = ThreePartError.from(error, canRetry: false)
         }
     }
 }
