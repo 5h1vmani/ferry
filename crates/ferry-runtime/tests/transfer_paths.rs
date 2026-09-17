@@ -12,8 +12,8 @@
 mod common;
 
 use common::paths::{
-    Inbox, MIB, POLL_TICK, build, code_of_error, key_hex, make_engine, mib, pair_with_peer,
-    poll_until, pull_big, sample_bytes, start_peer, start_peer_with, wait_transfer,
+    Inbox, MIB, build, code_of_error, key_hex, make_engine, mib, pair_with_peer, poll_until,
+    poll_until_or_describe, pull_big, sample_bytes, start_peer, start_peer_with, wait_transfer,
 };
 
 use std::sync::Arc;
@@ -679,23 +679,20 @@ fn a_peer_that_answers_one_byte_at_a_time_does_not_hold_the_transfer() {
     let id = pull_big(&side, &peer, "big.bin");
     let engine = Arc::clone(&side.engine);
     let wanted = id.clone();
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let mut paused = false;
-    while Instant::now() < deadline {
-        if engine
-            .transfers()
-            .iter()
-            .any(|t| t.id == wanted && t.state == TransferState::Paused)
-        {
-            paused = true;
-            break;
-        }
-        std::thread::sleep(POLL_TICK);
-    }
-    assert!(
-        paused,
-        "the transfer must leave Active, after {} reads",
-        peer.fs.reads()
+    let describing_peer = peer.fs.clone();
+    // The shared budget, not a hand-rolled one: one byte per read means a
+    // real socket round trip per byte, and how many of those it takes to
+    // trip the too-slow rule is not this test's business to guess a tight
+    // number for (docs/agent-runs.md rule 14).
+    poll_until_or_describe(
+        "the transfer to leave Active",
+        move || {
+            engine
+                .transfers()
+                .iter()
+                .any(|t| t.id == wanted && t.state == TransferState::Paused)
+        },
+        move || format!("{} reads so far", describing_peer.reads()),
     );
     side.engine.stop();
     peer.close();
