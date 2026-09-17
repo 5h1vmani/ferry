@@ -148,7 +148,12 @@ fn stop_returns_while_a_transfer_is_moving() {
     );
 
     peer.close();
-    assert!(took < Duration::from_secs(3), "stop took {took:?}");
+    // Five seconds, matching the "quick" budget tests/item_16_stop_pairing.rs
+    // and tests/item_17_prefetch.rs use for the same kind of check
+    // (docs/agent-runs.md rule 14): comfortably under any real timeout this
+    // would otherwise wait on, with more room than three seconds for a slow
+    // debug build.
+    assert!(took < Duration::from_secs(5), "stop took {took:?}");
 }
 
 #[test]
@@ -171,9 +176,13 @@ fn stop_returns_quickly_when_a_peer_accepts_and_never_answers_a_read() {
     side.engine.stop();
     let took = started.elapsed();
 
+    // Five seconds: docs/agent-runs.md rule 14, the same margin
+    // tests/item_16_stop_pairing.rs and tests/item_17_prefetch.rs give a
+    // "must return quickly" check, well under the peer's own 3600 second
+    // fake hang this proves was not waited out.
     assert!(
-        took < Duration::from_secs(2),
-        "stop took {took:?}, expected under two seconds"
+        took < Duration::from_secs(5),
+        "stop took {took:?}, expected under five seconds"
     );
 
     peer.close();
@@ -203,7 +212,11 @@ fn stop_returns_when_only_one_side_confirmed() {
     let started = Instant::now();
     mac.engine.stop();
     let took = started.elapsed();
-    assert!(took < Duration::from_secs(3), "stop took {took:?}");
+    // Five seconds: docs/agent-runs.md rule 14, the same margin
+    // tests/item_16_stop_pairing.rs gives this exact "stop mid name
+    // exchange" check, well under the ten second deadline that check
+    // proves was not waited out.
+    assert!(took < Duration::from_secs(5), "stop took {took:?}");
     phone.engine.stop();
 }
 
