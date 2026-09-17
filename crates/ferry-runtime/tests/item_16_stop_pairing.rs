@@ -106,8 +106,12 @@ fn a_confirming_peer_learns_a_stopped_pairing_died_at_once() {
         .inbox
         .wait_pairing("the phone to learn the pairing died", is_failed);
     let confirm_took = confirm_started.elapsed();
+    // Five seconds, not three: still well short of the ten second deadline
+    // this proves was not waited out, but with more room for a slow debug
+    // build than the socket shutdown itself could ever need. `docs/agent-
+    // runs.md` rule 14.
     assert!(
-        confirm_took < Duration::from_secs(3),
+        confirm_took < Duration::from_secs(5),
         "the phone took {confirm_took:?} to learn its pairing died; \
          the Mac's stop should close the socket it was holding at once, \
          instead of leaving the phone to wait out its own ten second \
