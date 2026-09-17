@@ -77,6 +77,12 @@ pub(crate) fn bad_config(detail: &str) -> FerryError {
     failed_with("Runtime::BadConfig", detail)
 }
 
+/// A push has nowhere to land on `peer_name`, because that device shares no
+/// folder at all.
+pub(crate) fn peer_shares_nothing(peer_name: &str) -> FerryError {
+    failed_with("Runtime::PeerSharesNothing", peer_name)
+}
+
 /// The code for a decoding failure.
 #[must_use]
 pub fn from_wire(error: &WireError) -> FerryError {

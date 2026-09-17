@@ -16,7 +16,7 @@ use crate::engine::{
     Engine, SocketRegistration, leaf_of, mark_reachable, notify, record_this, remove_batch,
     remove_record, rows_for_folder, save_peers, total_listed_bytes,
 };
-use crate::errors::{failed, failed_with, from_op, from_path, from_rpc};
+use crate::errors::{failed, failed_with, from_op, from_path, from_rpc, peer_shares_nothing};
 use crate::folder::{self, ListRecursiveError, RemoteLister};
 use crate::guard::StopAware;
 use crate::notify::Change;
@@ -422,21 +422,23 @@ impl Engine {
     /// [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
     /// root is not writable, `OpError::InvalidPath` when the peer's listed
     /// name for that root breaks the same rule this device holds its own
-    /// root names to, and `RootsError::NoRoots`, the closest existing code
-    /// to "there is nowhere for this to land", when the peer's own root
-    /// list is empty.
+    /// root names to, and `Runtime::PeerSharesNothing`, named after the
+    /// peer, when the peer's own root list is empty.
     pub fn landing_folder(&self, device_key_hex: String) -> Result<String, FerryError> {
-        let roots = self.list(device_key_hex.clone(), String::new())?;
-        let Some(first) = roots.first() else {
-            return Err(failed("RootsError::NoRoots"));
+        let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
+        let (kind, peer_name) = {
+            let state = lock(&self.shared.state);
+            let peer = state
+                .peers
+                .get(&key)
+                .ok_or_else(|| failed("Runtime::NotPaired"))?;
+            (DeviceKind::from(peer.kind), peer.name.clone())
         };
 
-        let key = key_from_hex(&device_key_hex).ok_or_else(|| failed("Runtime::NotPaired"))?;
-        let kind = lock(&self.shared.state)
-            .peers
-            .get(&key)
-            .map(|peer| DeviceKind::from(peer.kind))
-            .ok_or_else(|| failed("Runtime::NotPaired"))?;
+        let roots = self.list(device_key_hex.clone(), String::new())?;
+        let Some(first) = roots.first() else {
+            return Err(peer_shares_nothing(&peer_name));
+        };
 
         let (root_name, subfolder) = match kind {
             DeviceKind::Mac => (

@@ -88,6 +88,7 @@ enum FerryErrors {
         "Runtime::NotStarted": (stopped: "Ferry is not running.", why: "The engine was not started.", todo: "Restart Ferry."),
         "Runtime::PairingBusy": (stopped: "Pairing did not start.", why: "Another pairing is in progress.", todo: "Finish or cancel it first."),
         "Runtime::PairingTimeout": (stopped: "Pairing stopped.", why: "No device appeared within two minutes.", todo: "Turn pairing on for the other device and try again."),
+        "Runtime::PeerSharesNothing": (stopped: "The copy stopped.", why: "{detail} shares no folder.", todo: "Add a shared folder in Ferry's Settings on {detail}."),
         "Runtime::PushInFlight": (stopped: "The file was not sent.", why: "A push to that name on that device is already in progress.", todo: "Wait for it to finish, then try again."),
         "Runtime::TransferNotFound": (stopped: "The transfer was not found.", why: "It is no longer in the list.", todo: "Nothing to do."),
         "Runtime::WriteTooLarge": (stopped: "The file was not saved.", why: "One write carried more than 1 MiB. Ferry writes 1 MiB at a time.", todo: "Save the file again."),
@@ -223,6 +224,7 @@ enum FerryErrorCode {
     static let runtimeNotStarted = "Runtime::NotStarted"
     static let runtimePairingBusy = "Runtime::PairingBusy"
     static let runtimePairingTimeout = "Runtime::PairingTimeout"
+    static let runtimePeerSharesNothing = "Runtime::PeerSharesNothing"
     static let runtimePushInFlight = "Runtime::PushInFlight"
     static let runtimeTransferNotFound = "Runtime::TransferNotFound"
     static let runtimeWriteTooLarge = "Runtime::WriteTooLarge"

@@ -230,3 +230,57 @@ fn a_peer_that_lists_a_bad_root_name_is_refused() {
 
     peer.close();
 }
+
+/// Row 3, `docs/audits/principles-fixes.md`: a peer whose root list is
+/// empty.
+struct NoRootsFs;
+
+impl FileOps for NoRootsFs {
+    fn list(&self, _path: &RemotePath, _cursor: u64) -> Result<(Vec<Entry>, Option<u64>), OpError> {
+        Ok((vec![], None))
+    }
+    fn stat(&self, _path: &RemotePath) -> Result<Entry, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn read(&self, _path: &RemotePath, _offset: u64, _length: u32) -> Result<Vec<u8>, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn write(&self, _path: &RemotePath, _offset: u64, _bytes: &[u8]) -> Result<u32, OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn truncate(&self, _path: &RemotePath, _length: u64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn rename(&self, _from: &RemotePath, _to: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn set_mtime(&self, _path: &RemotePath, _modified_unix_secs: i64) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn mkdir(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn delete(&self, _path: &RemotePath) -> Result<(), OpError> {
+        Err(OpError::Unsupported)
+    }
+    fn manifest(&self, _path: &RemotePath) -> Result<ferry_core::chunk::Manifest, OpError> {
+        Err(OpError::Unsupported)
+    }
+}
+
+/// A peer that shares no folder at all is named in the error, not blamed
+/// on this device's own empty-list code.
+#[test]
+fn a_peer_that_shares_nothing_is_named_in_the_error() {
+    let side = build("Vamana");
+    let peer = start_peer_with(&side.key, Arc::new(NoRootsFs));
+    pair_with_peer(&side, &peer);
+
+    let error = side
+        .engine
+        .landing_folder(key_hex(&peer.key))
+        .expect_err("a peer with no roots has nowhere for a push to land");
+    assert_eq!(code_of_error(&error), "Runtime::PeerSharesNothing");
+
+    peer.close();
+}

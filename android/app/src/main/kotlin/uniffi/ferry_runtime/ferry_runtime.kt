@@ -1160,7 +1160,7 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_forget() and 0xFFFF) != 16254) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_ferry_runtime_checksum_method_engine_landing_folder() and 0xFFFF) != 36668) {
+    if ((lib.uniffi_ferry_runtime_checksum_method_engine_landing_folder() and 0xFFFF) != 46879) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ferry_runtime_checksum_method_engine_pull() and 0xFFFF) != 23002) {
@@ -2137,9 +2137,10 @@ public interface EngineInterface {
      *
      * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
      * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
-     * root is not writable, and `RootsError::NoRoots`, the closest
-     * existing code to "there is nowhere for this to land", when the
-     * peer's own root list is empty.
+     * root is not writable, `OpError::InvalidPath` when the peer's listed
+     * name for that root breaks the same rule this device holds its own
+     * root names to, and `Runtime::PeerSharesNothing`, named after the
+     * peer, when the peer's own root list is empty.
      */
     fun `landingFolder`(`deviceKeyHex`: kotlin.String): kotlin.String
     
@@ -3268,9 +3269,10 @@ open class Engine: Disposable, AutoCloseable, EngineInterface
      *
      * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
      * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
-     * root is not writable, and `RootsError::NoRoots`, the closest
-     * existing code to "there is nowhere for this to land", when the
-     * peer's own root list is empty.
+     * root is not writable, `OpError::InvalidPath` when the peer's listed
+     * name for that root breaks the same rule this device holds its own
+     * root names to, and `Runtime::PeerSharesNothing`, named after the
+     * peer, when the peer's own root list is empty.
      */
     @Throws(FerryException::class)override fun `landingFolder`(`deviceKeyHex`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
