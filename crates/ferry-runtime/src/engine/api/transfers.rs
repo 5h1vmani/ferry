@@ -6,6 +6,7 @@ use std::sync::atomic::Ordering;
 
 use ferry_core::ops::OpError;
 use ferry_core::path::{PathError, RemotePath};
+use ferry_core::roots::validate_root_name;
 use ferry_core::rpc::{Client, exchange_hello};
 use ferry_core::session::SessionId;
 
@@ -419,9 +420,11 @@ impl Engine {
     ///
     /// Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
     /// [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
-    /// root is not writable, and `RootsError::NoRoots`, the closest
-    /// existing code to "there is nowhere for this to land", when the
-    /// peer's own root list is empty.
+    /// root is not writable, `OpError::InvalidPath` when the peer's listed
+    /// name for that root breaks the same rule this device holds its own
+    /// root names to, and `RootsError::NoRoots`, the closest existing code
+    /// to "there is nowhere for this to land", when the peer's own root
+    /// list is empty.
     pub fn landing_folder(&self, device_key_hex: String) -> Result<String, FerryError> {
         let roots = self.list(device_key_hex.clone(), String::new())?;
         let Some(first) = roots.first() else {
@@ -447,6 +450,12 @@ impl Engine {
             ),
             DeviceKind::Phone => (first.name.clone(), crate::engine::LANDING_SUBFOLDER_PHONE),
         };
+        // The peer chose this name, not this device, so it is held to the
+        // same rule `roots.rs` applies to a root opened locally, before it
+        // is joined into the path this call returns.
+        if validate_root_name(&root_name).is_err() {
+            return Err(failed("OpError::InvalidPath"));
+        }
         let folder = format!("{root_name}/{subfolder}");
 
         match self.mkdir(device_key_hex, folder.clone()) {
