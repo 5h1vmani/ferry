@@ -114,10 +114,14 @@ object ShareIntake {
         data object NotGranted : Resolution()
     }
 
-    // Called once, from FerryApplication.onCreate. Waits for the engine to
-    // report started, since batches() reads nothing before that, then
-    // removes every cache copy no known batch names, and keeps watching for
-    // the rest to reach Done.
+    // Called once, from FerryApplication.onCreate. Takes a snapshot of the
+    // cache registry before anything else can write to it, then waits for
+    // the engine to report started, since batches() reads nothing before
+    // that, then removes every cache copy in that snapshot no known batch
+    // names, and keeps watching for the rest to reach Done: docs/audits/
+    // principles-fixes.md row 6. The snapshot is taken here, on this
+    // thread, before the coroutine below is even launched, so it can only
+    // hold what a past run left behind, never a share this run is making.
     @Synchronized
     fun start(context: Context) {
         if (started) {
@@ -125,9 +129,10 @@ object ShareIntake {
         }
         started = true
         val appContext = context.applicationContext
+        val atStart = ShareCacheRegistry.snapshotAtStart(appContext)
         scope.launch {
             FerryEngine.started.first { it }
-            ShareCacheRegistry.sweepOrphaned(appContext)
+            ShareCacheRegistry.sweepOrphaned(appContext, atStart)
             FerryEngine.batches.collect { batches -> ShareCacheRegistry.reconcile(appContext, batches) }
         }
     }
