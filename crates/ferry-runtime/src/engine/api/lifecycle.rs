@@ -520,6 +520,20 @@ impl Engine {
         self.shared.accepted.load(Ordering::SeqCst)
     }
 
+    /// How many inbound connections are alive right now, across every
+    /// peer: accepted, and still being served by their own thread.
+    ///
+    /// Unlike `accepted_connections`, this counts down too, as each
+    /// serving thread ends. The `MAX_INBOUND_CONNECTIONS` test needs it to
+    /// wait until every connection it dropped has actually been noticed
+    /// and its slot freed, instead of sleeping a fixed guess at how long
+    /// that takes on a busy machine. It is not exported to the apps.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn inbound_connections(&self) -> u32 {
+        self.shared.inbound.load(Ordering::SeqCst)
+    }
+
     /// How many reachability probes this engine has started.
     ///
     /// `docs/engine-contract.md`, item 3. The item 3 test needs it to prove

@@ -3,7 +3,14 @@
 //! in the generated Swift and Kotlin, not the shape either one sees.
 //!
 //! - `lifecycle.rs`: `new`, `start`, `stop`, what the engine reports about
-//!   itself, and the hidden hooks the integration tests call.
+//!   itself, and the hidden hooks the integration tests call: setters such
+//!   as `set_backoff`, `set_pairing_timeout`, `set_list_cache_ttl`,
+//!   `set_chunk_size`, and `set_cut`, each named for the one test-only
+//!   behaviour it changes, and getters such as `accepted_connections`,
+//!   `inbound_connections`, `spool_bytes`, `transfer_workers`, `probes`,
+//!   `listen_addr`, and `wire_bytes`, each an observable a test polls or
+//!   reads instead of guessing at timing. None of these are exported to
+//!   the apps.
 //! - `network.rs`: the Wi-Fi network the app reports, and the trusted list.
 //! - `pairing.rs`: the five methods that run pairing, both ways round.
 //! - `transfers.rs`: pulls, pushes, batches, and reading them back.

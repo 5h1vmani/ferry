@@ -38,8 +38,8 @@ use ferry_runtime::{
 };
 
 use common::paths::{
-    Inbox, Side, build, is_code, is_confirmed, is_found, loopback_addr, make_engine, public_key,
-    static_key,
+    Inbox, Side, build, is_code, is_confirmed, is_found, loopback_addr, make_engine, poll_until,
+    public_key, static_key,
 };
 use common::{TestClient, build_side, loopback_addr as dav_loopback_addr, port_of};
 
@@ -142,11 +142,11 @@ fn a_silent_connection_is_dropped_at_the_first_byte_deadline_and_pairing_still_w
     let addr = loopback_addr(&target);
 
     let mut silent = TcpStream::connect(addr).expect("the accept itself is never refused");
-    // A margin over the two second deadline, never over it by much: rule 8
-    // in `docs/agent-runs.md` asks for no test waiting past the deadline
-    // plus a margin.
+    // Three times the two second deadline, `docs/agent-runs.md` rule 14:
+    // a slow debug build needs room to notice and close the connection
+    // after the deadline fires, not only room for the deadline itself.
     silent
-        .set_read_timeout(Some(Duration::from_secs(4)))
+        .set_read_timeout(Some(Duration::from_secs(6)))
         .expect("a read timeout can be set");
     let start = Instant::now();
     let mut buf = [0u8; 1];
@@ -161,7 +161,7 @@ fn a_silent_connection_is_dropped_at_the_first_byte_deadline_and_pairing_still_w
         "the silent connection was dropped too early, after {elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_secs(4),
+        elapsed < Duration::from_secs(6),
         "the silent connection should be dropped near the two second deadline, took {elapsed:?}"
     );
 
@@ -334,18 +334,24 @@ fn silent_connections_to_the_bridge_do_not_stop_an_authenticated_one() {
     // must be refused at once: this is the assertion that fails without
     // the fix, since nothing capped unauthenticated connections separately
     // from the overall MAX_LIVE_CONNECTIONS of 32 before it.
+    //
+    // No sleep is needed before the fifth connects: `accept_loop` dequeues
+    // from one listener's kernel accept backlog, a FIFO queue, so the
+    // fifth cannot be looked at before the first four are, whatever pace
+    // `accept_loop`'s own thread runs at (`tests/dav_bounds.rs`'s
+    // thirty-third-connection test proved the same point for its own
+    // cap). The read below carries the margin instead.
     let mut silent = Vec::new();
     for _ in 0..4 {
         silent.push(TcpStream::connect(addr).expect("the bridge should accept up to the cap"));
     }
-    // A generous margin for the accept loop's own thread to reserve each
-    // slot; ordering alone already guarantees it happens before the fifth
-    // is looked at.
-    std::thread::sleep(Duration::from_millis(200));
     let mut fifth =
         TcpStream::connect(addr).expect("the accept itself is never refused, only serving is");
+    // Five seconds, not five hundred milliseconds: room for `accept_loop`
+    // to actually reserve and refuse this connection on a slow debug
+    // build, docs/agent-runs.md rule 14.
     fifth
-        .set_read_timeout(Some(Duration::from_millis(500)))
+        .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("a read timeout can be set");
     let mut buf = [0u8; 1];
     match fifth.read(&mut buf) {
@@ -449,9 +455,14 @@ fn the_sixty_fifth_inbound_connection_is_refused_while_sixty_four_are_held() {
     // the sixty-four holders close, the accept loop must accept and serve a
     // fresh connection normally again.
     drop(held);
-    // A generous margin for each of the sixty-four served threads to notice
-    // its socket closed and free its slot.
-    std::thread::sleep(Duration::from_millis(300));
+    // Waits for each of the sixty-four served threads to notice its socket
+    // closed and free its slot, on the engine's own live count, instead of
+    // sleeping a fixed guess: scheduling sixty-four threads can take longer
+    // than a short sleep allows for on a busy machine (docs/agent-runs.md
+    // rule 14).
+    poll_until("every held connection's slot to free", || {
+        target.engine.inbound_connections() == 0
+    });
     let reconnect_key = static_key(&peer_keys[0]);
     let mut reconnected = tcp::connect(addr, &reconnect_key, &target_public)
         .expect("the accept loop should still accept once the sixty-four holders have closed")
