@@ -108,6 +108,15 @@ final class EngineModel: ObservableObject {
 
     var engine: Engine?
     private var events: EngineEvents?
+    /// True from the moment `start()` is called until it returns. Closes a
+    /// race: `start()` suspends at its first `await`, before `engine` is
+    /// set, so a second call could pass `guard engine == nil` while the
+    /// first is still reading the data directory and the Keychain. The
+    /// second call would then lose the data directory lock, land in
+    /// `finishStarting`'s catch, and clear the first call's `engine` and
+    /// `events`. `isStarting` makes the guard hold for the whole attempt,
+    /// not only its first line. `docs/audits/principles-fixes.md`, finding 1.
+    private var isStarting = false
     /// Reads the Wi-Fi network name and hands every change to the engine.
     /// `docs/engine-contract.md`, item 18. Created after `start`, dropped
     /// in `stop`.
@@ -138,7 +147,14 @@ final class EngineModel: ObservableObject {
     /// and starting the engine, and publishing the result, hop back to the
     /// main actor in `finishStarting`.
     func start() async {
-        guard engine == nil else { return }
+        // Two callers can reach here: the window's `.task` in
+        // FerryApp.swift, which runs again for a second window on the same
+        // shared model, and the Retry control in ContentView.swift. Return
+        // at once for either while an attempt is already in flight or the
+        // engine is already up.
+        guard engine == nil, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
         startError = nil
         EngineModel.addAdbToPath()
         do {
@@ -187,6 +203,11 @@ final class EngineModel: ObservableObject {
             reloadTransfers()
             startNetworkReader()
         } catch {
+            // Safe to clear `engine` and `events` here only because
+            // `isStarting` keeps `start()` from letting a second attempt
+            // reach this method while this one is still running. So this
+            // catch always belongs to the one attempt that owns these
+            // fields, never to a concurrent winner's.
             built?.stop()
             engine = nil
             events = nil
