@@ -248,7 +248,10 @@ mod tests {
             sent.extend_from_slice(&VERSION_MAX.to_be_bytes());
             sent.push(9); // Names no `Mode` this build knows.
             b.write_all(&sent).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            // No sleep needed: loopback's Pipe drains its buffer before it
+            // ever reports end of file, so a write already queues these
+            // bytes for the reader whether or not this end closes right
+            // after (`transport.rs`, `Pipe::read`).
         });
         match negotiate(&mut a, Role::Responder, Mode::Connect) {
             Err(VersionError::UnknownMode(9)) => {}
@@ -262,8 +265,7 @@ mod tests {
         let (mut a, mut b) = loopback();
         let other = std::thread::spawn(move || {
             b.write_all(b"HTTP/1.1 200 OK").unwrap();
-            // Hold the endpoint open so the reader sees the bytes, not an end.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            // No sleep needed: see the note in `an_unknown_mode_byte_is_refused`.
         });
         match negotiate(&mut a, Role::Initiator, Mode::Connect) {
             Err(VersionError::NotFerry(got)) => assert_ne!(got, MAGIC),
@@ -281,8 +283,7 @@ mod tests {
             sent.extend_from_slice(&1u16.to_be_bytes());
             sent.push(0);
             b.write_all(&sent).unwrap();
-            // Hold the endpoint open so the reader sees the bytes, not an end.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            // No sleep needed: see the note in `an_unknown_mode_byte_is_refused`.
         });
         match negotiate(&mut a, Role::Initiator, Mode::Connect) {
             Err(VersionError::NoSharedVersion { ours, theirs }) => {
