@@ -67,6 +67,17 @@ down. A run that ignores one will pay for it again.
     Android compile task never merged the manifest, so a bad provider or
     service element would have passed the gate and failed only at
     install.
+16. **No test asserts on the machine's speed.** A wait's budget is at
+    least three times its own time on a fast machine. A window, such as a
+    cache lifetime or a deadline, is removed with a hidden test knob,
+    never waited out with a sleep timed to land just past it. A count or
+    a state read that races background work, such as a prefetch thread or
+    a shared connection pool, waits on an observable the engine already
+    exposes before it reads. Three tests failed on CI's slow x86 runner in
+    one week from this same class, each fixed and pushed alone before the
+    next one showed. The proof that the whole class is fixed is one run
+    of the affected crate's test suite under `--cpus=1` in a Linux
+    container, not a single test passing on a fast machine.
 
 ## What a builder prompt holds
 
