@@ -148,7 +148,16 @@ class ReachableService : Service() {
     }
 
     override fun onDestroy() {
+        // notifyJob?.cancel() does not join, so a pass already running on
+        // Dispatchers.Default can still post after this call returns.
+        // updateTransferNotifications now checks isActive before each
+        // post and skips once cancelled, but a row it posted before that
+        // check would still sit in the shade with no instance left to
+        // cancel it. Clearing the whole channel here, the same way
+        // onCreate does for a notification a past instance left behind,
+        // covers that row too: docs/audits/principles-fixes.md row 5.
         notifyJob?.cancel()
+        cancelStaleTransferNotifications()
         FerryEngine.setReachable(false)
         running = false
         // The activity can have finished while this service kept running.
