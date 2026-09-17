@@ -275,6 +275,12 @@ class ReachableService : Service() {
             .setAutoCancel(true)
             .build()
         manager.notify(transferNotifier.notificationIdFor(notificationGroupId), notification)
+        // This posted over the group's own row, on the group's own id,
+        // without going through TransferNotifier. Its record of what that
+        // id last showed is now wrong, so the next collector pass would
+        // see no change and never redraw the group's own row: docs/audits/
+        // principles-fixes.md row 8.
+        transferNotifier.forgetLastNotified(notificationGroupId)
     }
 
     private fun handleRetryAction(intent: Intent) {

@@ -89,6 +89,17 @@ class TransferNotifier(private val context: Context) {
         return if (hash == ReachableService.NOTIFICATION_ID) hash + 1 else hash
     }
 
+    // Called by ReachableService's postRetryFailed, once it has posted the
+    // retry-failure text on this group's own notification id: docs/audits/
+    // principles-fixes.md row 8. Without this, the next pass here still
+    // remembers the group's last state, sees nothing changed, and posts
+    // nothing, so the retry-failure text never gets replaced by the
+    // group's own row. Clearing the record makes the next pass treat the
+    // group as unseen, so it redraws it.
+    fun forgetLastNotified(groupId: String) {
+        lastNotified.remove(notificationIdFor(groupId))
+    }
+
     private fun buildTransferNotification(group: TransferGroup): Notification {
         val open = openAppIntent(context)
         val builder = Notification.Builder(context, ReachableService.TRANSFERS_CHANNEL_ID)
