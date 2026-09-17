@@ -286,10 +286,11 @@ fn set_mtime_is_never_logged() {
         .set_mtime(&path, 1_700_000_000)
         .expect("a paired peer may set the mtime of a file it can write");
 
-    // Close the connection so the served side finalises anything it had
-    // pending, if there were anything to finalise.
+    // Close the connection: nothing here needs a wait, since a `set_mtime`
+    // never has anything pending to finalise in the first place, and this
+    // assertion holds whether or not the served side has noticed the
+    // connection close yet.
     drop(client);
-    std::thread::sleep(Duration::from_millis(300));
 
     assert!(
         phone.engine.access_log(None, 10).is_empty(),
