@@ -1232,8 +1232,24 @@ mod tests {
     }
 
     #[test]
-    fn paging_a_large_directory_sorts_it_once() {
-        let root = TempRoot::new("list-cache-timing");
+    // FINDING 4: `list` used to read and sort the whole directory again on
+    // every page. This used to be proved by timing the second page against
+    // the first, which is exactly the kind of assertion
+    // `docs/agent-runs.md` rule 16 now rules out: on a slow or busy
+    // machine, both measurements move, and a ratio between two small
+    // durations is not a stable signal either way.
+    //
+    // The cache itself gives a sharper, timing-free way to prove the same
+    // thing. Its own doc comment says a listing is a snapshot for the life
+    // of one paging run: a caller that keeps paging is walking the listing
+    // it was first handed, not a fresh one that might have changed. So
+    // deleting a file that belongs on the second page, in between asking
+    // for the first page and the second, is a direct test of exactly this
+    // rule: if `list` really does cache and reuse the first sort, the
+    // deleted file still appears; if it re-reads and re-sorts the
+    // directory, the delete would already show.
+    fn paging_a_large_directory_reuses_the_first_pages_sort() {
+        let root = TempRoot::new("list-cache-reuse");
         let fs = root.fs();
         fs.mkdir(&path("many")).unwrap();
 
@@ -1242,43 +1258,41 @@ mod tests {
             fs.write(&path(&format!("many/{i:05}")), 0, b"").unwrap();
         }
 
-        // FINDING 4: `list` used to read and sort the whole directory again
-        // on every page, which measured at 118 ms a page at 60,000 entries.
-        // The first page still pays for one read and one sort; every later
-        // page in the same paging run must not.
-        let first_start = Instant::now();
-        let (first_page, mut cursor) = fs.list(&path("many"), 0).unwrap();
-        let first_page_time = first_start.elapsed();
+        let (first_page, cursor) = fs.list(&path("many"), 0).unwrap();
         assert_eq!(first_page.len(), limits::MAX_LIST_ENTRIES as usize);
+        assert_eq!(first_page[0].name, "00000");
+        assert_eq!(first_page[first_page.len() - 1].name, "01023");
+        let cursor =
+            cursor.expect("3000 entries at a 1024 entry page size must page more than once");
 
-        let mut seen = first_page.len();
-        let mut second_page_time = None;
+        // "01024" is the very first name a fresh read and sort of the
+        // directory would put on the second page. Deleting it here, before
+        // that second page is asked for, is what tells the two
+        // implementations apart: only the buggy one can see the delete
+        // this soon.
+        fs.delete(&path("many/01024")).unwrap();
+
+        let (second_page, cursor) = fs.list(&path("many"), cursor).unwrap();
+        assert_eq!(
+            second_page[0].name, "01024",
+            "the second page must still show the file deleted after the first page was read, \
+             proving it came from the cached sort, not a fresh read of the directory"
+        );
+
+        // Paging to the end still reaches every file the first page's own
+        // snapshot named, "01024" among them, matching the module's own
+        // doc comment: a listing is a snapshot for the life of one paging
+        // run.
+        let mut seen = first_page.len() + second_page.len();
+        let mut cursor = cursor;
         while let Some(next) = cursor {
-            let page_start = Instant::now();
             let (page, next_cursor) = fs.list(&path("many"), next).unwrap();
-            second_page_time.get_or_insert_with(|| page_start.elapsed());
             seen += page.len();
             cursor = next_cursor;
         }
-        let total_time = first_start.elapsed();
-
-        assert_eq!(seen, total);
-        // A generous bound. Reading, sorting, and paging 3000 entries should
-        // not come close to this on any machine that can run the test suite
-        // at all; it is here to catch a real regression, not to be tight.
-        assert!(
-            total_time < Duration::from_secs(5),
-            "paging 3000 entries took {total_time:?}"
-        );
-
-        let second_page_time = second_page_time
-            .expect("3000 entries at a 1024 entry page size must page more than once");
-        assert!(
-            second_page_time < first_page_time / 4,
-            "the second page ({second_page_time:?}) should be well under a \
-             quarter of the first page's time ({first_page_time:?}); the \
-             cache should mean it skips reading and sorting the directory \
-             again"
+        assert_eq!(
+            seen, total,
+            "every file the first page's snapshot named is still reachable"
         );
     }
 }
