@@ -291,11 +291,20 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
         "the folder entry's byte total covers all three heads"
     );
 
-    // Past the listing cache's two second TTL, so the `PROPFIND` below is
-    // certain to list on the wire. That makes what the phone has pending
-    // on this connection known, which the stat count at the end needs.
-    std::thread::sleep(Duration::from_millis(2_100));
+    // Forces the `PROPFIND` below to list on the wire, the way
+    // `tests/dav_browse.rs` does since commit 42c10eb, instead of sleeping
+    // past the listing cache's two second TTL: a debug build's own first
+    // listing above can already spend longer than two seconds in its
+    // prefetch, so a fixed sleep is not a reliable way to land past the
+    // window. That makes what the phone has pending on this connection
+    // known, which the stat count at the end needs.
+    it.mac.engine.set_list_cache_ttl(Duration::ZERO);
     it.propfind("/Root/Photos", "1");
+    // Back to a lifetime long past this test's own length: the listing
+    // just above put a fresh entry in the cache, and the `Stat` assertion
+    // below needs the `GET` that follows to read it from there, the same
+    // as it would with a live two second TTL and no delay before the GET.
+    it.mac.engine.set_list_cache_ttl(Duration::from_secs(60));
 
     let body = it.ranged_get("/Root/Photos/a.jpg", 0, 1_023);
     assert_eq!(
@@ -350,9 +359,11 @@ fn a_file_written_again_with_a_new_size_misses_its_cached_head() {
     let on_disk = it.phone.shared.path().join("Root/Photos/a.jpg");
     std::fs::write(&on_disk, &second).expect("the replacement should write");
 
-    // The listing cache holds the old size for two seconds. Past that, the
-    // next PROPFIND lists the folder again and reports the new size.
-    std::thread::sleep(Duration::from_millis(2_100));
+    // The listing cache would hold the old size for two seconds on its
+    // own. Forcing it to zero, the way `tests/dav_browse.rs` does since
+    // commit 42c10eb, makes the next PROPFIND list the folder again and
+    // report the new size without racing a debug build's own timing.
+    it.mac.engine.set_list_cache_ttl(Duration::ZERO);
     it.propfind("/Root/Photos", "1");
 
     let body = it.ranged_get("/Root/Photos/a.jpg", 0, 1_023);
