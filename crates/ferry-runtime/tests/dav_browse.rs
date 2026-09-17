@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use ferry_runtime::{DeviceKind, generate_key};
 
+use common::paths::poll_until;
 use common::{PATIENCE, TestClient, base64_encode, build_side, loopback_addr, pattern, port_of};
 
 #[test]
@@ -424,34 +425,70 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     assert_eq!(response.body, sidecar_dcim);
 
     // The cache: two depth 1 listings of an untouched folder within two
-    // seconds cost the peer exactly one `list`. A folder never listed
-    // before in this test, so no earlier cache entry can make this
-    // ambiguous.
-    let list_count = |log: &[ferry_runtime::AccessEntry]| {
+    // seconds cost the peer exactly one `list`. The count is filtered to
+    // "Root/DCIM" itself: the mount root's own listing, way above, still
+    // sits pending on the peer's connection at this point (nothing has
+    // touched a different path since), and an unfiltered count would catch
+    // it the moment this section's own first listing finally does touch a
+    // different path. That is a real, always-there entry for an unrelated
+    // folder, not a flake, so it must be filtered out rather than raced
+    // against.
+    let list_count = |log: &[ferry_runtime::AccessEntry], path: &str| {
         log.iter()
             .filter(|entry| {
                 entry.actor == ferry_runtime::Actor::Peer
                     && entry.verb == ferry_runtime::AccessVerb::List
+                    && entry.path == path
             })
             .count()
     };
-    let before = list_count(&phone.engine.access_log(None, 1000));
+    // The Mac's own entry for the prefetch of "Root/DCIM", once the
+    // listing below has queued it and the prefetch thread has read it from
+    // the peer. Item 17's prefetch runs on its own thread, after the
+    // listing's response is already out, so nothing here waits on it by
+    // default.
+    let dcim_prefetched = || {
+        mac.engine.access_log(None, 1000).iter().any(|entry| {
+            entry.actor == ferry_runtime::Actor::This
+                && entry.verb == ferry_runtime::AccessVerb::Read
+                && entry.path == "Root/DCIM"
+                && entry.files.is_some()
+        })
+    };
+    let before = list_count(&phone.engine.access_log(None, 1000), "Root/DCIM");
     // The second listing must find the first one cached. The cache lives
     // two seconds, and a debug build on CI's runner spent longer than that
     // on the first listing's prefetch, so the second one missed. A long
     // lifetime takes speed out of the test.
     mac.engine.set_list_cache_ttl(Duration::from_secs(60));
-    for _ in 0..2 {
-        let response = client.request(
-            "PROPFIND",
-            "/Root/DCIM",
-            &host,
-            Some(auth),
-            &[("Depth", "1".to_owned())],
-            Some(b""),
-        );
-        assert_eq!(response.status, 207);
-    }
+    let response = client.request(
+        "PROPFIND",
+        "/Root/DCIM",
+        &host,
+        Some(auth),
+        &[("Depth", "1".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 207);
+    // The prefetch this first listing queued reads DCIM/IMG_0001.jpg from
+    // the peer on its own thread, borrowing a connection from the same
+    // pool the second listing below also borrows from. On a slow machine
+    // that read can still be in flight when the second listing runs, so it
+    // can land on the peer's connection either before or after the second
+    // listing's own request does. Either order leaves the right entries in
+    // the log eventually, but only once the prefetch is done. Waiting for
+    // it here, the way `tests/item_17_prefetch.rs` does, makes what
+    // follows land in one order instead of racing.
+    poll_until("the prefetch of Root/DCIM to settle", dcim_prefetched);
+    let response = client.request(
+        "PROPFIND",
+        "/Root/DCIM",
+        &host,
+        Some(auth),
+        &[("Depth", "1".to_owned())],
+        Some(b""),
+    );
+    assert_eq!(response.status, 207);
     // The access log finalises an entry when its connection touches a
     // different path, not on every call (`docs/engine-contract.md`, item
     // 13): the pool keeps this connection open, so the "DCIM" list entry
@@ -467,7 +504,7 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
         Some(b""),
     );
     assert_eq!(response.status, 207);
-    let after = list_count(&phone.engine.access_log(None, 1000));
+    let after = list_count(&phone.engine.access_log(None, 1000), "Root/DCIM");
     assert_eq!(
         after - before,
         1,
@@ -479,7 +516,7 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     // With the cache lifetime set to zero, every listing is past its
     // window, so no sleep is needed and no machine is too slow or too fast.
     mac.engine.set_list_cache_ttl(Duration::ZERO);
-    let before_expiry = list_count(&phone.engine.access_log(None, 1000));
+    let before_expiry = list_count(&phone.engine.access_log(None, 1000), "Root/DCIM");
     let response = client.request(
         "PROPFIND",
         "/Root/DCIM",
@@ -489,6 +526,10 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
         Some(b""),
     );
     assert_eq!(response.status, 207);
+    // DCIM/IMG_0001.jpg's head is already cached from the settled prefetch
+    // above, with the same size and time, so this listing's own prefetch
+    // job reads nothing from the peer and there is no second thread to
+    // race here.
     // As above: this new "DCIM" list entry stays pending on the peer's
     // connection until it touches a different path, so one more request
     // elsewhere finalises it before the count below is read.
@@ -501,7 +542,7 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
         Some(b""),
     );
     assert_eq!(response.status, 207);
-    let after_expiry = list_count(&phone.engine.access_log(None, 1000));
+    let after_expiry = list_count(&phone.engine.access_log(None, 1000), "Root/DCIM");
     assert_eq!(
         after_expiry - before_expiry,
         1,
