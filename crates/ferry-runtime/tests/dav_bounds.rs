@@ -247,15 +247,16 @@ fn the_thirty_third_idle_connection_is_closed_at_once() {
 
     // 32 plain connections, sending nothing, hold every slot:
     // `accept_loop` is one thread accepting strictly in order, so all 32
-    // are fully reserved before it ever looks at a 33rd.
+    // are fully reserved before it ever looks at a 33rd. No sleep is
+    // needed here: the kernel's own accept backlog is a FIFO queue for
+    // this one listener, so the 33rd connection below cannot be dequeued
+    // ahead of the first 32, however slow or busy `accept_loop`'s thread
+    // is. The read below, which blocks for up to `PATIENCE`, is what
+    // waits out any real delay in `accept_loop` catching up.
     let mut idle = Vec::with_capacity(MAX_LIVE_CONNECTIONS);
     for _ in 0..MAX_LIVE_CONNECTIONS {
         idle.push(TcpStream::connect(addr).expect("the bridge should accept up to its cap"));
     }
-    // A generous margin for the accept loop's own thread to actually
-    // reserve each slot and dispatch its connection thread; ordering
-    // alone already guarantees it happens before the 33rd is looked at.
-    std::thread::sleep(Duration::from_millis(200));
 
     let mut refused =
         TcpStream::connect(addr).expect("the 33rd connection should still complete its handshake");
