@@ -10,6 +10,8 @@ import app.ferry.model.Direction
 import app.ferry.model.TransferGroup
 import app.ferry.model.TransferState
 import app.ferry.model.toUi
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import uniffi.ferry_runtime.BatchInfo
 import uniffi.ferry_runtime.TransferInfo
 
@@ -39,7 +41,13 @@ class TransferNotifier(private val context: Context) {
         return batchGroups + loneGroups
     }
 
-    fun updateTransferNotifications(groups: List<TransferGroup>) {
+    // Suspend so it can read isActive on the collector's own coroutine
+    // context. ReachableService.onDestroy cancels that coroutine's job but
+    // does not join it, so a pass already inside this loop keeps running
+    // on Dispatchers.Default after the cancel call returns: docs/audits/
+    // principles-fixes.md row 5. The check below stops it from posting
+    // once that has happened.
+    suspend fun updateTransferNotifications(groups: List<TransferGroup>) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         val currentIds = mutableSetOf<Int>()
         for (group in groups) {
@@ -54,6 +62,13 @@ class TransferNotifier(private val context: Context) {
             // re-posted every time some other transfer changes.
             val changed = last == null || last.state != group.state || (running && last.percent != group.percent)
             if (changed) {
+                // The service can have been destroyed since this pass
+                // started. Posting an ongoing row after that would leave
+                // it with no instance left to cancel it, so this group is
+                // skipped instead: docs/audits/principles-fixes.md row 5.
+                if (!currentCoroutineContext().isActive) {
+                    continue
+                }
                 manager.notify(id, buildTransferNotification(group))
                 lastNotified[id] = NotifiedState(group.state, group.percent)
             }
@@ -72,6 +87,17 @@ class TransferNotifier(private val context: Context) {
     fun notificationIdFor(groupId: String): Int {
         val hash = groupId.hashCode() and 0x7fffffff
         return if (hash == ReachableService.NOTIFICATION_ID) hash + 1 else hash
+    }
+
+    // Called by ReachableService's postRetryFailed, once it has posted the
+    // retry-failure text on this group's own notification id: docs/audits/
+    // principles-fixes.md row 8. Without this, the next pass here still
+    // remembers the group's last state, sees nothing changed, and posts
+    // nothing, so the retry-failure text never gets replaced by the
+    // group's own row. Clearing the record makes the next pass treat the
+    // group as unseen, so it redraws it.
+    fun forgetLastNotified(groupId: String) {
+        lastNotified.remove(notificationIdFor(groupId))
     }
 
     private fun buildTransferNotification(group: TransferGroup): Notification {
