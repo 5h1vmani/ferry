@@ -14,10 +14,34 @@
 
 mod common;
 
+use std::time::Duration;
+
 use ferry_runtime::{DeviceKind, generate_key};
 
-use common::paths::poll_until;
+use common::paths::poll_every;
 use common::{TestClient, base64_encode, build_side, loopback_addr, pattern, port_of};
+
+/// How long any wait in this file may take before the test gives up. Kept
+/// at the ten seconds this file used before commit e123c20 shared one poll
+/// loop across test files: `tests/common/paths.rs`'s own budget is twenty
+/// seconds, chosen for a different file.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// How often a poll looks again. Unchanged by commit e123c20: this file's
+/// ten millisecond tick already matched `tests/common/paths.rs`'s own.
+const POLL_TICK: Duration = Duration::from_millis(10);
+
+/// Wait until `check` is true, looking again every [`POLL_TICK`].
+///
+/// `common::paths::poll_every` is the shared loop; this file passes its
+/// own [`PATIENCE`] and [`POLL_TICK`] through it, instead of
+/// `common::paths::poll_until`'s twenty second budget.
+fn poll_until(what: &str, check: impl Fn() -> bool) {
+    assert!(
+        poll_every(PATIENCE, POLL_TICK, check),
+        "waited {PATIENCE:?} for {what}"
+    );
+}
 
 /// The spool folder's total size right now, walked directly by the test
 /// rather than through the engine. Kept independent of

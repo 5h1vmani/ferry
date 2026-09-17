@@ -28,10 +28,30 @@ use ferry_core::rpc::{FileOps, exchange_hello, serve};
 use ferry_core::tcp::Listener;
 use ferry_runtime::{AccessEntry, AccessVerb, Actor, DeviceKind, KeyPair, generate_key};
 
-use common::paths::poll_until;
+use common::paths::poll_every;
 use common::{
     PATIENCE, Side, TestClient, build_side, count_entries, loopback_addr, port_of, public_key_of,
 };
+
+/// How often a poll looks again in this file. Kept at the twenty
+/// milliseconds this file used before commit e123c20 shared one poll loop
+/// across test files: `tests/common/paths.rs`'s own ten millisecond tick
+/// is a different value, chosen for a different file.
+const POLL_TICK: Duration = Duration::from_millis(20);
+
+/// Wait until `check` is true, looking again every [`POLL_TICK`].
+///
+/// `common::paths::poll_every` is the shared loop; this file passes its
+/// own [`PATIENCE`] (ten seconds, from `tests/common/mod.rs`) and its own
+/// [`POLL_TICK`] through it, instead of `common::paths::poll_until`'s
+/// twenty second budget and ten millisecond tick, which are not the
+/// budget this file was written against.
+fn poll_until(what: &str, check: impl Fn() -> bool) {
+    assert!(
+        poll_every(PATIENCE, POLL_TICK, check),
+        "waited {PATIENCE:?} for {what}"
+    );
+}
 
 /// The Mac's own log entry for one prefetched listing, if it has been
 /// written: actor `This`, verb `Read`, and the folder's path.
