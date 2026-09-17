@@ -29,11 +29,13 @@
 //!
 //! # Detail
 //!
-//! Two rows in `design/errors.json` use `{detail}`. `Runtime::BadConfig`'s
-//! detail is a whole sentence, because the row puts it where the "why" line
-//! goes. `TransferError::ChunkFailedVerification`'s detail is the failing
-//! chunk's index, as digits, per `docs/engine-contract.md` item 16a. Every
-//! other code carries no detail.
+//! A few rows in `design/errors.json` use `{detail}`; `grep detail` on that
+//! file lists them. `Runtime::BadConfig`'s detail is a whole sentence,
+//! because the row puts it where the "why" line goes.
+//! `TransferError::ChunkFailedVerification`'s detail is the failing chunk's
+//! index, as digits, per `docs/engine-contract.md` item 16a.
+//! `Runtime::MountFailed` and `Runtime::PeerSharesNothing` carry a name.
+//! Every other code carries no detail.
 
 use ferry_core::adb::AdbError;
 use ferry_core::chunk::{ChunkSizeError, ManifestError};

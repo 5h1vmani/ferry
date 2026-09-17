@@ -156,3 +156,17 @@ Note on the brief: the adb change is commit 94e8a8e, not 1cddcfb. Commit
   `rust-toolchain.toml`.
 - `scripts/gate.sh` is committed with mode 100755, so CI can run it
   directly.
+
+## Fix pass, 17 September 2026
+
+All 16 rows are fixed and merged on main, one commit per row. Mac rows 1,
+2, 4, 9, and 10 are commits 49517ad to a457ffd on `fix-mac`. Phone rows 5,
+6, 8, and 14 are a5ee66d to be96d9f on `fix-phone`. Engine, test, and CI
+rows 3, 7, 11, 12, 13, 15, and 16 are 840a895 to 359b469 on `fix-rust`.
+Row 1's flag, row 2's caption, row 6's start snapshot, and row 7's output
+files were read by the orchestrator against the Fix column before the
+merge. Row 9 became a gate step, because Swift cannot limit a setter to
+the other files of one module. Row 3 added the code
+`Runtime::PeerSharesNothing`, whose words name the peer. Row 7 removed
+adb's reader threads entirely: the child writes to files in a directory
+made for that one call.
