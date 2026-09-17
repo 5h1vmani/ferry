@@ -416,6 +416,11 @@
       "why": "No device appeared within two minutes.",
       "todo": "Turn pairing on for the other device and try again."
     },
+    "Runtime::PeerSharesNothing": {
+      "stopped": "The copy stopped.",
+      "why": "{detail} shares no folder.",
+      "todo": "Add a shared folder in Ferry's Settings on {detail}."
+    },
     "Runtime::PushInFlight": {
       "stopped": "The file was not sent.",
       "why": "A push to that name on that device is already in progress.",

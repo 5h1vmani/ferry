@@ -17,7 +17,8 @@
 # Each step prints "gate: <step> ok" or "gate: <step> FAIL (exit N)".
 # Full step output goes to a log file, target/gate.log under the repo root
 # by default. Set GATE_LOG to use a different path. On failure, the last
-# 40 lines of the failing step's output print to stderr.
+# 40 lines of the failing step's output print to stderr, or the whole
+# file when the environment variable CI is set.
 
 set -uo pipefail
 
@@ -56,7 +57,13 @@ run_step() {
     echo "gate: $name ok"
   else
     echo "gate: $name FAIL (exit $status)" >&2
-    tail -n 40 "$step_file" >&2
+    if [ -n "${CI:-}" ]; then
+      # CI keeps the whole step in its own log, so the full output is
+      # cheap to show and worth more than the last few lines.
+      cat "$step_file" >&2
+    else
+      tail -n 40 "$step_file" >&2
+    fi
     exit "$status"
   fi
 }

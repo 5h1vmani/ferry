@@ -14,10 +14,34 @@
 
 mod common;
 
+use std::time::Duration;
+
 use ferry_runtime::{DeviceKind, generate_key};
 
-use common::paths::poll_until;
+use common::paths::poll_every;
 use common::{TestClient, base64_encode, build_side, loopback_addr, pattern, port_of};
+
+/// How long any wait in this file may take before the test gives up. Kept
+/// at the ten seconds this file used before commit e123c20 shared one poll
+/// loop across test files: `tests/common/paths.rs`'s own budget is twenty
+/// seconds, chosen for a different file.
+const PATIENCE: Duration = Duration::from_secs(10);
+
+/// How often a poll looks again. Unchanged by commit e123c20: this file's
+/// ten millisecond tick already matched `tests/common/paths.rs`'s own.
+const POLL_TICK: Duration = Duration::from_millis(10);
+
+/// Wait until `check` is true, looking again every [`POLL_TICK`].
+///
+/// `common::paths::poll_every` is the shared loop; this file passes its
+/// own [`PATIENCE`] and [`POLL_TICK`] through it, instead of
+/// `common::paths::poll_until`'s twenty second budget.
+fn poll_until(what: &str, check: impl Fn() -> bool) {
+    assert!(
+        poll_every(PATIENCE, POLL_TICK, check),
+        "waited {PATIENCE:?} for {what}"
+    );
+}
 
 /// The spool folder's total size right now, walked directly by the test
 /// rather than through the engine. Kept independent of
@@ -46,7 +70,8 @@ fn real_spool_bytes(data_dir: &std::path::Path) -> u64 {
 }
 
 /// Waits for `Engine::spool_bytes` to agree with a fresh walk of the spool
-/// folder, naming `what` in the panic if it never does.
+/// folder, naming `what` in the panic if it never does. Returns the
+/// matching pair the successful poll last read.
 ///
 /// `SpoolFile`'s `Drop` runs after `put_file` writes its response to the
 /// socket, not before, so a client that has just read a `PUT`'s response
@@ -56,13 +81,27 @@ fn real_spool_bytes(data_dir: &std::path::Path) -> u64 {
 /// guarantee this fix makes, that the count converges to the truth
 /// shortly after landing, rather than a synchronous ordering nothing ever
 /// promised.
+///
+/// The assert reads both values once, inside the poll's own check, and
+/// again nowhere else. A second, separate read pair, taken after the poll
+/// already saw the two agree, could catch the spool mid-change and fail on
+/// a pair the poll never actually saw match.
 fn wait_for_count_to_match_disk(
     engine: &ferry_runtime::Engine,
     data_dir: &std::path::Path,
     what: &str,
-) {
-    poll_until(what, || engine.spool_bytes() == real_spool_bytes(data_dir));
-    assert_eq!(engine.spool_bytes(), real_spool_bytes(data_dir), "{what}");
+) -> (u64, u64) {
+    // `poll_until` takes an `Fn`, not an `FnMut`, so the pair the check last
+    // read is kept in a `Cell` rather than a plain mutable capture.
+    let last = std::cell::Cell::new((0u64, 0u64));
+    poll_until(what, || {
+        let pair = (engine.spool_bytes(), real_spool_bytes(data_dir));
+        last.set(pair);
+        pair.0 == pair.1
+    });
+    let pair = last.get();
+    assert_eq!(pair.0, pair.1, "{what}");
+    pair
 }
 
 #[test]

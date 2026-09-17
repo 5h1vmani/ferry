@@ -348,12 +348,21 @@ impl FileOps for Roots {
     }
 }
 
-// A name is 1 to 64 bytes of UTF-8, holds no control character, no `/`, and
-// no `\`, and is not `.` or `..`. See `docs/engine-contract.md`, batch C,
-// item 15. The backslash is refused for the same reason `RemotePath::parse`
-// refuses one in `path.rs`: a root named with one could never be addressed,
-// since its name is the path's first segment.
-fn validate_root_name(name: &str) -> Result<(), RootsError> {
+/// A name is 1 to 64 bytes of UTF-8, holds no control character, no `/`, and
+/// no `\`, and is not `.` or `..`. See `docs/engine-contract.md`, batch C,
+/// item 15. The backslash is refused for the same reason `RemotePath::parse`
+/// refuses one in `path.rs`: a root named with one could never be
+/// addressed, since its name is the path's first segment.
+///
+/// Public so `Engine::landing_folder`, in `ferry-runtime`, can hold a
+/// peer's listed root name to the same rule this device applies to its
+/// own, instead of a second copy of the rule drifting from this one.
+///
+/// # Errors
+///
+/// Returns [`RootsError::RootNameInvalid`] when `name` breaks a rule
+/// above.
+pub fn validate_root_name(name: &str) -> Result<(), RootsError> {
     let ok = !name.is_empty()
         && name.len() <= 64
         && name != "."

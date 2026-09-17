@@ -91,6 +91,7 @@ object FerryErrors {
         "Runtime::NotStarted" to Words("Ferry is not running.", "The engine was not started.", "Restart Ferry."),
         "Runtime::PairingBusy" to Words("Pairing did not start.", "Another pairing is in progress.", "Finish or cancel it first."),
         "Runtime::PairingTimeout" to Words("Pairing stopped.", "No device appeared within two minutes.", "Turn pairing on for the other device and try again."),
+        "Runtime::PeerSharesNothing" to Words("The copy stopped.", "{detail} shares no folder.", "Add a shared folder in Ferry's Settings on {detail}."),
         "Runtime::PushInFlight" to Words("The file was not sent.", "A push to that name on that device is already in progress.", "Wait for it to finish, then try again."),
         "Runtime::TransferNotFound" to Words("The transfer was not found.", "It is no longer in the list.", "Nothing to do."),
         "Runtime::WriteTooLarge" to Words("The file was not saved.", "One write carried more than 1 MiB. Ferry writes 1 MiB at a time.", "Save the file again."),
@@ -224,6 +225,7 @@ object FerryErrorCode {
     const val RUNTIME_NOT_STARTED = "Runtime::NotStarted"
     const val RUNTIME_PAIRING_BUSY = "Runtime::PairingBusy"
     const val RUNTIME_PAIRING_TIMEOUT = "Runtime::PairingTimeout"
+    const val RUNTIME_PEER_SHARES_NOTHING = "Runtime::PeerSharesNothing"
     const val RUNTIME_PUSH_IN_FLIGHT = "Runtime::PushInFlight"
     const val RUNTIME_TRANSFER_NOT_FOUND = "Runtime::TransferNotFound"
     const val RUNTIME_WRITE_TOO_LARGE = "Runtime::WriteTooLarge"

@@ -725,7 +725,11 @@ may call it again before every push into the folder it names, because
 `push` does not create the parent folder on its own (`push.rs`,
 `open_local`). A peer cannot see the `writable` flag, so a read-only root
 answers `OpError::PermissionDenied`, which `landing_folder` returns and
-the app shows. The Mac's `EngineModel.swift` and the phone's
+the app shows. A peer whose own root list is empty has nowhere for the
+push to land, so `landing_folder` answers `Runtime::PeerSharesNothing`,
+named after the peer, instead of the `RootsError::NoRoots` this device
+uses for its own empty list: that code's words describe this device's
+own setup, not the peer's. The Mac's `EngineModel.swift` and the phone's
 `FerryEngine.kt` call `landing_folder` instead of each picking the folder
 in its own language. A push to a device that is not reachable fails
 outright, unlike a pull. `push_files` dials the device first, to

@@ -12,8 +12,14 @@
 //! It shells out to the `adb` binary. It never bundles one in version 1.
 //!
 //! A call ends within its timeout. At the deadline `adb` is killed and the
-//! call returns `Timeout` without waiting for its output pipes to close, so a
-//! child that `adb` left behind holding those pipes cannot hold the call.
+//! call returns `Timeout` without waiting for its output to finish writing,
+//! so a child that `adb` left behind cannot hold the call.
+//!
+//! No reader thread exists. Standard output and standard error each go to
+//! their own temporary file, in a directory made for that one call and
+//! removed once the call ends. A file never blocks the process writing to
+//! it, unlike a pipe, so a child that outlives the timeout cannot hold
+//! Ferry by holding a pipe open.
 //!
 //! Public shape:
 //!
@@ -40,9 +46,11 @@
 
 use std::env;
 use std::ffi::OsStr;
+use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -284,43 +292,29 @@ impl Adb {
             return Err(AdbError::RelativeBinary(self.binary.clone()));
         }
 
+        // Removed when this falls out of scope, whatever happens below: a
+        // successful run, a failure, or a timeout.
+        let call_dir = CallDir::new()?;
+        let stdout_path = call_dir.path().join("stdout");
+        let stderr_path = call_dir.path().join("stderr");
+
         let mut child = Command::new(&self.binary)
             .args(args)
             // Ferry never has input for adb. Closing stdin keeps the child
             // from ever waiting on the parent's.
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(fs::File::create(&stdout_path)?))
+            .stderr(Stdio::from(fs::File::create(&stderr_path)?))
             .spawn()?;
 
-        // Both pipes are drained on background threads while the child is
-        // still running, not after. A child that writes more than one pipe
-        // buffer blocks on that write until something reads the other end.
-        // Reading only after the child has exited would then deadlock: the
-        // parent is waiting for the child to exit, and the child is waiting
-        // for the parent to read.
-        let stdout_reader = child.stdout.take().map(spawn_pipe_reader);
-        let stderr_reader = child.stderr.take().map(spawn_pipe_reader);
+        // A file never blocks the child that writes to it, unlike a pipe,
+        // so there is no thread to hold and nothing to leak past a
+        // timeout. `adb`'s output sits on disk until it is read below, or,
+        // on a timeout, until `call_dir` is removed with it unread.
+        let status = self.wait_with_timeout(&mut child)?;
 
-        let status = match self.wait_with_timeout(&mut child) {
-            Ok(status) => status,
-            Err(error) => {
-                // Do not join the readers after a timeout. `adb` is dead,
-                // but a child it started can still hold the write end of
-                // each pipe, and a join would block until that child exits.
-                // A shell's `sleep` did exactly that for 30 seconds. The
-                // reader threads end on their own when the pipe closes.
-                drop(stdout_reader);
-                drop(stderr_reader);
-                return Err(error);
-            }
-        };
-
-        let stdout_bytes = join_pipe_reader(stdout_reader);
-        let stderr_bytes = join_pipe_reader(stderr_reader);
-
-        let stdout = bytes_to_output(stdout_bytes)?;
-        let stderr = bytes_to_output(stderr_bytes)?;
+        let stdout = bytes_to_output(read_capped(&stdout_path)?)?;
+        let stderr = bytes_to_output(read_capped(&stderr_path)?)?;
 
         if status.success() {
             Ok(stdout)
@@ -356,59 +350,73 @@ impl Adb {
     }
 }
 
-/// Bytes kept from one child pipe before the rest of it is thrown away.
+/// Bytes kept from one child's output file before the rest of it is left
+/// unread.
 ///
 /// A child that will not stop printing must not be able to make Ferry hold
 /// an unbounded amount of memory. A well-behaved `adb` never gets close to
 /// this, so the cap only matters for a broken or malicious one.
 const MAX_CAPTURED_OUTPUT: usize = 1024 * 1024;
 
-/// Read `pipe` to end on its own thread, capped at [`MAX_CAPTURED_OUTPUT`].
+/// A directory made for one `adb` call's standard output and standard
+/// error, removed when it falls out of scope.
 ///
-/// This has to run while the child is still alive, not after. See the
-/// comment in [`Adb::run`] for why reading only after the child exits can
-/// deadlock.
-fn spawn_pipe_reader<R>(mut pipe: R) -> thread::JoinHandle<Vec<u8>>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || {
-        let mut captured = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let read = match pipe.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => read,
-            };
-            // Once `captured` reaches the cap, `remaining` is `0` and this
-            // keeps reading into `buffer` without growing `captured` any
-            // further. The pipe still gets drained either way, which is the
-            // point: a chatty child must not be able to block on a full
-            // pipe just because Ferry stopped keeping its output.
-            let remaining = MAX_CAPTURED_OUTPUT - captured.len();
-            captured.extend_from_slice(&buffer[..read.min(remaining)]);
+/// Naming it after the process id and a counter, rather than a random
+/// name, needs no new dependency: two calls in the same process never
+/// share a counter value, and two processes never share a process id at
+/// the same time.
+struct CallDir(PathBuf);
+
+impl CallDir {
+    fn new() -> io::Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = env::temp_dir().join(format!("ferry-adb-{}-{n}", std::process::id()));
+        fs::create_dir(&dir)?;
+        Ok(Self(dir))
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for CallDir {
+    fn drop(&mut self) {
+        // Best effort. Nothing reads this directory again, so a failed
+        // removal only leaves an empty-ish folder in the temp directory,
+        // not a correctness problem.
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Read `path` fully, but keep at most [`MAX_CAPTURED_OUTPUT`] bytes.
+///
+/// A child that writes far more than Ferry needs must not make Ferry hold
+/// an unbounded amount of memory. A well-behaved `adb` never gets close to
+/// this cap. Unlike the pipe this used to read, a file never blocks the
+/// child that is writing it, so stopping short of the end here cannot make
+/// `adb` hang.
+fn read_capped(path: &Path) -> io::Result<Vec<u8>> {
+    let mut file = fs::File::open(path)?;
+    let mut captured = vec![0_u8; MAX_CAPTURED_OUTPUT];
+    let mut filled = 0;
+    while filled < captured.len() {
+        let read = file.read(&mut captured[filled..])?;
+        if read == 0 {
+            break;
         }
-        captured
-    })
+        filled += read;
+    }
+    captured.truncate(filled);
+    Ok(captured)
 }
 
-/// Join a reader thread started by [`spawn_pipe_reader`], if there was one.
+/// Turn captured output bytes into the `String` the rest of this module
+/// wants.
 ///
-/// There is nothing more useful to do with a thread that panicked than to
-/// treat it as having captured nothing, so a join failure is not reported as
-/// an error.
-fn join_pipe_reader(reader: Option<thread::JoinHandle<Vec<u8>>>) -> Vec<u8> {
-    reader
-        .and_then(|handle| handle.join().ok())
-        .unwrap_or_default()
-}
-
-/// Turn captured pipe bytes into the `String` the rest of this module wants.
-///
-/// `adb` output is expected to be UTF-8. Bytes that are not are reported the
-/// same way a failed read would be, since [`Read::read_to_string`] used to
-/// be the thing doing this check before pipes were read on their own
-/// threads.
+/// `adb` output is expected to be UTF-8. Bytes that are not are reported
+/// the same way a failed read would be.
 fn bytes_to_output(bytes: Vec<u8>) -> Result<String, AdbError> {
     String::from_utf8(bytes)
         .map_err(|error| AdbError::Io(io::Error::new(io::ErrorKind::InvalidData, error)))

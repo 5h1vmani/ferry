@@ -1082,9 +1082,10 @@ public protocol EngineProtocol: AnyObject, Sendable {
      *
      * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
      * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
-     * root is not writable, and `RootsError::NoRoots`, the closest
-     * existing code to "there is nowhere for this to land", when the
-     * peer's own root list is empty.
+     * root is not writable, `OpError::InvalidPath` when the peer's listed
+     * name for that root breaks the same rule this device holds its own
+     * root names to, and `Runtime::PeerSharesNothing`, named after the
+     * peer, when the peer's own root list is empty.
      */
     func landingFolder(deviceKeyHex: String) throws  -> String
     
@@ -2003,9 +2004,10 @@ open func forget(keyHex: String)throws   {try rustCallWithError(FfiConverterType
      *
      * Returns `Runtime::NotPaired` and `Runtime::NotReachable` as
      * [`Engine::list`] does, `OpError::PermissionDenied` when the chosen
-     * root is not writable, and `RootsError::NoRoots`, the closest
-     * existing code to "there is nowhere for this to land", when the
-     * peer's own root list is empty.
+     * root is not writable, `OpError::InvalidPath` when the peer's listed
+     * name for that root breaks the same rule this device holds its own
+     * root names to, and `Runtime::PeerSharesNothing`, named after the
+     * peer, when the peer's own root list is empty.
      */
 open func landingFolder(deviceKeyHex: String)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFerryError_lift) {
@@ -5610,7 +5612,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ferry_runtime_checksum_method_engine_forget() != 16254) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_ferry_runtime_checksum_method_engine_landing_folder() != 36668) {
+    if (uniffi_ferry_runtime_checksum_method_engine_landing_folder() != 46879) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ferry_runtime_checksum_method_engine_pull() != 23002) {
