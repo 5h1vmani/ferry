@@ -82,9 +82,9 @@ Unplug the cable for this part. Both devices must be on the same Wi-Fi.
 
 ### Part D: copy a file
 
-1. On the Mac, select the phone. The detail shows the phone's storage. Open
-   DCIM, then Camera.
-2. Pick a photo and click Copy to Mac.
+1. On the Mac, select the phone. The Access line shows where it is mounted.
+   Click "Open in Finder" and go into `DCIM`, then `Camera`.
+2. Right-click a photo, choose Services, then "Send with Ferry".
 3. The transfer line should move and end in Done. The file should be in
    `~/Downloads/Ferry`. Open it and check it is a whole photo.
 
@@ -140,8 +140,8 @@ phone yet. Build both apps as in task 3, pair, and then check each part.
 
 ### Part C: a folder copy
 
-1. On the Mac, open the phone, go into `DCIM`, and click Copy to Mac on the
-   `Camera` folder.
+1. On the Mac, open the phone's volume in Finder, go into `DCIM`,
+   right-click the `Camera` folder, choose Services, then "Send with Ferry".
 2. The Transfers section should show one row, "Camera", counting files up
    and bytes up, with a speed. The files should land in
    `~/Downloads/Ferry/Camera/` with their names kept.

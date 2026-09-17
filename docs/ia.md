@@ -23,7 +23,7 @@ and own none.
 |---|---|---|---|
 | L0 Presence | What is reachable, over which transport, how fast, and whether this device can be found at all. | 2, 5 | No. Ambient. |
 | L1 Trust | Which devices this one will talk to, and how that list changes. | 4 | Yes. Episodic. |
-| L2 Access | The other device's files, in place, with no copy step. | 1, 8 | Partly. Finder's and the Files app's, plus the Mac's own Files section. |
+| L2 Access | The other device's files, in place, with no copy step. | 1, 8 | No. Finder's and the Files app's. |
 | L3 Movement | What is moving, what moved, what stalled and how far it got. | 3, 7 | Yes. The only live list. |
 | L4 Truth | What stopped, why, and what to do. | 6 | No. Attached to the object that failed. |
 | L5 Record | What a trusted device actually did, afterwards. | 9 | Yes. The only destination. |
@@ -82,8 +82,8 @@ of them is a debug log, not something a person reads.
 A person sees Devices, Roots, Batches, Transfers, AccessEntries, AutoCopy,
 Pairing, and Reachability directly. Transport is a badge on a device, never
 its own screen. Connection is never shown: it is a detail of how a transport
-is currently used. Entry appears in the Mac's Files section, and after phase
-2 in Finder and the Files app.
+is currently used. Entry is never shown in Ferry's own screens; Finder and
+the Files app list it.
 
 Root, Batch, AccessEntry, AutoCopy, and Reachability are new in this version.
 Every one of them was already implied by copy in the first version — "3 of
