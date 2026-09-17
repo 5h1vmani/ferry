@@ -11,6 +11,13 @@
 //! temporary file left behind is never read again but would otherwise sit
 //! in the app's own folder for ever.
 //!
+//! The rename changes the directory that holds the file, not just the
+//! file. So after the rename, the parent directory is opened and flushed
+//! with its own `sync_all`. Without that, a power loss right after the
+//! rename can leave the directory entry unwritten, and the file can revert
+//! to its old content or disappear. All five callers gain this at once,
+//! since it lives in the one shared function they all call.
+//!
 //! `held.rs`, `auto_copy.rs`, and `networks.rs` want the file made private:
 //! mode `0o600` on Unix, set as part of the same syscall that creates it,
 //! so there is no moment where the file exists with a wider mode. They call
@@ -53,13 +60,21 @@ fn write_atomic_with(
     open: fn(&Path) -> std::io::Result<fs::File>,
 ) -> Result<(), FerryError> {
     let temporary = temporary_name(path)?;
-    let written =
-        write_and_sync(&temporary, bytes, open).and_then(|()| fs::rename(&temporary, path));
+    let written = write_and_sync(&temporary, bytes, open)
+        .and_then(|()| fs::rename(&temporary, path))
+        .and_then(|()| sync_parent_dir(path));
     if written.is_err() {
         drop(fs::remove_file(&temporary));
         return Err(failed("TransferError::Local"));
     }
     Ok(())
+}
+
+/// Open the directory that holds `path` and flush it to disk, so the
+/// rename that just landed there survives a power loss right after it.
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::File::open(parent)?.sync_all()
 }
 
 /// Create the file with `open`, write every byte through that one handle,
@@ -110,4 +125,35 @@ fn temporary_name(path: &Path) -> Result<PathBuf, FerryError> {
     let mut name = path.as_os_str().to_os_string();
     name.push(format!(".{session}.tmp"));
     Ok(PathBuf::from(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{write_atomic, write_atomic_private};
+
+    /// Row 15, `docs/audits/principles-fixes.md`. The standard library
+    /// gives no way for a test to observe that a directory was flushed to
+    /// disk: `File::sync_all` only ever answers `Ok` or `Err`, and there is
+    /// no power loss to compare a synced entry against. So this test does
+    /// not check the sync itself. It checks the one thing that would break
+    /// if `sync_parent_dir` were wired into `write_atomic_with` wrong: the
+    /// write still lands under the real path, for both the private and the
+    /// ordinary create mode.
+    #[test]
+    fn the_write_still_lands_after_the_parent_directory_is_synced() {
+        let dir = tempfile::tempdir().expect("a temp dir for the test");
+        let path = dir.path().join("private.bin");
+
+        write_atomic(&path, b"hello").expect("an ordinary write should succeed");
+        assert_eq!(
+            std::fs::read(&path).expect("the file should read back"),
+            b"hello"
+        );
+
+        write_atomic_private(&path, b"world").expect("a private write should succeed");
+        assert_eq!(
+            std::fs::read(&path).expect("the file should read back"),
+            b"world"
+        );
+    }
 }
