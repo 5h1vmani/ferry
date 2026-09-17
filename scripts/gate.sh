@@ -88,6 +88,28 @@ gen_bindings_check() {
   return "$status"
 }
 
+# ---- mac mode helper: no Screens or Components view may write one of
+# EngineModel's six properties that used to be private(set). Swift cannot
+# make a setter private to only the other files of one module, so this
+# grep is the gate instead of the language. The six names live only here;
+# EngineModel.swift's own comment on the properties points back to this
+# check. `docs/audits/principles-fixes.md`, finding 9. ----
+mac_no_view_write_names=(devices pairing presence roots downloadPath trustedNetworks)
+
+mac_no_view_writes() {
+  local name hit
+  for name in "${mac_no_view_write_names[@]}"; do
+    hit="$(grep -rnE "model\.${name}[[:space:]]*=[^=]" \
+      "$repo_root/macos/Ferry/Screens" "$repo_root/macos/Ferry/Components" 2>/dev/null)"
+    if [ -n "$hit" ]; then
+      echo "a view writes model.${name} directly; only EngineModel and its own extensions may set it" >&2
+      echo "$hit" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 # ---- mac mode helper: xcodegen then xcodebuild, in a subshell so the cd
 # never leaks into a later step of an "all" run. ----
 mac_build() {
@@ -135,6 +157,7 @@ mode_gen() {
 }
 
 mode_mac() {
+  run_step "mac no view writes" mac_no_view_writes
   run_step "mac build" mac_build
 }
 

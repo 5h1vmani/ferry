@@ -42,6 +42,14 @@ import SwiftUI
 
 @MainActor
 final class EngineModel: ObservableObject {
+    // devices, pairing, presence, roots, downloadPath, and trustedNetworks,
+    // below, are written only by EngineModel and its own extensions, never
+    // by a Screens or Components view. `private(set)` cannot say so: Swift
+    // has no way to make a setter private to only the other files of one
+    // module, and these six are set from extension files such as
+    // EngineModel+Devices.swift, not from this file alone. So the rule is
+    // enforced by a grep in `scripts/gate.sh`'s mac mode instead of by the
+    // compiler. `docs/audits/principles-fixes.md`, finding 9.
     /// Every paired device, as the screens show it.
     @Published var devices: [DeviceSnapshot] = []
     /// Where the pairing sheet is, for the method a person chose.
@@ -59,10 +67,11 @@ final class EngineModel: ObservableObject {
     @Published private(set) var startError: ThreePartError?
     /// Set when one action failed, such as a pull that could not start.
     @Published var actionError: ThreePartError?
-    /// Where pulled files land.
+    /// Where pulled files land. Covered by the no-view-writes rule above
+    /// `devices`.
     @Published var downloadPath: String
-    /// The Wi-Fi networks this Mac trusts. `docs/engine-contract.md`,
-    /// item 18.
+    /// The Wi-Fi networks this Mac trusts. Covered by the no-view-writes
+    /// rule above `devices`. `docs/engine-contract.md`, item 18.
     @Published var trustedNetworks: [String] = []
     /// The device selected in the window. Read by `ContentView`, and by
     /// every command and gesture that needs "the selected device":
