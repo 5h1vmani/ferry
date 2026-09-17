@@ -43,10 +43,17 @@ extension EngineModel {
 
     /// Caches each path `updateRevealPaths` found on disk, off the main
     /// actor. `docs/audits/ux-gestures.md`, finding 14.
+    ///
+    /// Also drops any key no current transfer names, in the same pass, so
+    /// a transfer `forget` removed does not keep its entry for the life of
+    /// the run: `revealPaths` grew without bound before this.
+    /// `docs/audits/principles-fixes.md`, finding 10.
     private func storeRevealPaths(_ found: [(id: String, path: String)]) {
         for item in found {
             revealPaths[item.id] = item.path
         }
+        let currentIds = Set(transferInfos.map(\.id))
+        revealPaths = revealPaths.filter { currentIds.contains($0.key) }
         objectWillChange.send()
     }
 
