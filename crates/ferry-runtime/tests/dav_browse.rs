@@ -436,6 +436,11 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
             .count()
     };
     let before = list_count(&phone.engine.access_log(None, 1000));
+    // The second listing must find the first one cached. The cache lives
+    // two seconds, and a debug build on CI's runner spent longer than that
+    // on the first listing's prefetch, so the second one missed. A long
+    // lifetime takes speed out of the test.
+    mac.engine.set_list_cache_ttl(Duration::from_secs(60));
     for _ in 0..2 {
         let response = client.request(
             "PROPFIND",
@@ -470,9 +475,10 @@ fn the_bridge_serves_a_devices_files_and_answers_every_i1_verb() {
     );
 
     // The cache expires after two seconds: a listing made just past that
-    // window costs the peer another `list`, one sleep rather than a test
-    // clock.
-    std::thread::sleep(Duration::from_millis(2100));
+    // window costs the peer another `list`.
+    // With the cache lifetime set to zero, every listing is past its
+    // window, so no sleep is needed and no machine is too slow or too fast.
+    mac.engine.set_list_cache_ttl(Duration::ZERO);
     let before_expiry = list_count(&phone.engine.access_log(None, 1000));
     let response = client.request(
         "PROPFIND",

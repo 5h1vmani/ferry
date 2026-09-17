@@ -8,7 +8,6 @@
 
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
@@ -147,13 +146,14 @@ impl Bridge {
         user: String,
         password: String,
         port: u16,
-        sidecar_dir: PathBuf,
         pool: Arc<Pool>,
+        shared: &Shared,
     ) -> Self {
+        let sidecar_dir = shared.data_dir.join("dav_sidecars").join(&device_key_hex);
         Self {
             pool,
             sidecars: SidecarStore::new(sidecar_dir),
-            cache: Cache::new(),
+            cache: Cache::new(Arc::clone(&shared.list_cache_ttl)),
             heads: HeadCache::new(),
             prefetch: Prefetch::new(),
             locks: LockTable::new(),

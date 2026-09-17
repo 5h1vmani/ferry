@@ -90,6 +90,9 @@ pub(crate) struct Shared {
     /// The chunk size the next first pass uses. `ChunkSize::one_mebibyte()`
     /// unless a test changes it.
     pub(crate) chunk_size: Mutex<ChunkSize>,
+    /// How long the Finder bridge's folder listings stay cached.
+    /// `dav::cache::TTL` unless a test changes it.
+    pub(crate) list_cache_ttl: Arc<Mutex<Duration>>,
     /// The byte count the next dial fails at, if a test armed one.
     ///
     /// Taken, and cleared, by the dial that carries it, so only that one dial

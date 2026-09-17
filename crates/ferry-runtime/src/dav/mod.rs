@@ -43,7 +43,7 @@
 //! - `prefetch.rs`: the thread that reads the head of each listed file.
 //! - `errors.rs`: turns an RPC failure into a status line.
 
-mod cache;
+pub(crate) mod cache;
 mod delete;
 mod errors;
 mod handlers;
@@ -302,8 +302,8 @@ impl MountRegistry {
             user,
             password,
             port,
-            shared.data_dir.join("dav_sidecars").join(device_key_hex),
             Arc::clone(&pool),
+            shared,
         ));
 
         let shared_for_thread = Arc::clone(shared);

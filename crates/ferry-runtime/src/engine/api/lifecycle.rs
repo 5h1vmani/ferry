@@ -137,6 +137,7 @@ impl Engine {
             joins: Mutex::new(Vec::new()),
             pairing_timeout: Mutex::new(PAIRING_TIMEOUT),
             backoff_min: Mutex::new(BACKOFF_MIN),
+            list_cache_ttl: Arc::new(Mutex::new(crate::dav::cache::TTL)),
             chunk_size: Mutex::new(ChunkSize::one_mebibyte()),
             cut: Mutex::new(None),
             wire_bytes: Arc::new(AtomicU64::new(0)),
@@ -559,6 +560,17 @@ impl Engine {
     #[doc(hidden)]
     pub fn set_backoff(&self, min: Duration) {
         *lock(&self.shared.backoff_min) = min;
+    }
+
+    /// Use a different lifetime for the Finder bridge's listing cache. For
+    /// tests only.
+    ///
+    /// A test that asserts a second listing hits the cache cannot depend on
+    /// the two listings landing within two seconds; a debug build on a slow
+    /// machine spends longer than that on the first listing's prefetch.
+    #[doc(hidden)]
+    pub fn set_list_cache_ttl(&self, ttl: Duration) {
+        *lock(&self.shared.list_cache_ttl) = ttl;
     }
 
     /// Use a different chunk size for the next first pass. For tests only.
