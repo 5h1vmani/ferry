@@ -25,21 +25,30 @@ extension EngineModel {
         Task.detached { [weak self] in
             let ejected = mounted.filter { !FileManager.default.fileExists(atPath: $0.path) }
             guard !ejected.isEmpty else { return }
-            await self?.clearMountPaths(forDevices: ejected.map(\.keyHex))
+            await self?.clearMountPaths(forChecked: ejected)
         }
     }
 
-    /// Clears the stored mount path for each device in `keyHexes`: a
-    /// person ejected the volume in Finder since `clearEjectedMounts` last
-    /// checked. Runs on the main actor, since it writes `deviceInfos` and
-    /// `devices` and can publish through `report(_:)`.
-    /// `docs/engine-contract.md`, item 6, S9.
-    private func clearMountPaths(forDevices keyHexes: [String]) {
-        let ejected = Set(keyHexes)
-        for index in deviceInfos.indices where ejected.contains(deviceInfos[index].keyHex) {
+    /// Clears the stored mount path for each pair in `checked`: a person
+    /// ejected the volume in Finder since `clearEjectedMounts` last looked.
+    /// Clears a device only when its current `mountPath` still equals the
+    /// path that was checked, on the detached task, some time earlier. A
+    /// device that remounted at a different path in that gap keeps its
+    /// live mount, instead of losing it to a check that is now stale.
+    /// Runs on the main actor, since it writes `deviceInfos` and `devices`
+    /// and can publish through `report(_:)`.
+    /// `docs/engine-contract.md`, item 6, S9;
+    /// `docs/audits/principles-fixes.md`, finding 4.
+    private func clearMountPaths(forChecked checked: [(keyHex: String, path: String)]) {
+        let checkedPathByKey = Dictionary(uniqueKeysWithValues: checked.map { ($0.keyHex, $0.path) })
+        for index in deviceInfos.indices {
+            let info = deviceInfos[index]
+            guard let checkedPath = checkedPathByKey[info.keyHex], info.mountPath == checkedPath else {
+                continue
+            }
             deviceInfos[index].mountPath = nil
             do {
-                try engine?.setMountPath(deviceKeyHex: deviceInfos[index].keyHex, path: nil)
+                try engine?.setMountPath(deviceKeyHex: info.keyHex, path: nil)
             } catch {
                 report(error)
             }
