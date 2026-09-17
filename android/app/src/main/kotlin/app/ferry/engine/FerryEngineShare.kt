@@ -69,6 +69,19 @@ fun FerryEngine.pushShared(localPaths: List<String>) {
             context?.let { ShareCacheRegistry.renameRegistration(it, requestId, batchId) }
         } catch (e: FerryException) {
             _error.value = e
+        } catch (t: Throwable) {
+            // A Rust panic inside landingFolder or pushFiles throws
+            // uniffi.ferry_runtime.InternalException, which extends
+            // kotlin.Exception, not FerryException, so it fell through
+            // the catch above and killed the process: docs/audits/
+            // principles-fixes.md row 14. This coroutine is the last
+            // place to catch it, because MainActivity's own catch never
+            // sees it either; pushShared already returned by the time it
+            // could throw here. It has no engine code of its own, so it
+            // is shown the same way an unrecognised code is, through the
+            // generated table's fallback words, with the exception's own
+            // class name standing in for the code.
+            _error.value = FerryException.Failed(t.javaClass.name, null)
         }
     }
 }
