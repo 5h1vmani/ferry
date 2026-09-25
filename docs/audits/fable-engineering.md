@@ -1,13 +1,13 @@
 # Engineering audit, Fable
 
 Date: 11 September 2026.
-Commit: 3cd5451.
+Commit: 1839ab1.
 Scope: the Rust engine under `crates/`, the Mac app under `macos/Ferry/`, the phone app under `android/`, `scripts/`, and `.github/workflows/ci.yml`. Read only, on the main checkout.
 Method: read the README, the contract, the agent-run rules, and the decisions. Then read the code by size. Then grep for thread spawns, bounds, swallowed errors, format versions, duplicated constants, tests without an assertion, logging, and what CI builds. Nothing was run. Each finding is marked confirmed or plausible, with the step that produced it.
 
 ## Findings
 
-Ranked by what it costs to fix later against now. Line numbers are from commit 3cd5451.
+Ranked by what it costs to fix later against now. Line numbers are from commit 1839ab1.
 
 | # | Class | Where | What bites and when | Fix now |
 |---|---|---|---|---|

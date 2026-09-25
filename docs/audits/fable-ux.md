@@ -1,7 +1,7 @@
 # UX audit, what a person meets
 
 Date: 11 September 2026
-Commit: 3cd5451
+Commit: 1839ab1
 Scope: both apps as a person meets them. First run and its prompts, pairing by scan and by code, presence and the phone's notification, transfers and retry, the Finder mount, the Files app, Settings, forgetting a device, the access log, and every row in design/errors.json.
 Method: read only, on the main checkout. The docs were read first as the promises. Then the Mac app under macos/Ferry and the phone app under android/app/src/main/kotlin/app/ferry were read against them. Nothing was run. Each row says confirmed when a complete path was read, or plausible with the step that was not read. Rows are ranked by how many people would hit them. High is rows 1 to 2, medium is rows 3 to 6, low is the rest.
 

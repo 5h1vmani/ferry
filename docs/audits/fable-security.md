@@ -1,7 +1,7 @@
 # Security and wire audit
 
 Date: 11 September 2026
-Commit: 3cd5451
+Commit: 1839ab1
 Scope: pairing and the Noise wire, the loopback WebDAV bridge, the phone's documents provider, network trust, the access log, and the scripts.
 Method: read only, no code run, fifteen minutes of wall clock; each finding names a read path, and "plausible" names the step not read.
 

@@ -1,7 +1,7 @@
 # The open-source looks audit
 
 Date: 25 September 2026
-Commit: d678d59, on main.
+Commit: de372e3, on main.
 Scope: both apps as a person meets them, and the repo as a first-time visitor meets it. Capability, security, and licensing are out of scope.
 Method: read only, from source. Nothing was built, run, rendered, or screenshotted. Contrast ratios come from a python3 script. It applies the WCAG 2.x relative luminance formula to `design/colors.json` through the role map in `design/tokens.json`.
 

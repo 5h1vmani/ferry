@@ -1,8 +1,8 @@
 # Audit: the third run, engine side
 
 Date: 11 September 2026.
-Commit: `d5b3c4204ae8eb1309cdbfa2a2a0f8c6957175fb`, on `main`.
-Scope: items 17, 18 and 19 in `crates/`, the eleven commits in `bfa1c6e..HEAD`.
+Commit: `f385953cb352d668d2d602512334c682f693eec3`, on `main`.
+Scope: items 17, 18 and 19 in `crates/`, the eleven commits in `669851b..HEAD`.
 Method: a read-only review of the diff and the files around it. Nothing was run.
 Count: ten findings. Five high, two medium, three low.
 

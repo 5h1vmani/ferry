@@ -162,7 +162,7 @@ real name; copy ignored the overwrite header.
   `stop` for the scan method; `stop` waits for the connect timeout.
 
 Two more were open when this record was first written and are fixed in
-commit `bd70d9a`: push's own manifest build now sets the row's chunk
+commit `0422b7f`: push's own manifest build now sets the row's chunk
 size, and `push_files` refuses a call that would collide with a live push.
 
 Nothing in this run has been used on a real phone and Mac pair.

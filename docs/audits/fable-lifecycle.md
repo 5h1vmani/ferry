@@ -1,7 +1,7 @@
 # Lifecycle and concurrency audit
 
 Date: 11 September 2026.
-Commit: 4e3e9a0 at the end of the read; the read began at 3cd5451 and the tree moved under it, so some line numbers are near, not exact.
+Commit: 040f921 at the end of the read; the read began at 1839ab1 and the tree moved under it, so some line numbers are near, not exact.
 Scope: `crates/ferry-runtime` engine lifecycle and locks, the Mac wrapper in `macos/Ferry/Engine`, and the phone wrapper under `android/app/src/main/kotlin/app/ferry`.
 Method: read only, and nothing was run. Every lock site was listed with grep. Each path below was followed by hand from caller to callee.
 

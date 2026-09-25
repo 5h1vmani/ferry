@@ -1,6 +1,6 @@
 # Open-source readiness audit
 
-Date: 25 September 2026. Commit: d678d59.
+Date: 25 September 2026. Commit: de372e3.
 Scope: licences, the name, public docs, history, project files, and GitHub settings.
 Other audits cover capability, security bugs, visual design, and the fresh-clone build.
 

@@ -1,6 +1,6 @@
 # Principles review, 16 September 2026
 
-Commit: 513bf60. Scope: single source of truth, don't repeat yourself,
+Commit: a90036e. Scope: single source of truth, don't repeat yourself,
 single responsibility, dead code, silent failure, stale comments, and
 threading, across the Mac app, the phone app, the engine, the scripts, and
 the tests. Method: three read-only Sonnet passes, one per area, with grep
@@ -187,24 +187,24 @@ Held: workers, backoff floor, and chunk size are single-sourced; the two DAV sta
 ## Fix pass, 16 September 2026
 
 Every row is fixed and merged on main, one commit per row or per group of
-like rows. Mac rows M2 to M23 are commits a41d4b9 to ca140a2 on branch
+like rows. Mac rows M2 to M23 are commits 324db86 to d5c3b0a on branch
 `tidy-mac`; `EngineModel.swift` went from 979 lines to 229 plus six
-extension files. Phone rows P1 to P19 are commits ab0a84a to 5caf6a7 on
+extension files. Phone rows P1 to P19 are commits d12d5e7 to bec8841 on
 `tidy-phone`; `FerryEngine.kt` went from 760 lines to 615,
 `ReachableService.kt` from 524 to 351, with eight new files by concern.
-Engine rows E1 to E18 and E-new are commits dc36f3b to b85d899 on
+Engine rows E1 to E18 and E-new are commits 7239cec to 6dfd5eb on
 `tidy-rust`; the engine gained `landing_folder` and
 `access_log_retention_days`, and `ci.yml` now calls `scripts/gate.sh`.
 Row M1 and the app halves of E2 and E-new landed after the bindings
-regenerated: the Mac in edeb98b and 7443820, the phone in 91d02c3 and
-ac64e55. Both apps deleted their landing constants, their `mkdir` step, and
+regenerated: the Mac in 11edd7f and fc6e532, the phone in 34b9d64 and
+9b34cbc. Both apps deleted their landing constants, their `mkdir` step, and
 their `AlreadyExists` check, and both format the retention line from the
 engine's number.
 
 Found during the pass, outside the review: the CI job had failed on every
 run since 11 September in one test that assumed a 4 MiB pull finishes
-within the one second backoff floor. Fixed in 513bf60. The hung adb test
-flaked once under parallel load with a bare assertion; 273ed1c makes it
+within the one second backoff floor. Fixed in a90036e. The hung adb test
+flaked once under parallel load with a bare assertion; 5d1fee7 makes it
 name the value it got. Reading it further found a real defect: the call
 joined adb's output readers after a timeout, and the shell's `sleep` child
 kept the pipes open, so every such call, and that test, lasted 30 seconds.

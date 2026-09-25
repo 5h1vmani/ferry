@@ -1,7 +1,7 @@
 # Audit: capability and security before the public release
 
 Date: 25 September 2026.
-Commit: `d678d59`, on `main`.
+Commit: `de372e3`, on `main`.
 Scope: every factual claim in `README.md`, real-device status, and the attack surface a public release exposes.
 Method: targeted reads and greps. One test was run: the ignored full resume sweep, to settle its point count.
 Labels: "confirmed" means the code path was read end to end. "Suspected" names the step that would prove it.
@@ -18,7 +18,7 @@ Nothing a first user touches has run on a real device, and three Android and Mac
 |---|---|---|
 | Every cut in a transfer resumes and refetches at most one chunk (line 5). | Partly holds | The bound holds for pulls, one cut per transfer, at `resume_sweep.rs:424-503`. `set_cut` arms one dial only (`engine/api/lifecycle.rs:606-611`). Pushes are cut at three points only (`push_paths.rs:191-195`). A Finder copy does not resume at all (`dav/put.rs:22-25`). A copy in the phone's Files app is a plain write (`FerryDocumentsProvider.kt:300`). |
 | A test cuts the wire after every byte, 4718 cut points (lines 5-7). | Does not hold as written | The ignored test ran today and passed with 4962 points over 4963 clean bytes, in 357 s. The number predates the manifest request and the kind byte in `hello`. The test is `#[ignore]` (`resume_sweep.rs:482`), and neither `scripts/gate.sh` nor `.github/workflows/ci.yml` passes `--ignored`. The file is 4396 bytes at 1 KiB chunks against an in-process fake peer (`resume_sweep.rs:122-125`). |
-| Phase 1 has run on a Mac and a Pixel 3 XL; pairing, a file copied, and the cable work (lines 9-10). | Partly holds | The run was on 10 September (`manual-checks.md:105-110`, commit a5da751). The copy used the Files section, which was removed on 16 September (`ux-fix-plan.md:146`). Commit b12ac19 rewrote task 3 Part D on 17 September to Finder and Services steps that never ran. The Mac and phone screens used in that run were both replaced on 11 September. |
+| Phase 1 has run on a Mac and a Pixel 3 XL; pairing, a file copied, and the cable work (lines 9-10). | Partly holds | The run was on 10 September (`manual-checks.md:105-110`, commit 1f79377). The copy used the Files section, which was removed on 16 September (`ux-fix-plan.md:146`). Commit b02e58b rewrote task 3 Part D on 17 September to Finder and Services steps that never ran. The Mac and phone screens used in that run were both replaced on 11 September. |
 | Named shared folders, folder copies as one batch, an access log on both sides (lines 11-12). | Holds in code | `roots.rs`, `folder.rs:107-165`, `access.rs`. None ran on a device (task 4 is open). |
 | A manifest request so every pull verifies from its first byte (lines 14-15). | Holds | The sweep predicts the manifest frame to the byte (`resume_sweep.rs:173-202`), and the clean pull matches it exactly. |
 | Automatic photo import and push (line 15). | Holds in code | `auto_copy.rs`, `push.rs`. No manual check covers automatic import at all. |
@@ -64,7 +64,7 @@ Only the 10 September build ran on devices. Every feature below has never run on
 - The phone's foreground service over many hours, and on any Android version above 12.
 - A build by anyone other than the owner, on any Mac other than one Apple silicon machine.
 
-Commit bfa4980 on 11 September describes a symptom "the person saw". No task records a result after 10 September, so I do not know whether an informal run happened.
+Commit 6c539b9 on 11 September describes a symptom "the person saw". No task records a result after 10 September, so I do not know whether an informal run happened.
 
 ## Findings
 
@@ -76,7 +76,7 @@ Scenario: a reviewer runs the named test with `--ignored` and sees 4962 points, 
 Fix: state the real count, name it as a pull with one cut, say it is run on demand, and say that Finder and Files-app copies do not resume yet.
 
 **B2. The Status paragraph presents a device run of a flow that no longer exists.**
-Evidence: `README.md:9-10` and `:26-28`; `ux-fix-plan.md:146`; commit b12ac19; `manual-checks.md:319-322`.
+Evidence: `README.md:9-10` and `:26-28`; `ux-fix-plan.md:146`; commit b02e58b; `manual-checks.md:319-322`.
 Scenario: a reviewer follows task 3 to reproduce "a file copied". The steps now use Finder and Services, which never ran, and task 7 is not in the README's list of open work.
 Fix: say that only the 10 September build ran on devices, that its copy screen was removed, and that tasks 4 to 7 are all open.
 

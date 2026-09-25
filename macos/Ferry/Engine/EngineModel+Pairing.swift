@@ -51,7 +51,7 @@ extension EngineModel {
         // pairing code instead" dead once the QR offer was under way.
         // Cancelling first only when there is something to cancel keeps
         // the first, ordinary call unchanged. Matches the phone's fix,
-        // ec25f31.
+        // d430af2.
         if pairingState != .idle {
             engine?.cancelPairing()
         }

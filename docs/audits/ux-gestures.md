@@ -1,15 +1,15 @@
 # The UX gestures audit
 
 Date: 16 September 2026
-Commit: 66d12c2, the merge of `ux-mac` and `ux-phone` into main. The range
-read is `9017ff9..66d12c2`.
+Commit: 694d060, the merge of `ux-mac` and `ux-phone` into main. The range
+read is `5f27164..694d060`.
 Scope: on the phone, the share target and the cache copy. On the Mac, the
 drop targets, the Finder service, and the Send files panel. On both, the
 transfer notifications, the Dock badge, and the menu bar lines. The promises
 are `docs/ux-fix-plan.md` items 1 to 5. They are also `docs/engine-contract.md`
 item 5, "Where a push lands".
 Method: read only. No build, no test, no app run. Every listed file was read
-in full at 66d12c2, plus `design/errors.json` and `crates/ferry-runtime/src/errors.rs`
+in full at 694d060, plus `design/errors.json` and `crates/ferry-runtime/src/errors.rs`
 for the error codes. "Confirmed" means the whole path was read in the repo.
 "Plausible" names the step that was not read.
 
@@ -28,7 +28,7 @@ for the error codes. "Confirmed" means the whole path was read in the repo.
 | 9 | Phone | `android/app/src/main/kotlin/app/ferry/ReachableService.kt:88-91` | The retry branch returns before `startForeground` and returns `START_NOT_STICKY`. Android uses the last returned value, so one Retry tap turns off the sticky restart for the reachable service. When the process has died, the same tap builds a service whose engine has been created but not started, so `FerryEngine.retry` fails silently. Confirmed. | Return `START_STICKY` from the retry branch. Call `FerryEngine.start()` before the retry, and post the failure when it does not start. | low |
 | 10 | Phone | `android/app/src/main/kotlin/app/ferry/FerryApp.kt:157-162`; `ShareIntake.kt:126` | The share error is tested before the engine error, so it hides a live engine error. Nothing clears it. `_unreadableName` is reset only at the start of the next `resolve` call. The error block stays on Devices until another share happens. Confirmed. | Clear `_unreadableName` when the person leaves Devices, or give the block a control that clears it, as `clearError` does for the engine error. | low |
 | 11 | Mac | `macos/Ferry/Components/DeviceRow.swift:51-55`; `macos/Ferry/Screens/DeviceDetail.swift:92-96`; `macos/Ferry/FerryApp.swift:92-95` | A drop on a device that is not reachable returns false and shows nothing. A Dock drop with no target device returns and shows nothing. `docs/voice.md` rule 10 says nothing is hidden behind a friendly word, and a silent refusal hides more than a word does. Confirmed. | Add two `DropError` cases, one for not reachable and one for no device, and set `actionError` in each branch. | low |
-| 12 | Mac | `EngineModel.swift:639-652` | `pushFiles` has no caller left. Its only caller was the Files section, removed in item 4. Confirmed by a repo wide grep at 66d12c2. | Delete the method. | low |
+| 12 | Mac | `EngineModel.swift:639-652` | `pushFiles` has no caller left. Its only caller was the Files section, removed in item 4. Confirmed by a repo wide grep at 694d060. | Delete the method. | low |
 | 13 | Mac | `macos/Ferry/Strings.swift:142`; `EngineModel.swift:676` | `S.drop.downloadFolderName` holds the folder name "Download". `Strings.swift` is the file of words a person reads. This value is a path segment the contract fixes, and the phone must find the same folder. A translation of `Strings.swift` would change where files land. Confirmed. | Move the constant next to `landingFolderPath` in `EngineModel`, or into the generated contract constants, beside `LANDING_SUBFOLDER` on the phone. | low |
 | 14 | Mac | `DeviceDetail.swift:136-142` | `revealPath` calls `FileManager.fileExists` while the view body is built. It runs on the main actor, once per transfer row, on every redraw. `reloadTransfers` fires up to four times a second. Confirmed. | Compute the reveal path when a group reaches Done, store it on the snapshot, and read it in the body. | low |
 | 15 | Mac | `macos/Ferry/Engine/TransferNotifier.swift:46-47` | A Failed group whose `error` is nil returns a nil body, so `notify` posts nothing. Item 2 promises one notification when a transfer ends Done or Failed. The phone covers the same case at `ReachableService.kt:326-330`. Confirmed. | Fall back to `S.common.unknownErrorStopped`, the same words `ThreePartError` uses for an unknown code. | low |
@@ -128,12 +128,12 @@ for the error codes. "Confirmed" means the whole path was read in the repo.
 ## Fix pass, 16 September 2026
 
 All 17 rows are fixed, one commit each. Rows 1, 2, 3, 6, 7, 8, 9, 10, and
-16 are on branch `ux-phone`, commits 0176a3f to 8f27c36. Rows 4, 5, 11,
-12, 13, 14, and 15 are on branch `ux-mac`, commits fab1bd4 to 86f1455.
+16 are on branch `ux-phone`, commits d791e2c to 42f3f85. Rows 4, 5, 11,
+12, 13, 14, and 15 are on branch `ux-mac`, commits 2becd3a to a5421bf.
 Row 17 took a generator change: `scripts/gen_errors.py` now emits
 `FerryErrorCode` in both generated error files, one constant per row of
-`design/errors.json`, and both apps compare against it, commits 5e765c8,
-45c73f3, and the phone's twin. Rows 1, 3, and 6 added their rules to
+`design/errors.json`, and both apps compare against it, commits b1669b7,
+9f431a8, and the phone's twin. Rows 1, 3, and 6 added their rules to
 `docs/engine-contract.md`, item 5, "Where a push lands": a share needs the
 system's read grant, a share is capped at 100 files, 4 GiB per copy, and
 512 MiB free, and the target device is the only paired one or the first
@@ -149,12 +149,12 @@ phone and rows 4 and 5 on the Mac against the Fix column. Rows 1 to 6, 16,
 - Row 7. `FerryEngine.start()` set `started` before it loaded the batch
   list. `ShareIntake` sweeps the cache on that signal and keeps only what
   the batch list names, so an empty list would delete a paused push's
-  source file. The flag now turns true after the loads, commit cc27cee.
+  source file. The flag now turns true after the loads, commit ec9c862.
 - Row 9. A Retry tapped from the shade returned silently when the engine
   could not start. It now posts the engine's error words on the same
-  notification, commit 043f8c4.
+  notification, commit 7f3f3ec.
 
 Row 17 was wider than the audit said. A grep for a quoted `X::Y` code
 found twenty-two sites across both apps, not two. All now read the
-generated `FerryErrorCode` constant, commit 9d522ec. The one code with no
+generated `FerryErrorCode` constant, commit af8d254. The one code with no
 table row, `Android::KeyRenameFailed`, stays a literal.

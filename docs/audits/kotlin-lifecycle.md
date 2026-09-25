@@ -1,7 +1,7 @@
 # Audit: the phone app's engine object, lifecycle, and scan path
 
 Date: 11 September 2026.
-Scope: `FerryEngine.kt`, `FerryApplication.kt`, `MainActivity.kt`, `ReachableService.kt`, `Permissions.kt`, `QrScanner.kt`, `PairingScreen.kt`, `pairingStepOf` in `Mapping.kt`, and `AndroidManifest.xml`, at commit `63b0cbd`.
+Scope: `FerryEngine.kt`, `FerryApplication.kt`, `MainActivity.kt`, `ReachableService.kt`, `Permissions.kt`, `QrScanner.kt`, `PairingScreen.kt`, `pairingStepOf` in `Mapping.kt`, and `AndroidManifest.xml`, at commit `910acd6`.
 Method: I read every file in scope whole. I read the engine side in `crates/ferry-runtime/src/lib.rs` and `engine.rs` to check each claim. I ran nothing. Each row says whether I walked a complete path or not.
 Findings: 15. Eleven are confirmed by reading a complete path. Four are plausible, and each names the step I could not confirm.
 

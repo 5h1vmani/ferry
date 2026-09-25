@@ -22,12 +22,12 @@ use common::paths::poll_every;
 use common::{TestClient, base64_encode, build_side, loopback_addr, pattern, port_of};
 
 /// How long any wait in this file may take before the test gives up. Kept
-/// at the ten seconds this file used before commit e123c20 shared one poll
+/// at the ten seconds this file used before commit 2026d63 shared one poll
 /// loop across test files: `tests/common/paths.rs`'s own budget is twenty
 /// seconds, chosen for a different file.
 const PATIENCE: Duration = Duration::from_secs(10);
 
-/// How often a poll looks again. Unchanged by commit e123c20: this file's
+/// How often a poll looks again. Unchanged by commit 2026d63: this file's
 /// ten millisecond tick already matched `tests/common/paths.rs`'s own.
 const POLL_TICK: Duration = Duration::from_millis(10);
 

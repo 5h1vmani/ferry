@@ -34,7 +34,7 @@ use common::{
 };
 
 /// How often a poll looks again in this file. Kept at the twenty
-/// milliseconds this file used before commit e123c20 shared one poll loop
+/// milliseconds this file used before commit 2026d63 shared one poll loop
 /// across test files: `tests/common/paths.rs`'s own ten millisecond tick
 /// is a different value, chosen for a different file.
 const POLL_TICK: Duration = Duration::from_millis(20);
@@ -292,7 +292,7 @@ fn a_listing_prefetches_its_image_heads_and_a_thumbnail_then_costs_no_read() {
     );
 
     // Forces the `PROPFIND` below to list on the wire, the way
-    // `tests/dav_browse.rs` does since commit 42c10eb, instead of sleeping
+    // `tests/dav_browse.rs` does since commit 1a5da91, instead of sleeping
     // past the listing cache's two second TTL: a debug build's own first
     // listing above can already spend longer than two seconds in its
     // prefetch, so a fixed sleep is not a reliable way to land past the
@@ -361,7 +361,7 @@ fn a_file_written_again_with_a_new_size_misses_its_cached_head() {
 
     // The listing cache would hold the old size for two seconds on its
     // own. Forcing it to zero, the way `tests/dav_browse.rs` does since
-    // commit 42c10eb, makes the next PROPFIND list the folder again and
+    // commit 1a5da91, makes the next PROPFIND list the folder again and
     // report the new size without racing a debug build's own timing.
     it.mac.engine.set_list_cache_ttl(Duration::ZERO);
     it.propfind("/Root/Photos", "1");

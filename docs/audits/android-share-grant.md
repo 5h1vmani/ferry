@@ -1,13 +1,13 @@
 # Android share grant and lifecycle audit
 
 Date: 26 September 2026
-Base: d678d59, then the 14 builder commits up to fa10d74.
-Scope: the share target check, commits fa10d74, 3ebd244 and 2aabb7d, and one string.
+Base: de372e3, then the 14 builder commits up to 5d0af04.
+Scope: the share target check, commits 5d0af04, ad365ef and 8598b08, and one string.
 Method: I read the Kotlin sources and the AOSP sources named below. I ran no app and no device.
 
 ## Verdict on the share grant
 
-The concern about fa10d74 is refuted. `Context.checkUriPermission` counts only grants in Android's grant table. `ActivityManagerService.checkUriPermission` calls `UriGrantsManagerService.checkUriPermissionLocked`, and that reads only `mGrantedUriPermissions` for the uid. Android 12 does the same, at `android12-release` `ActivityManagerService.java:5680-5689`. All files access is never an entry in that table. So a URI that Ferry can read only through all files access fails the check.
+The concern about 5d0af04 is refuted. `Context.checkUriPermission` counts only grants in Android's grant table. `ActivityManagerService.checkUriPermission` calls `UriGrantsManagerService.checkUriPermissionLocked`, and that reads only `mGrantedUriPermissions` for the uid. Android 12 does the same, at `android12-release` `ActivityManagerService.java:5680-5689`. All files access is never an entry in that table. So a URI that Ferry can read only through all files access fails the check.
 
 Dropping the whole-intent flag lost nothing. `Intent.migrateExtraStreamToClipData` adds `FLAG_GRANT_READ_URI_PERMISSION` by itself to any `ACTION_SEND` that has `EXTRA_STREAM` and no ClipData. The flag never said anything about one URI.
 
@@ -32,33 +32,33 @@ An API can separate a sender's grant from Ferry's own access, so I did not add a
 ## Findings
 
 **1. A grant left over from an earlier share passed the check (low, fixed on Android 15 and later).**
-Evidence: `ShareIntake.kt:178-188` at fa10d74 checked only Ferry's grant table. Grants stay on the activity record until `ActivityRecord.removeFromHistory` calls `removeUriPermissionsLocked`.
+Evidence: `ShareIntake.kt:178-188` at 5d0af04 checked only Ferry's grant table. Grants stay on the activity record until `ActivityRecord.removeFromHistory` calls `removeUriPermissionsLocked`.
 Scenario: Photos shares `IMG_1` to Ferry. Later, app X cannot read `IMG_1`. App X sends its own ClipData and puts the URI of `IMG_1` in `EXTRA_STREAM` with no grant. The grant from Photos still exists, so `IMG_1` goes to the Mac a second time.
-Change: rule 3 now asks `ComponentCaller.checkContentUriPermission` about the sender. Commit a7e5173.
+Change: rule 3 now asks `ComponentCaller.checkContentUriPermission` about the sender. Commit 906f8ac.
 
-**2. fa10d74 pushed ClipData URIs as files (low, fixed).**
-Evidence: `ShareIntake.kt:156` at fa10d74 added every ClipData URI to the push list.
+**2. 5d0af04 pushed ClipData URIs as files (low, fixed).**
+Evidence: `ShareIntake.kt:156` at 5d0af04 added every ClipData URI to the push list.
 Scenario: a sender shares a link and adds a preview image in ClipData, as Android's share sheet guide suggests. Ferry sends the preview image to the Mac, and the person never chose it.
-Change: `urisFrom` reads `EXTRA_STREAM` only (`ShareIntake.kt:153`). Commit 57d4ff1.
+Change: `urisFrom` reads `EXTRA_STREAM` only (`ShareIntake.kt:153`). Commit 07d6270.
 
 **3. A rotation pushed the same share again (low, fixed).**
-Evidence: `MainActivity.kt:110` at d678d59 acted on `getIntent` in every `onCreate`. `AndroidManifest.xml:65-69` declares no `configChanges`.
+Evidence: `MainActivity.kt:110` at de372e3 acted on `getIntent` in every `onCreate`. `AndroidManifest.xml:65-69` declares no `configChanges`.
 Scenario: a person shares three photos and then rotates the phone. The three photos go to the Mac again. On Android 15, rule 3 would also refuse a later `onNewIntent` share after a rotation and show a wrong error.
-Change: `onCreate` acts only on a fresh launch, not on a restore or a relaunch from Recents (`MainActivity.kt:130`). Commit 587a8cc.
+Change: `onCreate` acts only on a fresh launch, not on a restore or a relaunch from Recents (`MainActivity.kt:130`). Commit 9aa9df6.
 
 **4. The six-hour limit notice was removed at once (low, fixed).**
-Evidence: 2aabb7d `ReachableService.kt:189` posted the notice on `NOTIFICATION_ID`, and `:194` then called `stopForeground(STOP_FOREGROUND_REMOVE)`. `ServiceRecord.cancelNotification` cancels that id with no tag, later, from the system's own handler.
+Evidence: 8598b08 `ReachableService.kt:189` posted the notice on `NOTIFICATION_ID`, and `:194` then called `stopForeground(STOP_FOREGROUND_REMOVE)`. `ServiceRecord.cancelNotification` cancels that id with no tag, later, from the system's own handler.
 Scenario: on Android 15, the service stops after six hours. The person sees no notice and does not know why the phone is not reachable.
-Change: the notice has its own tag (`ReachableService.kt:215`). `onTimeout` now leaves the foreground and calls `stopSelf()` first (`:194-202`). Advertising cancels the notice when it starts again (`:170`). Commit c43dc57.
+Change: the notice has its own tag (`ReachableService.kt:215`). `onTimeout` now leaves the foreground and calls `stopSelf()` first (`:194-202`). Advertising cancels the notice when it starts again (`:170`). Commit 9d2ebde.
 
 **5. Approximate location showed as "Not granted" (low, fixed).**
-Evidence: 3ebd244 `MainActivity.kt:89` read only the fine grant. Settings showed one word for every answer that was not fine.
+Evidence: ad365ef `MainActivity.kt:89` read only the fine grant. Settings showed one word for every answer that was not fine.
 Scenario: a person picks "Approximate" in the prompt. Settings says "Not granted", but Android's settings page says "Allowed". The person cannot see that precise location is the missing choice.
-Change: `Permissions.locationApproximateOnly` (`Permissions.kt:87`, `:115-117`) and a new Settings word (`strings.xml:342`). Commit 11e12de.
+Change: `Permissions.locationApproximateOnly` (`Permissions.kt:87`, `:115-117`) and a new Settings word (`strings.xml:342`). Commit 92c688a.
 
 **6. The off notification still said "Not advertising" (low, fixed).**
 Evidence: `strings.xml:304` before this change.
-Change: it now reads "%1$s is not reachable over Wi-Fi." Commit daa50f2.
+Change: it now reads "%1$s is not reachable over Wi-Fi." Commit d18dc77.
 
 ## Reviewed, correct as written
 
