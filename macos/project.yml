@@ -104,7 +104,7 @@ targets:
         NSLocalNetworkUsageDescription: Ferry finds your phone on this network and copies files from it.
         # macOS 14 and later answer no Wi-Fi network name until this app is
         # authorised for location. See docs/engine-contract.md, item 18.
-        NSLocationUsageDescription: Ferry reads the Wi-Fi network name to know where it can be found.
+        NSLocationUsageDescription: macOS treats the Wi-Fi network name as location data. Ferry reads the name to know which networks you trust.
         NSBonjourServices:
           - _ferry._tcp
         # A drop on the Dock icon pushes to the target device

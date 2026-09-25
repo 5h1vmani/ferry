@@ -2,7 +2,14 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!-- No App Sandbox. See docs/decisions/0010-no-mac-sandbox.md. The hardened
-     runtime is set in project.yml and needs no entitlement here. -->
+     runtime is set in project.yml, and needs no entitlement here except the
+     one below. -->
 <dict>
+    <!-- Lets CLLocationManager ask for authorisation under the hardened
+         runtime. Without it, CoreWLAN answers no Wi-Fi network name on
+         macOS 14 and later, so trusted networks never engage.
+         docs/engine-contract.md, item 18. docs/audits/oss-capability.md, M1. -->
+    <key>com.apple.security.personal-information.location</key>
+    <true/>
 </dict>
 </plist>
