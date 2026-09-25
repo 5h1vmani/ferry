@@ -120,7 +120,12 @@ private fun GroupProgress(group: TransferGroup, onRetry: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(FerrySpace.s1),
-                    color = FerryColor.accent(),
+                    // docs/audits/oss-looks.md M8. accent (step 9) on the
+                    // border track is 1.96 to 1 in dark mode, below the 3
+                    // to 1 a bar needs. accent_text (step 11) clears 3 to 1
+                    // against this same track in both themes: see the
+                    // contrast script in the batch report.
+                    color = FerryColor.accentText(),
                     trackColor = FerryColor.border(),
                 )
                 Spacer(Modifier.height(FerrySpace.s1))
