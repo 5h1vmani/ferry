@@ -32,6 +32,11 @@ enum S {
         static let retry = "Retry"
         static let notReachable = "Not reachable"
         static let dotSeparator = " · "
+        /// Shown in place of an answer that has not arrived yet: the
+        /// sidebar, the window's detail pane, the menu bar, and the
+        /// presence control all use this same word before the engine's
+        /// first snapshot. `docs/audits/oss-looks.md`, M6.
+        static let starting = "Starting."
 
         /// For an error code that is not in the generated table. That
         /// should not happen, so the code itself is shown. A guess would
@@ -87,11 +92,6 @@ enum S {
         static func accessibilityQuiet(why: String) -> String {
             String(format: accessibilityQuietFormat, why)
         }
-
-        /// Shown before the engine's first snapshot arrives, in place of a
-        /// state nobody has asked the engine about yet.
-        /// `docs/audits/oss-looks.md`, M6.
-        static let starting = "Starting."
     }
 
     /// The menu bar item. New in docs/ia.md, L0.
@@ -105,11 +105,6 @@ enum S {
         static let noPhonePaired = "No phone paired."
         static let noPhoneSelected = "No phone selected."
         static let pairAPhone = "Pair a phone"
-        /// Shown in the sidebar and the window's detail pane before the
-        /// engine's first snapshot arrives. Until then Ferry does not know
-        /// whether a phone is paired, so it says so instead of stating
-        /// "No phone paired." `docs/audits/oss-looks.md`, M6.
-        static let starting = "Starting."
         static let lastSeenFormat = "Last seen %@"
         static func lastSeen(_ relative: String) -> String {
             String(format: lastSeenFormat, relative)

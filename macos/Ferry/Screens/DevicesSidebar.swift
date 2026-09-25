@@ -24,7 +24,7 @@ struct DevicesSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             if !isReady {
-                EmptyState(line: S.devices.starting)
+                EmptyState(line: S.common.starting)
                     .frame(maxHeight: .infinity)
             } else if devices.isEmpty {
                 EmptyState(line: S.devices.noPhonePaired, actionLabel: S.devices.pairAPhone, action: onPair)

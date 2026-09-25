@@ -87,12 +87,12 @@ struct PresenceControl: View {
         HStack(spacing: FerrySpace.s2) {
             Image(systemName: FerryIcon.wifi)
                 .foregroundStyle(FerryColor.textSecondary)
-            Text(S.presence.starting)
+            Text(S.common.starting)
                 .font(FerryFont.body)
                 .foregroundStyle(FerryColor.textSecondary)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(S.presence.starting)
+        .accessibilityLabel(S.common.starting)
     }
 
     private var binding: Binding<Bool> {

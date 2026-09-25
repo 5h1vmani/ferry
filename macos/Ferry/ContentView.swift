@@ -51,7 +51,7 @@ struct ContentView: View {
             if let device = selectedDevice {
                 DeviceDetail(device: device)
             } else if !model.isReady {
-                EmptyState(line: S.devices.starting)
+                EmptyState(line: S.common.starting)
             } else if model.devices.isEmpty {
                 EmptyState(line: S.devices.noPhonePaired)
             } else {

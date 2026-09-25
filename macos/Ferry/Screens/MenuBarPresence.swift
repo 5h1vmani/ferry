@@ -21,7 +21,7 @@ struct MenuBarPresence: View {
     var body: some View {
         VStack(alignment: .leading, spacing: FerrySpace.s2) {
             if !model.isReady {
-                Text(S.devices.starting)
+                Text(S.common.starting)
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.textSecondary)
                     .padding(.horizontal, FerrySpace.s2)
