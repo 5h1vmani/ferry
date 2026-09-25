@@ -142,23 +142,18 @@ object ShareIntake {
     fun isShareIntent(intent: Intent): Boolean =
         intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
 
-    // Every URI a share names: EXTRA_STREAM, single or as a list depending
-    // on the action, and every item of the intent's own ClipData, in the
-    // order the sender listed them, with no repeats. resolve() below checks
-    // each one's own read grant before Ferry opens it; security finding,
-    // this batch.
-    fun urisFrom(intent: Intent): List<Uri> {
-        val fromExtra = when (intent.action) {
-            Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent))
-            Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent)
-            else -> emptyList()
-        }
-        return (fromExtra + clipDataUris(intent)).distinct()
-    }
-
-    private fun clipDataUris(intent: Intent): List<Uri> {
-        val clip = intent.clipData ?: return emptyList()
-        return (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+    // The files a share sends: EXTRA_STREAM, single or as a list depending
+    // on the action, in the order the sender listed them, with no repeats.
+    //
+    // ClipData is not read. A sender may put a preview image there, for
+    // example a thumbnail for a shared link, and that image is not a file
+    // the person chose to send. Every URI returned here gets its own check
+    // in resolve(), so the ClipData grant flag no longer decides anything.
+    // docs/audits/android-share-grant.md finding 2.
+    fun urisFrom(intent: Intent): List<Uri> = when (intent.action) {
+        Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent))
+        Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent).distinct()
+        else -> emptyList()
     }
 
     // True only when Ferry itself has been granted permission to read this
