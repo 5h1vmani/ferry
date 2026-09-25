@@ -19,7 +19,7 @@ struct AccessSection: View {
         if let path = mount.path {
             HStack(spacing: FerrySpace.s2) {
                 Image(systemName: FerryIcon.folder)
-                    .foregroundStyle(FerryColor.accent)
+                    .foregroundStyle(FerryColor.accentText)
                 Text(S.access.mountReady)
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.text)
