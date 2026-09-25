@@ -167,6 +167,7 @@ class ReachableService : Service() {
         createChannel()
         advertising = true
         acquireMulticastLock()
+        cancelDailyLimitNotice()
         startForeground(
             NOTIFICATION_ID,
             buildNotification(),
@@ -179,20 +180,26 @@ class ReachableService : Service() {
 
     // Android 15 and later stop a dataSync foreground service after six
     // hours in a day, and this callback is that stop: it cannot be
-    // refused. The service ends the same way ACTION_STOP_ADVERTISING does,
-    // and a plain notification on the "reachable" channel a person already
-    // watches says why, since the ongoing one is gone once the foreground
-    // state ends. docs/audits/oss-capability.md M3.
+    // refused. Android crashes the app if the service is still in the
+    // foreground a few seconds later, so leaving the foreground and
+    // stopping come first. stopSelf() takes no start id, so a start that
+    // arrived after the timeout cannot keep the service alive.
+    //
+    // A plain notification on the "reachable" channel then says why. It
+    // carries its own tag, because stopForeground removes the ongoing
+    // notification on NOTIFICATION_ID, and Android may do that after this
+    // method returns. docs/audits/oss-capability.md M3,
+    // docs/audits/android-share-grant.md finding 4.
     @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
     override fun onTimeout(startId: Int, fgsType: Int) {
         super.onTimeout(startId, fgsType)
-        postDailyLimitNotice()
         advertising = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        postDailyLimitNotice()
         FerryEngine.setReachable(false)
         releaseMulticastLock()
         running = false
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf(startId)
     }
 
     private fun postDailyLimitNotice() {
@@ -205,7 +212,13 @@ class ReachableService : Service() {
             .setContentIntent(open)
             .setAutoCancel(true)
             .build()
-        manager.notify(NOTIFICATION_ID, notification)
+        manager.notify(DAILY_LIMIT_TAG, NOTIFICATION_ID, notification)
+    }
+
+    // The daily limit notice is out of date once the phone is reachable
+    // again, so it goes when advertising starts.
+    private fun cancelDailyLimitNotice() {
+        getSystemService(NotificationManager::class.java)?.cancel(DAILY_LIMIT_TAG, NOTIFICATION_ID)
     }
 
     override fun onDestroy() {
@@ -374,6 +387,10 @@ class ReachableService : Service() {
         // both need this, to keep a transfer's notification id clear of the
         // "reachable" notification's own.
         internal const val NOTIFICATION_ID = 1
+
+        // Tags the daily limit notice, so it never shares a key with the
+        // ongoing notification on NOTIFICATION_ID or a transfer's own.
+        private const val DAILY_LIMIT_TAG = "daily_limit"
         private const val ACTION_STOP_ADVERTISING = "app.ferry.action.STOP_ADVERTISING"
         private const val ACTION_START_ADVERTISING = "app.ferry.action.START_ADVERTISING"
 
