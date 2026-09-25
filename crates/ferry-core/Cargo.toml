@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
+# Another project already owns this name on crates.io. This crate is
+# never published there.
+publish = false
 
 [features]
 # Exposes MemoryFs, the reference filesystem. It is a test double, so it stays
