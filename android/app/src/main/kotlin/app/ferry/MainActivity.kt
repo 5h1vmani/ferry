@@ -1,9 +1,13 @@
 package app.ferry
 
 import android.Manifest
+import android.app.ComponentCaller
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import androidx.annotation.RequiresApi
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -96,10 +100,10 @@ class MainActivity : ComponentActivity() {
         sendFilesPrompt = registerForActivityResult(
             ActivityResultContracts.OpenMultipleDocuments(),
         ) { uris ->
-            // The document picker's own result always carries a read
-            // grant for every URI it returns, the same as ShareIntake
-            // checks for a share's own URIs.
-            handleSharedUris(uris)
+            // The person chose each file in the system picker, and the
+            // picker grants Ferry each one it returns. No other app is
+            // involved, so rule 3 of ShareIntake's check always passes.
+            handleSharedUris(uris) { true }
         }
         setContent {
             FerryApp(
@@ -116,7 +120,7 @@ class MainActivity : ComponentActivity() {
                 onSendFilesClick = { sendFilesPrompt.launch(arrayOf("*/*")) },
             )
         }
-        handleIntentIfShare(intent)
+        handleIntentIfShare(intent, fromNewIntent = false)
     }
 
     // A share from another app arrives here when this activity is not
@@ -126,7 +130,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntentIfShare(intent)
+        handleIntentIfShare(intent, fromNewIntent = true)
     }
 
     // docs/ux-fix-plan.md item 1. Every path resolves off the main thread,
@@ -134,17 +138,55 @@ class MainActivity : ComponentActivity() {
     // dials the Mac. FerryEngine.pushShared does nothing when no Mac is
     // paired; requestNavigateHome shows Devices either way, since that is
     // where the empty state, and the pushed transfer, both are.
-    private fun handleIntentIfShare(intent: Intent) {
+    private fun handleIntentIfShare(intent: Intent, fromNewIntent: Boolean) {
         if (!ShareIntake.isShareIntent(intent)) {
             return
         }
-        // Security finding, this batch: ShareIntake.resolve checks each
-        // URI's own read grant now, rather than this trusting one flag on
-        // the whole intent for every URI urisFrom returns.
-        handleSharedUris(ShareIntake.urisFrom(intent))
+        handleSharedUris(ShareIntake.urisFrom(intent), shareSenderCheck(fromNewIntent))
     }
 
-    private fun handleSharedUris(uris: List<Uri>) {
+    // Rule 3 of ShareIntake's share check: can the app that sent this
+    // share read a URI itself? docs/audits/android-share-grant.md finding 1.
+    //
+    // Android 15 added ComponentCaller for this. Android records what the
+    // sender could read at the moment the share arrived. The system share
+    // sheet launches Ferry as the sender, so the answer is about the app
+    // the person shared from. Android keeps one caller for the launch and
+    // one for each onNewIntent. currentCaller works only inside
+    // onNewIntent, so the caller is taken here, on the main thread.
+    //
+    // Android 14 and earlier have no such API, so the check passes every
+    // URI there, and ShareIntake's grant check is the only proof.
+    private fun shareSenderCheck(fromNewIntent: Boolean): (Uri) -> Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            return { true }
+        }
+        val caller = try {
+            if (fromNewIntent) currentCaller else initialCaller
+        } catch (e: IllegalStateException) {
+            // No caller was recorded. Without one, nothing can prove the
+            // sender could read the files, so every URI is refused.
+            android.util.Log.w("Ferry", "no caller recorded for this share", e)
+            return { false }
+        }
+        return { uri -> callerCanRead(caller, uri) }
+    }
+
+    // Asks Android whether the caller could read this URI when it sent the
+    // share. Android throws SecurityException when Ferry itself has no
+    // access to the URI, and IllegalArgumentException for a URI the
+    // caller's intent did not carry. Both mean no.
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    private fun callerCanRead(caller: ComponentCaller, uri: Uri): Boolean = try {
+        caller.checkContentUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED
+    } catch (e: SecurityException) {
+        false
+    } catch (e: IllegalArgumentException) {
+        false
+    }
+
+    private fun handleSharedUris(uris: List<Uri>, senderCanRead: (Uri) -> Boolean) {
         if (uris.isEmpty()) {
             return
         }
@@ -156,7 +198,7 @@ class MainActivity : ComponentActivity() {
                 // is sent, and ShareIntake.appError already carries why,
                 // for FerryApp to show through ErrorBlock. docs/voice.md
                 // rule 10.
-                val resolution = ShareIntake.resolve(context, uris)
+                val resolution = ShareIntake.resolve(context, uris, senderCanRead)
                 if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
                     FerryEngine.pushShared(resolution.localPaths)
                 }
