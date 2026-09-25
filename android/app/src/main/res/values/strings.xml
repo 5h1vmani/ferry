@@ -301,7 +301,7 @@
     <!-- The off state of the same notification: a state of the service,
          not its absence, so a person who tapped Stop from the shade has a
          way back. -->
-    <string name="notification_not_advertising">Not advertising. %1$s cannot be found on Wi-Fi.</string>
+    <string name="notification_not_advertising">%1$s is not reachable over Wi-Fi.</string>
 
     <!-- docs/audits/oss-capability.md M3. Android 15 and later stop a
          dataSync foreground service after six hours in a day. This is
