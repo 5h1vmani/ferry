@@ -22,11 +22,14 @@ extension EngineModel {
     }
 
     /// `EngineEvents.accessLogChanged` calls this at most once every 250
-    /// milliseconds. Nothing is cached here, the way `mount(forDevice:)` and
-    /// `autoCopy(forDevice:)` cache nothing: `accessLog(forDevice:)` reads
-    /// the engine fresh on every call, so this only has to ask the section
-    /// to render again.
+    /// milliseconds, when the log can really have changed. The engine's
+    /// callback carries no device key, so every device a screen has already
+    /// read this run is refreshed; a device nothing has shown yet is left
+    /// alone; its first read will fetch fresh.
     func reloadAccessLog() {
+        for keyHex in accessLogsByDevice.keys {
+            fetchAccessLog(forDevice: keyHex)
+        }
         objectWillChange.send()
     }
 
@@ -68,12 +71,27 @@ extension EngineModel {
         return EngineAdapter.autoCopy(engine.autoCopy(deviceKeyHex: keyHex))
     }
 
-    /// The access log for one device, grouped by day, newest first. Capped
-    /// at the engine's own 1,000 entry limit, which the day grouping never
-    /// needs more than for one device's own history.
+    /// The access log for one device, grouped by day, newest first. Read
+    /// from the cache: cheap enough to call from a view body on every
+    /// redraw, because a redraw is not when the log can have changed.
+    /// `reloadAccessLog()` is. `docs/audits/oss-looks.md`, its ALERT on
+    /// this file.
     func accessLog(forDevice keyHex: String) -> [AccessDaySnapshot] {
+        if let cached = accessLogsByDevice[keyHex] {
+            return cached
+        }
+        return fetchAccessLog(forDevice: keyHex)
+    }
+
+    /// Reads the engine, capped at its own 1,000 entry limit, which the day
+    /// grouping never needs more than for one device's own history. Caches
+    /// the result and returns it.
+    @discardableResult
+    private func fetchAccessLog(forDevice keyHex: String) -> [AccessDaySnapshot] {
         let entries = engine?.accessLog(deviceKeyHex: keyHex, limit: 1000) ?? []
-        return EngineAdapter.accessLog(entries)
+        let days = EngineAdapter.accessLog(entries)
+        accessLogsByDevice[keyHex] = days
+        return days
     }
 
     // MARK: - Presence
