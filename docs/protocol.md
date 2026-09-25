@@ -547,7 +547,7 @@ scan a QR code, on both screens.
 Rules for the advertisement:
 
 - The instance name is random, not the device hostname. A default mDNS name
-  broadcasts something like "Shiva's Pixel" to everyone in a cafe.
+  broadcasts something like "Alex's Pixel" to everyone in a cafe.
 - The TXT record carries the protocol version and nothing else. It must not
   carry the static public key or its fingerprint. A stable key in a public
   record is an identifier that tracks the device across every network it joins.

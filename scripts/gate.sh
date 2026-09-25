@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# gate.sh: the one check every builder and the orchestrator run before a
-# push. It runs a mode's steps in order and stops at the first failure.
+# gate.sh: the one check every contributor and CI run before a push. It
+# runs a mode's steps in order and stops at the first failure.
 #
 # Modes, given as the first argument:
 #   rust        Format, lint, and test the Rust workspace with all features.
@@ -11,7 +11,7 @@
 #   gen         Check the generated tokens, the generated errors, and the
 #               generated app bindings all match their source.
 #   mac         Build the Mac app in Debug with xcodegen and xcodebuild.
-#   android     Build the Android app's Kotlin sources with Gradle.
+#   android     Build the Android app's Kotlin sources with the Gradle wrapper.
 #   all         Run rust, then gen, then mac, then android, in that order.
 #
 # Each step prints "gate: <step> ok" or "gate: <step> FAIL (exit N)".
@@ -127,17 +127,18 @@ mac_build() {
   )
 }
 
-# ---- android mode helper: source env.sh, then gradle, in a subshell so
-# the env and the cd never leak into a later step of an "all" run. The
-# task ":app:compileDebugKotlin" exists under this repo's Gradle setup
-# (AGP 9's built-in Kotlin support), confirmed with `gradle :app:tasks`.
-# The compile task never merges the manifest, so a bad manifest element
-# would pass it and fail at install. The manifest task runs first. ----
+# ---- android mode helper: source env.sh, then the Gradle wrapper, in a
+# subshell so the env and the cd never leak into a later step of an "all"
+# run. The wrapper needs no separate Gradle install. The task
+# ":app:compileDebugKotlin" exists under this repo's Gradle setup (AGP 9's
+# built-in Kotlin support), confirmed with `./gradlew :app:tasks`. The
+# compile task never merges the manifest, so a bad manifest element would
+# pass it and fail at install. The manifest task runs first. ----
 android_build() {
   (
     source "$repo_root/scripts/env.sh" &&
       cd "$repo_root/android" &&
-      gradle :app:processDebugMainManifest :app:compileDebugKotlin -q
+      ./gradlew :app:processDebugMainManifest :app:compileDebugKotlin -q
   )
 }
 
