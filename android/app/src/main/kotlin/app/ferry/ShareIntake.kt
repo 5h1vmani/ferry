@@ -3,9 +3,11 @@ package app.ferry
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Process
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import java.io.File
@@ -140,12 +142,49 @@ object ShareIntake {
     fun isShareIntent(intent: Intent): Boolean =
         intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
 
-    // Every content URI a share, or the multi-select document picker, handed
-    // over, in the order the sender listed them.
-    fun urisFrom(intent: Intent): List<Uri> = when (intent.action) {
-        Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent))
-        Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent)
-        else -> emptyList()
+    // Every URI a share names: EXTRA_STREAM, single or as a list depending
+    // on the action, and every item of the intent's own ClipData, in the
+    // order the sender listed them, with no repeats. resolve() below checks
+    // each one's own read grant before Ferry opens it; security finding,
+    // this batch.
+    fun urisFrom(intent: Intent): List<Uri> {
+        val fromExtra = when (intent.action) {
+            Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent))
+            Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent)
+            else -> emptyList()
+        }
+        return (fromExtra + clipDataUris(intent)).distinct()
+    }
+
+    private fun clipDataUris(intent: Intent): List<Uri> {
+        val clip = intent.clipData ?: return emptyList()
+        return (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+    }
+
+    // True only when Ferry itself has been granted permission to read this
+    // one URI, independent of any permission Ferry holds for its own
+    // purposes, such as all files access. Security finding, this batch:
+    // the intent's own FLAG_GRANT_READ_URI_PERMISSION says a grant happened
+    // somewhere in the intent, not that this particular URI is the one
+    // that got it. A sender can grant a URI of its own choosing, in its
+    // ClipData, say, and separately name a different, ungranted URI in
+    // EXTRA_STREAM; checking the whole-intent flag would let the second
+    // one through. This checks the one URI Ferry is about to open.
+    //
+    // A file:// path, or any scheme other than content, is refused
+    // outright: neither is covered by the Uri grant system at all, so
+    // reading one would only ever be through Ferry's own storage
+    // permission, which is exactly what this check exists to refuse.
+    private fun hasOwnReadGrant(context: Context, uri: Uri): Boolean {
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
+            return false
+        }
+        return context.checkUriPermission(
+            uri,
+            Process.myPid(),
+            Process.myUid(),
+            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     @Suppress("DEPRECATION")
@@ -172,24 +211,24 @@ object ShareIntake {
     // Stops at the first file it cannot read and sends none of the paths:
     // a share that partly lands is a person guessing which files made it.
     //
-    // `hasReadGrant` is `intent.flags` carrying `FLAG_GRANT_READ_URI_PERMISSION`
-    // for a share, and always true for the document picker, which the
-    // system itself always grants. Audit finding 1: the system gives that
-    // grant only to a sender that could read the file itself, so it is the
-    // proof docs/engine-contract.md item 5 asks for; without it, nothing is
-    // read.
-    fun resolve(context: Context, uris: List<Uri>, hasReadGrant: Boolean): Resolution {
+    // Audit finding 1, and the security finding this batch fixes: every
+    // URI is checked on its own with hasOwnReadGrant, which the document
+    // picker's own result always passes, since the system grants that one
+    // itself. docs/engine-contract.md item 5 asks for proof the sender
+    // could read the file; a grant Ferry itself holds for this exact URI
+    // is that proof, and nothing else is.
+    fun resolve(context: Context, uris: List<Uri>): Resolution {
         clearAppError()
-        if (!hasReadGrant) {
-            setAppError(AppError.NotGranted)
-            return Resolution.NotGranted
-        }
         if (uris.size > MAX_SHARE_URIS) {
             setAppError(AppError.TooMany(uris.size, MAX_SHARE_URIS))
             return Resolution.TooMany
         }
         val paths = mutableListOf<String>()
         for (uri in uris) {
+            if (!hasOwnReadGrant(context, uri)) {
+                setAppError(AppError.NotGranted)
+                return Resolution.NotGranted
+            }
             val path = try {
                 resolveOne(context, uri)
             } catch (e: CopyTooLargeException) {
