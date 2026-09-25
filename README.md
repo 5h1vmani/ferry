@@ -11,12 +11,11 @@ Finder.
 ## The problem
 
 Google discontinued Android File Transfer for Mac in May 2024 and shipped
-no replacement. Quick Share came to Windows but never to macOS. Apple
-will not open AirDrop to Android. No vendor covers this gap.
+no replacement. Sending a file from one device to the other is possible
+in several ways. LocalSend does it well over the local network.
 
-LocalSend covers sending files over the local network, and it does that
-well. No free tool lets a Mac user browse an Android phone inside
-Finder. That is the gap Ferry fills.
+Browsing the phone is harder. No free, open-source tool lets a Mac user
+browse an Android phone inside Finder. That is the gap Ferry fills.
 
 ## Compared with alternatives
 
@@ -41,7 +40,7 @@ source" below.
 ## Requirements
 
 - macOS 14 or later, on Apple silicon (arm64) only.
-- Android 12 (API 31) or later, up to API 36, on an arm64-v8a phone.
+- Android 12 (API 31) or later, on an arm64-v8a phone.
 - For the USB transport: `adb` installed on the Mac, and USB debugging
   turned on on the phone.
 
@@ -83,11 +82,11 @@ bytes)`, `truncate`, `rename`, `set_mtime`, `mkdir`, and `delete`. Either
 device can serve it. Either device can call it.
 
 **The transfer engine** sits on top. Pushing a file is repeated `write`.
-Pulling a file is repeated `read`. Both directions share one protocol,
-one chunking scheme, and one resume path.
+Pulling a file is repeated `read`. Both directions share one protocol
+and one chunking scheme.
 
-Finder integration falls out of the same layer. Finder asks for a
-directory listing, then for byte ranges of a file. That is exactly what
+Finder integration uses the same layer. Finder asks for a directory
+listing, then for byte ranges of a file. That is exactly what
 the file operations layer already provides.
 
 ### Transports
@@ -97,16 +96,17 @@ the file operations layer already provides.
 | Wi-Fi on the local network, over mDNS and TCP | Default path |
 | USB through an adb tunnel | The USB transport |
 
-USB is not faster than good Wi-Fi. It is here for reliability: it works
-on networks that block device discovery, and it keeps working when the
-router does not.
+Ferry uses USB for reliability, not for speed. USB works on networks
+that block device discovery. It also keeps working when the router does
+not.
 
 ### Resume
 
 A pull over Ferry's own protocol resumes after a cut and refetches at
 most one chunk. A test cuts the connection at every byte position during
-a pull and checks this bound. The test is slow, so it does not run in
-the normal test suite; run it by hand:
+a pull and checks this bound. The test takes several minutes, so CI
+runs it on every push to main, not on every pull request. To run it
+yourself:
 
 ```bash
 cargo test -p ferry-runtime --test resume_sweep -- --ignored
