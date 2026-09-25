@@ -44,22 +44,20 @@ copy, and the cable work. Expect rough edges. Every one you find is a result.
    debugging. Ferry needs this for the cable, so it stays on.
 3. Plug the phone into the Mac with the cable. The phone asks "Allow USB
    debugging?" Tick "Always allow from this computer" and tap Allow.
-4. In Terminal, in the `ferry` folder, run:
+4. Build the phone app as the README's "Build from source" section says,
+   then install it:
 
 ```bash
-source scripts/env.sh && cd android && gradle assembleDebug -q && adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-   The last line should say `Success`. If it says `no devices`, unplug and
-   plug the cable again and check step 3.
+   The line should say `Success`. If it says `no devices`, unplug and plug
+   the cable again and check step 3.
 
 ### Part B: build and open the Mac app
 
-In Terminal, in the `ferry` folder, run:
-
-```bash
-cd macos && xcodegen generate -q && xcodebuild -project Ferry.xcodeproj -scheme Ferry -configuration Debug -derivedDataPath build -quiet build && open build/Build/Products/Debug/Ferry.app
-```
+Build and open the Mac app as the README's "Build from source" section
+says.
 
 The first build takes a few minutes. Two system prompts may appear: one
 about the local network, and one from the firewall about incoming

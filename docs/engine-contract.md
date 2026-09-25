@@ -1,8 +1,9 @@
 # Engine contract for the designed screens
 
-Adopted from the design pass of 10 September 2026. The design's own copy
-was `docs-v2/contract.md`. This is the repo's version, with the sizes
-corrected against the code and every open choice decided.
+Adopted from the design pass of 10 September 2026. The design tool used the
+name docs-v2/contract.md for its own copy, a path that does not exist in
+this repository. This is the repo's version, with the sizes corrected
+against the code and every open choice decided.
 
 `crates/ferry-runtime/src/lib.rs` is the boundary. This file lists every
 change the Mac screens need from it. Each item has a number. The Swift

@@ -1,22 +1,17 @@
 # How the agent runs work
 
-Ferry is built in batches by agents, with one orchestrating session that
-writes the contract, launches builders, merges, and audits. This file holds
-the rules that came out of the two runs on 11 September 2026. Each rule
-cost real tokens, a bad push, or a false test result before it was written
-down. A run that ignores one will pay for it again.
+This is the internal record of the batch process that built most of this
+repository with AI agents: one orchestrating session that wrote the
+contract, launched builders, merged, and audited. This file holds the
+rules that came out of the two runs on 11 September 2026. Each rule cost
+real tokens, a bad push, or a false test result before it was written
+down.
 
-## Roles
-
-- The orchestrator decides. It writes `docs/engine-contract.md` items,
-  chooses batches, resolves merges, and reads gate output. It reads diffs
-  only when a gate fails twice.
-- Builders implement. They get the contract item, the files to read, the
-  tests to add, and the gate to run. They commit on a branch and never push.
-- Auditors read. They get a commit range and a threat model, run nothing,
-  and report findings with a file, a line, a cause, and the smallest fix.
-- Fix passes implement audit findings, one commit per finding, with a test
-  that fails before the fix.
+The rule numbers below are fixed. Rust source comments and audit files
+cite them by number, so a rule keeps its number even after this file
+changes. `CONTRIBUTING.md` states the subset of these rules that also
+apply to a human contributor, in plain terms and with no numbers to keep
+stable.
 
 ## Rules
 

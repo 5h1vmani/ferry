@@ -1,0 +1,24 @@
+// The project-level default for Ferry's signing settings.
+//
+// These three lines make a fresh clone build with no Apple developer
+// team. `scripts/gate.sh mac` and the README's build command both rely
+// on this. The app is ad hoc signed: it runs, but macOS treats each
+// rebuild as a new app, so the Keychain and the local network prompt ask
+// again each time.
+CODE_SIGNING_ALLOWED = NO
+CODE_SIGN_IDENTITY =
+DEVELOPMENT_TEAM =
+
+// An owner with an Apple team overrides the three lines above without
+// editing this tracked file. Create macos/Local.xcconfig (gitignored)
+// with:
+//
+//   CODE_SIGNING_ALLOWED = YES
+//   CODE_SIGN_IDENTITY = Apple Development
+//   DEVELOPMENT_TEAM = <team ID>
+//
+// A setting later in this file wins, so Local.xcconfig, included last,
+// overrides the defaults above. `#include?`, with the question mark,
+// does nothing when the file is absent, so a fresh clone with no
+// Local.xcconfig still builds. See CONTRIBUTING.md.
+#include? "Local.xcconfig"

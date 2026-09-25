@@ -11,7 +11,8 @@ Build a file transfer app between macOS and Android.
 
 Two purposes, both real:
 
-1. A portfolio project on GitHub that shows systems engineering skill.
+1. A complete build, published as source, so the protocol, the security
+   model, and the two apps can be checked by anyone.
 2. An app I will personally use on my own Mac and my own phone.
 
 Not a purpose: revenue. Not a purpose: a public product with many users.
@@ -51,7 +52,7 @@ reliability feature. It works on networks where discovery fails.
 |---|---|---|
 | Wi-Fi on the local network, mDNS and TCP | None | Build. Default path. |
 | USB with an adb tunnel | USB debugging on, which it already is | Build. This is the USB transport. Reuses the TCP code. |
-| USB with Android Open Accessory | Plug in, accept a prompt on the phone | Deferred to the optional phase. Portfolio only. See decision record 9. |
+| USB with Android Open Accessory | Plug in, accept a prompt on the phone | Deferred to the optional phase. No user of this app needs it over the adb tunnel. See decision record 9. |
 | USB with MTP | Plug in | Not built. It cannot write part of a file, allows one session, and serves only the cable. OpenMTP already covers plain USB transfer. See decision record 9. |
 | USB tethering | Turn tethering on | Tested. No. This phone runs Android 12, which tethers over RNDIS, and macOS has no RNDIS driver. |
 | Phone local-only hotspot | Mac drops its Wi-Fi and loses internet | Defer. Fallback when the LAN blocks discovery. |
@@ -239,7 +240,7 @@ yet decided, so these are working weeks, not calendar weeks.
 | 0 | Spike. Done. See `docs/spike-0-findings.md`. | Done | Done |
 | 1 | Rust core, the engine, both apps, mDNS, TCP, the adb USB transport, key storage, pairing. Pull only. Done and run on real devices on 10 September 2026. The designed screens and the engine fields behind them landed on 11 September 2026. See section 12. | Done | Done |
 | 2 | The runtime limits, then one-way photo import with content skip, then the Finder mount over a WebDAV bridge with thumbnail prefetch, push, delta on save, trusted networks, an access log, and the Mac in the Android file picker. | 8 to 12 weeks | Medium |
-| 3 | Optional. Per-peer root subset. QR code pairing. File Provider extension, which costs 99 dollars a year. Android Open Accessory, portfolio only. Hotspot fallback. | Undecided | High |
+| 3 | Optional. Per-peer root subset. QR code pairing. File Provider extension, which costs 99 dollars a year. Android Open Accessory, deferred since the adb tunnel already covers the reliability need. Hotspot fallback. | Undecided | High |
 
 Phase 2 holds the two headline features. Photo import is the job Android
 File Transfer's death took away. The Finder mount is the one no free tool
@@ -261,7 +262,7 @@ transport and lands in phase 1. See decision record 9.
 
 ## 7. Cost
 
-Zero for personal use and for a GitHub portfolio.
+Zero for personal use, and zero to publish the source on GitHub.
 
 On the Mac I build in Xcode and run the app. An app I build myself carries no
 quarantine flag, so Gatekeeper never appears.
@@ -350,7 +351,7 @@ a fake server on localhost.
 - Do not plan on F-Droid as a distribution route. F-Droid has said this rule
   threatens its existence, and the outcome is not settled.
 
-## 10. Portfolio checklist
+## 10. Checklist for a public repository
 
 These cost little and carry more weight than extra features.
 
@@ -365,9 +366,10 @@ These cost little and carry more weight than extra features.
    few hours and it makes the architecture visible in one screenshot.
 4. Use a single repository. Rust core, macOS app, Android app, and the protocol
    document together.
-5. Run continuous integration on the Rust core only: tests, clippy, and
-   formatting. Cross-compiling both apps in CI costs real setup time and proves
-   almost nothing.
+5. Run continuous integration on the Rust core, and on an unsigned Mac
+   build, because GitHub's macOS runners are free for public repositories.
+   Cross-compiling the Android app in CI is deferred; it needs its own JDK,
+   SDK, and NDK setup for what it would prove.
 6. Write the README for a reader who will never install the app. Explain the
    problem, explain the two layers, and explain one hard decision with its
    reason.

@@ -52,10 +52,12 @@ The cost is three to five weeks: a libusb driver on the Mac, accessory mode on
 the phone, and the prompt Android shows every time the cable goes in. That is
 the largest single item in the plan, bought for a property nobody needs.
 
-The earlier plan kept it for the portfolio. That reason was honest but it was
-also the only reason, and the portfolio does not need it. The pairing design,
-the resume design, the wire protocol document, and the Finder mount already
-show the work. A libusb driver adds weeks, not evidence.
+The earlier plan kept it anyway, and gave no user need as the reason. The
+real reason to defer it is cost against benefit: three to five weeks for a
+property the adb tunnel already provides. The pairing design, the resume
+design, and the wire protocol document already record the hard decisions
+in this project. A libusb driver would add weeks of code, not a new
+decision worth documenting.
 
 ## Why adb
 
@@ -77,8 +79,8 @@ Ferry on the Mac needs the `adb` binary. Version 1 detects an installed copy,
 because anyone installing the Android app already has one. Bundling it is a
 later choice, not a blocker.
 
-Open Accessory stays on the optional list, labelled as what it is: a portfolio
-item, wanted by no user of this app.
+Open Accessory stays on the optional list, labelled as what it is: deferred
+by cost, wanted by no user of this app.
 
 If the scope ever widens to phones without Ferry installed, MTP becomes the
 only USB route for them, and this record gets revisited. Until then it is not

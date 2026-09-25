@@ -7,6 +7,11 @@ options:
   deploymentTarget:
     macOS: "14.0"
   createIntermediateGroups: true
+# The project-level base for every `$(inherited)` signing setting below.
+# See Signing.xcconfig and CONTRIBUTING.md.
+configFiles:
+  Debug: Signing.xcconfig
+  Release: Signing.xcconfig
 settings:
   base:
     SWIFT_VERSION: "5.9"
@@ -60,13 +65,16 @@ targets:
       base:
         PRODUCT_NAME: Ferry
         PRODUCT_BUNDLE_IDENTIFIER: app.ferry.mac
-        # Signed with the owner's Apple team, a Personal Team. That gives the
-        # app one identity across rebuilds, so the Keychain, the local
-        # network prompt, and the firewall remember it. An ad hoc signature
-        # changes with every build and each of the three asked again.
+        # Ad hoc by default, so a fresh clone builds with no Apple team:
+        # `scripts/gate.sh mac` and the README's build command both need
+        # this to work with nothing else installed. `$(inherited)` reads
+        # the actual value from macos/Signing.xcconfig, which an owner
+        # overrides through the gitignored macos/Local.xcconfig instead of
+        # editing this file. See CONTRIBUTING.md.
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_IDENTITY: "Apple Development"
-        DEVELOPMENT_TEAM: L84QUBJX67
+        CODE_SIGN_IDENTITY: $(inherited)
+        DEVELOPMENT_TEAM: $(inherited)
+        CODE_SIGNING_ALLOWED: $(inherited)
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Ferry/Ferry.entitlements
         SWIFT_VERSION: "5.9"

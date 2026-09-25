@@ -59,3 +59,55 @@ jobs:
       # to be correct. A known advisory in any of them should fail the build.
       - name: Check advisories
         run: cargo audit --deny warnings
+
+  resume-sweep:
+    name: resume sweep
+    runs-on: ubuntu-latest
+    # This test is slow (several minutes), so it runs once per push to
+    # main rather than on every pull request.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      # Cuts a pull's connection at every byte position and checks that
+      # resume refetches at most one chunk. Marked #[ignore] because it is
+      # slow, so it is not part of the "rust" gate above.
+      - name: Run the resume sweep
+        run: cargo test -p ferry-runtime --test resume_sweep -- --ignored
+
+  mac:
+    name: mac build (unsigned)
+    runs-on: macos-latest
+    # GitHub-hosted macOS runners cost nothing on a public repository but
+    # are billed by the minute on a private one, so this job stays off
+    # until the repository is public.
+    if: ${{ !github.event.repository.private }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      # macos/Signing.xcconfig defaults to ad hoc signing, so this needs
+      # no Apple developer team. It catches a Rust API change that breaks
+      # the Swift app, which the "gen" gate above cannot see.
+      - name: Run the Mac gate
+        run: scripts/gate.sh mac

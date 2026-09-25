@@ -1,7 +1,7 @@
 # The UX fix plan
 
-Date: 16 September 2026. Shiva accepted the assessment and this plan on
-that day. Status is kept in the table at the end.
+Date: 16 September 2026. The maintainer accepted the assessment and this
+plan on that day. Status is kept in the table at the end.
 
 ## Why
 
@@ -15,9 +15,10 @@ phone could not start a transfer at all: `push`, `push_files`, `pull`, and
 `pull_folder` had no caller under `android/app`.
 
 The information architecture came from an agent design pass on 10 September
-2026. Its one human checkpoint, step 6 in `docs/ux-plan.md`, was skipped.
-No designed screen has run on a real device. The decisions this plan
-reverses are recorded in `docs/decisions/0011-gestures-not-a-file-manager.md`.
+2026. Its one human checkpoint, a review of the result before it was built,
+was skipped. No designed screen has run on a real device. The decisions
+this plan reverses are recorded in
+`docs/decisions/0011-gestures-not-a-file-manager.md`.
 
 ## The principle
 
@@ -92,10 +93,11 @@ A transfer row offers Retry while failed and Reveal in Finder for a
 finished pull. Cmd+O opens the send panel for the selected device. Cmd+R
 retries every failed transfer of the selected device.
 
-### 6. Shiva looks
+### 6. The maintainer looks
 
-After items 1 to 5 build, Shiva runs `docs/manual-checks.md` tasks 3, 4,
-and the new task 7 for these gestures. No visual polish before that.
+After items 1 to 5 build, the maintainer runs `docs/manual-checks.md`
+tasks 3, 4, and the new task 7 for these gestures. No visual polish before
+that.
 
 ## Rules that live in the contract
 
@@ -114,15 +116,16 @@ Where a gesture-started push lands, and the mkdir rule, are in
    `offer_scanned` rather than `start_pairing_with(Qr)`. The bindings are
    regenerated, because the last one is a generated comment.
 3. The design pass that set the UX lived only in the ignored `design_ouput/`
-   folder. Its reasoning documents and the canvas are now in
-   `docs/design-pass/`. The code copies and the design-system package are
+   folder. Its reasoning documents and the canvas moved into `docs/design-pass/`
+   on that day, and were later removed once this plan closed them out; git
+   history keeps them. The code copies and the design-system package are
    not kept: the repo's own `design/` folder is the source of tokens.
 
 ## Not in this pass
 
 - A Quick Settings tile for advertising on the phone.
 - `push_folder` in the engine, so a dropped folder lands as one batch.
-- A menu-bar-only Mac app. Decide after Shiva has seen the window.
+- A menu-bar-only Mac app. Decide after the maintainer has seen the window.
 - Resume inside one Finder copy. That is a bridge change, not a screen.
 
 ## Batches
@@ -145,6 +148,6 @@ Where a gesture-started push lands, and the mkdir rule, are in
 | 3. Mac drop and service | Built, 16 September 2026, branch `ux-mac` merged. Not run on a device. |
 | 4. Files section removed | Done, 16 September 2026. |
 | 5. Menus and shortcuts | Built, 16 September 2026. Not run on a device. |
-| 6. Shiva looks | Ready. The audit's 17 findings are fixed and merged. The steps are `docs/manual-checks.md` task 7. |
+| 6. The maintainer looks | Ready. The audit's 17 findings are fixed and merged. The steps are `docs/manual-checks.md` task 7. |
 
 The audit of the merged range is `docs/audits/ux-gestures.md`, with its fix pass recorded at the end.

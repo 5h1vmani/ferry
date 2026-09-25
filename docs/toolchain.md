@@ -3,7 +3,14 @@
 What is installed on the development Mac, how it got there, and how to get it
 again on a fresh machine. Nothing here needs `sudo` or a password.
 
+## Homebrew
+
+Most steps below use Homebrew. Install it from
+<https://brew.sh> if `brew --version` fails.
+
 ## Rust
+
+Install `rustup` from <https://rustup.rs> if `rustup --version` fails.
 
 The pinned toolchain is in `rust-toolchain.toml`. `rustup` reads it. Two extra
 targets are needed for Android:
@@ -55,6 +62,10 @@ Check with `sdkmanager --list` and pick the newest that is not marked `rc`.
 
 The whole Android SDK is about 3.3 GB.
 
+No separate Gradle install is needed. The repo ships the wrapper at
+`android/gradlew`, which downloads the pinned Gradle version on first use.
+Always run `./gradlew` from the `android` folder, never a bare `gradle`.
+
 ## Environment
 
 Every shell that builds the Android side needs the variables from
@@ -75,6 +86,7 @@ java -version
 adb version
 cargo ndk --version
 xcodegen --version
+cd android && ./gradlew --version
 ```
 
-All four should print a version.
+All five should print a version.
