@@ -1,5 +1,6 @@
 package app.ferry.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -54,6 +55,10 @@ fun FirstRunScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            // docs/audits/oss-looks.md B3. This screen drew no background of
+            // its own, so it showed through the window's own colour, which
+            // stayed light even in dark mode.
+            .background(FerryColor.background())
             .padding(FerrySpace.s5),
     ) {
         Spacer(Modifier.height(FerrySpace.s7))
