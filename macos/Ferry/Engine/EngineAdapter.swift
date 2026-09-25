@@ -223,7 +223,8 @@ enum EngineAdapter {
             activeTransport: moving?.reachableVia,
             speedBytesPerSec: moving?.speedBytesPerSec,
             networkName: status.network,
-            isWifiPresenceOn: status.wifiPresence
+            isWifiPresenceOn: status.wifiPresence,
+            adbPresent: status.adbPresent
         )
     }
 

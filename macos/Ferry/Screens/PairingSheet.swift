@@ -96,6 +96,15 @@ struct PairingSheet: View {
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.textSecondary)
                     .multilineTextAlignment(.center)
+                // Stated here because this is where a person watches the
+                // cable state. `docs/audits/oss-looks.md`, M5;
+                // `docs/audits/oss-capability.md`, M6.
+                if !model.presence.adbPresent {
+                    Text(S.pairing.cableNeedsAdb)
+                        .font(FerryFont.caption)
+                        .foregroundStyle(FerryColor.textSecondary)
+                        .multilineTextAlignment(.center)
+                }
                 Button(S.common.cancel, action: cancel)
                     .buttonStyle(.bordered)
             }
