@@ -822,8 +822,9 @@ first, because Finder expects it; the wire stays non-recursive. `MOVE` is
 and writes through the bridge; `COPY` of a folder is 403. `PROPPATCH`
 sets the modified time when asked and answers 403 per property otherwise.
 A `.ferry-part` name is 404 on `GET`, `HEAD`, and `PROPFIND`, and never
-listed. A failed landing removes the spool file. A write on a locked
-resource without its token is 423.
+listed. A landing removes the spool file before its answer goes out,
+whether the landing failed or succeeded. A write on a locked resource
+without its token is 423.
 
 **Lifecycle.** The Mac app starts the bridge and mounts when a phone
 becomes reachable, names the volume after the device, and reports the

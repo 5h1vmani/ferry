@@ -576,10 +576,10 @@ mod tests {
 
         let mut store = PeerStore::load(&path, DeviceKind::Phone).unwrap();
         store
-            .add(sample_peer(1, "Shiva's MacBook", 1_700_000_000))
+            .add(sample_peer(1, "Alex's MacBook", 1_700_000_000))
             .unwrap();
         store
-            .add(sample_peer(2, "Shiva's Pixel", 1_700_000_500))
+            .add(sample_peer(2, "Alex's Pixel", 1_700_000_500))
             .unwrap();
         store.save().unwrap();
 

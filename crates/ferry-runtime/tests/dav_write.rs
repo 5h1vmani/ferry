@@ -75,7 +75,7 @@ fn the_bridge_answers_every_i2_write_verb() {
 
     let endpoint = mac
         .engine
-        .mount_start(phone_key_hex)
+        .mount_start(phone_key_hex.clone())
         .expect("mount_start should succeed for a paired, reachable device");
     let addr: SocketAddr = format!("127.0.0.1:{}", port_of(&endpoint.url))
         .parse()
@@ -107,6 +107,17 @@ fn the_bridge_answers_every_i2_write_verb() {
         );
     };
 
+    // A landing's spool file must be gone the moment its answer arrives,
+    // on success as well as on failure (`docs/engine-contract.md`, item
+    // 6). Checked against `mac`'s own spool folder for the phone, right
+    // after each PUT below that is expected to land.
+    let spool_dir = mac.data.path().join("dav_spool").join(&phone_key_hex);
+    let spool_is_empty = || {
+        std::fs::read_dir(&spool_dir)
+            .map(Iterator::count)
+            .unwrap_or(0)
+    };
+
     // --- PUT of a new file: 201, the right bytes, and a This/Write entry.
     let new_bytes = pattern(5000);
     let response = client.request(
@@ -118,6 +129,11 @@ fn the_bridge_answers_every_i2_write_verb() {
         Some(&new_bytes),
     );
     assert_eq!(response.status, 201);
+    assert_eq!(
+        spool_is_empty(),
+        0,
+        "a successful PUT must leave no spool file behind"
+    );
     let response = client.request("GET", "/Root/New.bin", &host, Some(auth), &[], None);
     assert_eq!(response.status, 200);
     assert_eq!(response.body, new_bytes);
@@ -808,10 +824,11 @@ fn the_bridge_answers_every_i2_write_verb() {
         "a PUT the peer's read only root refuses should answer with a write refusal, got {}",
         response.status
     );
-    // `docs/engine-contract.md`, item 6: "a failed landing removes the
-    // spool file." This device has never had a `PUT` land, so its
-    // spool folder holds nothing but what the refused attempt above left
-    // behind, which should be nothing at all.
+    // `docs/engine-contract.md`, item 6: a landing removes the spool
+    // file before its answer goes out, whether it failed or succeeded.
+    // This device has never had a `PUT` land, so its spool folder holds
+    // nothing but what the refused attempt above left behind, which
+    // should be nothing at all.
     let spool_dir = second_mac
         .data
         .path()
