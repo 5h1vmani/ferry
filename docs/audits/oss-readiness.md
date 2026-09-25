@@ -12,7 +12,7 @@ For a stranger, the largest gaps are a README that hides the untested status and
 
 ## Blockers before going public
 
-1. The commit email becomes public for good. All 528 commits carry shiv.padakanti@gmail.com (oss_scan.txt), but the GitHub profile hides its email (`gh api user` returns `"email":null`). Fix: answer Decision 1 before the first public push.
+1. The commit email becomes public for good. All 528 commits carry the owner's personal email address (oss_scan.txt), but the GitHub profile hides its email (`gh api user` returns `"email":null`). Fix: answer Decision 1 before the first public push.
 2. Nobody can report a vulnerability privately. Ferry listens on every interface (crates/ferry-runtime/src/engine/api/lifecycle.rs:217-221) and can serve all phone storage (android/app/src/main/AndroidManifest.xml:16). Fix: add SECURITY.md and turn on GitHub private vulnerability reporting at publish.
 3. A third-party file with no known licence would ship under MIT. docs/design-pass/2026-09-10/support.js is a 69 KB generated bundle whose header names "dc-runtime" and carries no licence. Fix: confirm the tool's terms allow redistribution; if not, remove it from HEAD and from history in the Decision 1 rewrite.
 4. The README hides that most features are untested. README.md:9-28 is a dated work log, and "None of it has run on real devices yet" sits at lines 25-26. Fix: replace it with a short status that says experimental and lists what ran on devices. Name the hardware: Apple silicon, macOS 14, and arm64 Android 12 or later.
@@ -68,7 +68,7 @@ Ad-hoc signing means a signature with no Apple identity (`codesign -s -`).
 | docs/audits/ (all 12 files) | Keep, add an index | 145 code comments cite them, and they show adversarial review. A stranger cannot tell what "fable" means without an index. |
 | docs/audits/oss-readiness.md (this file) | Move out or delete after acting | It is a to-do list for the owner, not a record a stranger needs. |
 | docs/design-pass/README.md, 2026-09-10/{ia,jobs,components,contract,handoff}.md, 2026-09-11/kotlin-README.md | Delete | They are superseded copies with 18 dead `docs-v2/` links. Git history keeps them. |
-| docs/design-pass/2026-09-10/Ferry IA.dc.html and support.js | Delete | The page cannot render without `_ds/`. It holds /Users/yantram paths, and support.js has no known licence. |
+| docs/design-pass/2026-09-10/Ferry IA.dc.html and support.js | Delete | The page cannot render without `_ds/`. It holds /Users/<owner> paths, and support.js has no known licence. |
 | spike/README.md, spike/webdav-probe/{Cargo.toml, Cargo.lock, src/main.rs} | Keep | The spike is small, labelled as throwaway, and cited as evidence. |
 | scripts/env.sh, gen_bindings.sh, gen_common.py, gen_errors.py, gen_tokens.py | Keep | They are the build and generator tools. |
 | scripts/gate.sh | Keep, one comment | Line 3 says "every builder and the orchestrator". Say "every contributor and CI" instead. |

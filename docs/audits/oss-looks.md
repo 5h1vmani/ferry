@@ -91,7 +91,7 @@ The apps are unusually disciplined underneath. Strings, tokens, and error words 
 - Fix: keep `protocol.md`, `decisions/`, `jobs.md`, `voice.md`, `design.md`, `components.md`, `ia.md`, and `toolchain.md` at the top. Move the rest to `docs/internal/`, and add a `docs/README.md` index.
 
 **M12. A visitor cannot build the Mac app without editing the project file.**
-- Evidence: `macos/project.yml:60-62` pins the owner's `DEVELOPMENT_TEAM: L84QUBJX67`. `project.yml:69` builds arm64 only, and `android/app/build.gradle.kts:14,24` sets Android 12 and arm64 only. The README states none of this.
+- Evidence: `macos/project.yml:60-62` pins the owner's `DEVELOPMENT_TEAM: <owner team ID>`. `project.yml:69` builds arm64 only, and `android/app/build.gradle.kts:14,24` sets Android 12 and arm64 only. The README states none of this.
 - Visitor sees: a signing error on the first build, with no requirements listed.
 - Fix: read the team from an ignored local `.xcconfig`, and list the platform and architecture requirements in the README.
 

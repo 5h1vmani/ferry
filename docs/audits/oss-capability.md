@@ -103,7 +103,7 @@ Scenario: Android documents that the Wi-Fi stack drops multicast without the loc
 Fix: hold a `WifiManager.MulticastLock` while the service advertises or browses.
 
 **M5. The documented build fails for anyone except the owner.**
-Evidence: `project.yml:62` hard-codes `DEVELOPMENT_TEAM: L84QUBJX67`; `project.yml:48` and `:69` build for `aarch64-apple-darwin` and `arm64` only. `README.md:27-28` sends readers to task 3, whose command (`manual-checks.md:61`) assumes that team.
+Evidence: `project.yml:62` hard-codes `DEVELOPMENT_TEAM: <owner team ID>`; `project.yml:48` and `:69` build for `aarch64-apple-darwin` and `arm64` only. `README.md:27-28` sends readers to task 3, whose command (`manual-checks.md:61`) assumes that team.
 Scenario: a reviewer runs the `xcodebuild` line and gets a signing error for a team they do not belong to. On an Intel Mac the Rust library does not match the build architecture.
 Fix: read the team from a local, ignored settings file with a documented step, and state Apple silicon only in the README.
 
