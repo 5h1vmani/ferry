@@ -21,13 +21,17 @@
 //!
 //! Neither path resumes across attempts the way a background transfer
 //! does. A `PUT` or a `COPY` is one HTTP request. `docs/engine-contract.md`,
-//! item 6: "a failed landing removes the spool file." Finder is the one
-//! that retries, the same way it retries any other failed request.
+//! item 6: "a landing removes the spool file before its answer goes out,
+//! whether the landing failed or succeeded." Finder is the one that
+//! retries, the same way it retries any other failed request.
 //!
 //! The spool file itself is a [`SpoolFile`], whose `Drop` removes it: a
 //! short body, a dropped connection, or any other early return between
 //! [`new_spool_path`] and a landing's own cleanup must never leave a spool
-//! file behind, per that same rule.
+//! file behind, per that same rule. Every caller that reaches a landing
+//! also drops its `SpoolFile` explicitly, right before it writes any
+//! answer, on success and on failure: the file is gone before the answer
+//! reaches Finder, not merely by the time the handler function returns.
 
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
@@ -116,7 +120,8 @@ impl SpoolBytes {
 /// or any other early return cleans it up the same way a successful
 /// landing's own explicit `drop` does, and lowers [`SpoolBytes`] by the same
 /// amount [`new_spool_path`] raised it by. `docs/engine-contract.md`, item
-/// 6: "a failed landing removes the spool file."
+/// 6: "a landing removes the spool file before its answer goes out,
+/// whether the landing failed or succeeded."
 pub(crate) struct SpoolFile {
     path: PathBuf,
     size: u64,

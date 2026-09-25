@@ -450,6 +450,11 @@ pub(crate) fn copy_verb(
         entry.size,
         &mut bytes_written,
     );
+    // The spool file must be gone before any answer goes out, on success
+    // and on failure, so a check of the spool folder right after the
+    // answer arrives never finds a file this call has already finished
+    // with. `docs/engine-contract.md`, item 6.
+    drop(spool);
 
     match landing {
         Ok(()) => {
@@ -587,13 +592,21 @@ pub(crate) fn put_file(
     // for a `GET`, in the write direction. Everything from here on
     // answers a real response instead, since the body has, by this
     // point, been received in full and correctly. `spool`'s own `Drop`
-    // removes the file on this path, and every path below it.
+    // removes the file on this path; every path below it drops `spool`
+    // explicitly, right before its answer goes out, per item 6.
     put::spool_body(reader, content_length, spool.path())?;
 
     let Some((fs, leaf, manifest)) = put::open_spool(spool.path()) else {
+        // Nothing has read the spool file's bytes for a landing yet, so
+        // it is safe to drop it, and its `Drop` removes it, before this
+        // answer goes out. `docs/engine-contract.md`, item 6.
+        drop(spool);
         return no_body(out, "500 Internal Server Error").map(|()| true);
     };
     let Ok(mut borrowed) = bridge.pool.take(shared) else {
+        // Same as above: `put_landing` below is what actually reads the
+        // spool file, and it never ran on this path.
+        drop(spool);
         return unavailable(out).map(|()| true);
     };
     let mut bytes_written = 0u64;
@@ -605,6 +618,11 @@ pub(crate) fn put_file(
         &manifest,
         &mut bytes_written,
     );
+    // The spool file must be gone before any answer goes out, on success
+    // and on failure, so a check of the spool folder right after the
+    // answer arrives never finds a file this call has already finished
+    // with. `docs/engine-contract.md`, item 6.
+    drop(spool);
 
     match landing {
         Ok(kind) => {
@@ -642,9 +660,10 @@ pub(crate) fn put_file(
         // than folded into `map_write_error`'s generic mapping.
         Err(RpcError::Remote(OpError::IsADirectory)) => no_body(out, "409 Conflict").map(|()| true),
         Err(error) => {
-            // `docs/engine-contract.md`, item 6: "a failed landing removes
-            // the spool file." Its access log entry still says what was
-            // actually written to the peer before it failed, not nothing.
+            // The spool file for this failed landing is already gone, by
+            // the `drop(spool)` above. Its access log entry still says
+            // what was actually written to the peer before it failed, not
+            // nothing.
             record_this(
                 shared,
                 &bridge.device_key_hex,
