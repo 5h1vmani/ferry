@@ -16,10 +16,16 @@ import AppKit
 
 struct MenuBarPresence: View {
     @EnvironmentObject private var model: EngineModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(alignment: .leading, spacing: FerrySpace.s2) {
-            if model.devices.isEmpty {
+            if !model.isReady {
+                Text(S.devices.starting)
+                    .font(FerryFont.body)
+                    .foregroundStyle(FerryColor.textSecondary)
+                    .padding(.horizontal, FerrySpace.s2)
+            } else if model.devices.isEmpty {
                 Text(S.devices.noPhonePaired)
                     .font(FerryFont.body)
                     .foregroundStyle(FerryColor.textSecondary)
@@ -44,13 +50,18 @@ struct MenuBarPresence: View {
             PresenceControl(
                 presence: model.presence,
                 onChange: { model.setAdvertising($0) },
-                showsSpeed: true
+                showsSpeed: true,
+                isReady: model.isReady
             )
             .padding(.horizontal, FerrySpace.s2)
 
             Divider()
 
             Button(S.menuBar.openFerry) {
+                // `activate` alone brings the app forward but creates no
+                // window, so a closed window stayed closed.
+                // `docs/audits/oss-looks.md`, M4.
+                openWindow(id: mainWindowID)
                 NSApplication.shared.activate(ignoringOtherApps: true)
             }
             .buttonStyle(.plain)

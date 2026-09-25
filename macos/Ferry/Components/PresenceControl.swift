@@ -17,8 +17,26 @@ struct PresenceControl: View {
 
     /// The menu bar has room for a speed; the sidebar footer does not.
     var showsSpeed = false
+    /// False before the engine's first snapshot arrives. `presence` is
+    /// `.unknown` until then, which is not the same fact as "not
+    /// reachable": nobody has asked the engine yet, so this draws a
+    /// neutral line instead of a switch that is really off.
+    /// `docs/audits/oss-looks.md`, M6.
+    var isReady = true
 
     var body: some View {
+        Group {
+            if isReady {
+                ready
+            } else {
+                starting
+            }
+        }
+        .padding(!isReady || presence.isAdvertising ? FerrySpace.s1 : FerrySpace.s3)
+        .background(background)
+    }
+
+    private var ready: some View {
         VStack(alignment: .leading, spacing: FerrySpace.s1) {
             Toggle(isOn: binding) {
                 HStack(spacing: FerrySpace.s2) {
@@ -55,10 +73,26 @@ struct PresenceControl: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(presence.isAdvertising ? FerrySpace.s1 : FerrySpace.s3)
-        .background(background)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
+        // Tells a screen reader what the switch does, as a verb, next to
+        // the state `accessibilityLabel` already states. `docs/voice.md`
+        // rule 9.
+        .accessibilityHint(presence.isAdvertising ? S.presence.stopBeingReachable : S.presence.becomeReachable)
+    }
+
+    /// Before the first snapshot: no switch, because there is nothing yet
+    /// to turn on or off, only a fact still being read.
+    private var starting: some View {
+        HStack(spacing: FerrySpace.s2) {
+            Image(systemName: FerryIcon.wifi)
+                .foregroundStyle(FerryColor.textSecondary)
+            Text(S.presence.starting)
+                .font(FerryFont.body)
+                .foregroundStyle(FerryColor.textSecondary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(S.presence.starting)
     }
 
     private var binding: Binding<Bool> {
@@ -77,7 +111,7 @@ struct PresenceControl: View {
     /// surface (readme.md, Background and imagery).
     @ViewBuilder
     private var background: some View {
-        if presence.isAdvertising {
+        if !isReady || presence.isAdvertising {
             Color.clear
         } else {
             RoundedRectangle(cornerRadius: FerryRadius.medium)
@@ -109,7 +143,8 @@ struct PresenceControl: View {
                 activeTransport: .usb,
                 speedBytesPerSec: 38_000_000,
                 networkName: "Home",
-                isWifiPresenceOn: true
+                isWifiPresenceOn: true,
+                adbPresent: true
             ),
             onChange: { _ in },
             showsSpeed: true
@@ -120,11 +155,13 @@ struct PresenceControl: View {
                 activeTransport: nil,
                 speedBytesPerSec: nil,
                 networkName: "Café Wifi",
-                isWifiPresenceOn: false
+                isWifiPresenceOn: false,
+                adbPresent: true
             ),
             onChange: { _ in }
         )
         PresenceControl(presence: .unknown, onChange: { _ in })
+        PresenceControl(presence: .unknown, onChange: { _ in }, isReady: false)
     }
     .frame(width: 232)
     .padding()

@@ -42,6 +42,7 @@ struct ContentView: View {
             DevicesSidebar(
                 devices: model.devices,
                 presence: model.presence,
+                isReady: model.isReady,
                 selection: selection,
                 onPair: { isPairingPresented = true },
                 onAdvertisingChange: { model.setAdvertising($0) }
@@ -49,6 +50,8 @@ struct ContentView: View {
         } detail: {
             if let device = selectedDevice {
                 DeviceDetail(device: device)
+            } else if !model.isReady {
+                EmptyState(line: S.devices.starting)
             } else if model.devices.isEmpty {
                 EmptyState(line: S.devices.noPhonePaired)
             } else {

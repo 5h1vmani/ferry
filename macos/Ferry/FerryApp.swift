@@ -13,13 +13,18 @@
 import SwiftUI
 import AppKit
 
+/// The main window's scene id, so the menu bar's "Open Ferry" can call
+/// `openWindow` and bring back a window that was closed.
+/// `docs/audits/oss-looks.md`, M4.
+let mainWindowID = "main"
+
 @main
 struct FerryApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model = EngineModel()
 
     var body: some Scene {
-        WindowGroup(S.app.name) {
+        WindowGroup(S.app.name, id: mainWindowID) {
             ContentView()
                 .environmentObject(model)
                 .task {

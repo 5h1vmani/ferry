@@ -11,6 +11,11 @@ import SwiftUI
 struct DevicesSidebar: View {
     let devices: [DeviceSnapshot]
     let presence: PresenceSnapshot
+    /// False before the engine's first snapshot arrives, so this sidebar
+    /// draws a neutral line rather than "No phone paired", which is an
+    /// answer nobody has asked the engine for yet.
+    /// `docs/audits/oss-looks.md`, M6.
+    var isReady = true
     /// The selected device's public key.
     @Binding var selection: String?
     var onPair: () -> Void = {}
@@ -18,7 +23,10 @@ struct DevicesSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if devices.isEmpty {
+            if !isReady {
+                EmptyState(line: S.devices.starting)
+                    .frame(maxHeight: .infinity)
+            } else if devices.isEmpty {
                 EmptyState(line: S.devices.noPhonePaired, actionLabel: S.devices.pairAPhone, action: onPair)
                     .frame(maxHeight: .infinity)
             } else {
@@ -30,7 +38,7 @@ struct DevicesSidebar: View {
 
             Divider()
 
-            PresenceControl(presence: presence, onChange: onAdvertisingChange)
+            PresenceControl(presence: presence, onChange: onAdvertisingChange, isReady: isReady)
                 .padding(.horizontal, FerrySpace.s3)
                 .padding(.vertical, FerrySpace.s2)
 
@@ -42,6 +50,7 @@ struct DevicesSidebar: View {
             }
             .buttonStyle(.plain)
             .padding(FerrySpace.s3)
+            .disabled(!isReady)
         }
         .navigationTitle(S.devices.sidebarTitle)
     }

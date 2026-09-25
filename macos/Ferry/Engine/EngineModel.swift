@@ -65,6 +65,13 @@ final class EngineModel: ObservableObject {
     /// Set when the engine could not be built or started. While this is
     /// set, the window shows it instead of the devices.
     @Published private(set) var startError: ThreePartError?
+    /// True once the engine's first snapshot has been read: `devices` and
+    /// `presence` hold a real answer, not the empty and unknown defaults a
+    /// freshly created model starts with. Screens show a neutral starting
+    /// state while this is false, instead of "No phone paired" and "Not
+    /// reachable over Wi-Fi", which are answers, not the absence of one.
+    /// `docs/audits/oss-looks.md`, M6.
+    @Published private(set) var isReady = false
     /// Set when one action failed, such as a pull that could not start.
     @Published var actionError: ThreePartError?
     /// Where pulled files land. Covered by the no-view-writes rule above
@@ -85,6 +92,13 @@ final class EngineModel: ObservableObject {
     var transferInfos: [TransferInfo] = []
     var batchInfos: [BatchInfo] = []
     var pairingState: PairingState = .idle
+    /// The access log, by device, read from the engine and kept here so a
+    /// view read is a dictionary lookup, not a fresh 1,000-row engine call
+    /// on every redraw. Filled on first read for a device, and refreshed
+    /// only by `reloadAccessLog()`, which the engine calls when the log can
+    /// really have changed. `docs/audits/oss-looks.md`, its ALERT on
+    /// `EngineModel+Devices.swift`, and M9.
+    var accessLogsByDevice: [String: [AccessDaySnapshot]] = [:]
     /// Which way in a person chose. A view concern, held here because the
     /// engine is told about it and the sheet may be rebuilt at any moment.
     var pairingMethod: PairingEntryMethod?
@@ -213,6 +227,7 @@ final class EngineModel: ObservableObject {
             reloadDevices()
             reloadTransfers()
             startNetworkReader()
+            isReady = true
         } catch {
             // Safe to clear `engine` and `events` here only because
             // `isStarting` keeps `start()` from letting a second attempt
@@ -245,11 +260,13 @@ final class EngineModel: ObservableObject {
         trustedNetworks = []
         accessLogRetentionDays = nil
         pairingState = .idle
+        accessLogsByDevice = [:]
         pairingMethod = nil
         pairing = .choosing
         offeringTimer?.invalidate()
         offeringTimer = nil
         presence = .unknown
+        isReady = false
         mountAttempted = []
         lastGroupStates = [:]
         hasSeededGroupStates = false
