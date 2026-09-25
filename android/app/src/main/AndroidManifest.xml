@@ -45,21 +45,28 @@
          over the Wi-Fi network name only to an app holding this
          permission, so the phone can tell the engine which network it is
          on. Asked for at the moment pairing first starts, never at first
-         run, so a person who never pairs is never asked. -->
+         run, so a person who never pairs is never asked.
+
+         docs/audits/oss-capability.md M1. An app that targets API 31 or
+         later and asks for fine location without also declaring coarse
+         location has that request ignored by Android, so the coarse
+         permission is declared too, and MainActivity asks for both in one
+         request. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
     <application
         android:name=".FerryApplication"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.Ferry">
 
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
-            android:theme="@android:style/Theme.Material.Light.NoActionBar">
+            android:theme="@style/Theme.Ferry">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -84,8 +91,10 @@
         <!-- Job 5: invisible to strangers. While this service runs, the
              engine advertises and accepts connections, and one ongoing
              notification says so. Android 15 and later cap a dataSync
-             service at six hours a day; the Pixel 3 XL runs Android 12,
-             which has no such cap. -->
+             service at six hours a day, then call the service's own
+             onTimeout, which ReachableService implements to stop cleanly
+             and say why. The Pixel 3 XL runs Android 12, which has no such
+             cap. docs/audits/oss-capability.md M3. -->
         <service
             android:name=".ReachableService"
             android:exported="false"
