@@ -71,7 +71,7 @@ struct TransferRow: View {
         case .active:
             VStack(alignment: .leading, spacing: FerrySpace.s1) {
                 ProgressView(value: group.fraction)
-                    .tint(FerryColor.accent)
+                    .tint(FerryColor.accentText)
                 Text(activeText)
                     .font(FerryFont.mono)
                     .foregroundStyle(FerryColor.text)

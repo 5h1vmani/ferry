@@ -38,7 +38,7 @@ struct ErrorBlock: View {
                 if error.canRetry {
                     Button(S.common.retry, action: onRetry)
                         .buttonStyle(.bordered)
-                        .tint(FerryColor.accent)
+                        .tint(FerryColor.accentText)
                 }
             }
         }
