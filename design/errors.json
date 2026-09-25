@@ -33,17 +33,17 @@
     },
     "ChunkSizeError::NotPowerOfTwo": {
       "stopped": "Ferry has a fault.",
-      "why": "The chunk size is not one BLAKE3 accepts.",
+      "why": "The chunk size Ferry picked does not work for its own checksums.",
       "todo": "Restart Ferry."
     },
     "ChunkSizeError::TooLarge": {
       "stopped": "Ferry has a fault.",
-      "why": "The chunk size is not one BLAKE3 accepts.",
+      "why": "The chunk size Ferry picked does not work for its own checksums.",
       "todo": "Restart Ferry."
     },
     "ChunkSizeError::TooSmall": {
       "stopped": "Ferry has a fault.",
-      "why": "The chunk size is not one BLAKE3 accepts.",
+      "why": "The chunk size Ferry picked does not work for its own checksums.",
       "todo": "Restart Ferry."
     },
     "DiscoveryError::Mdns": {
@@ -243,7 +243,7 @@
     },
     "PathError::NulByte": {
       "stopped": "The path was refused.",
-      "why": "It holds a NUL character.",
+      "why": "It holds a character Ferry does not allow in a name.",
       "todo": "Rename the file with a plain name."
     },
     "PathError::ParentComponent": {
@@ -363,7 +363,7 @@
     },
     "Runtime::WriteTooLarge": {
       "stopped": "The file was not saved.",
-      "why": "One write carried more than 1 MiB. Ferry writes 1 MiB at a time.",
+      "why": "Ferry received more data in one piece than it can save.",
       "todo": "Save the file again."
     },
     "Runtime::MountFailed": {
