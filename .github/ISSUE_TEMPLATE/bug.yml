@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a problem with Ferry
+labels: [bug]
+body:
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model
+      placeholder: for example, MacBook Air M2
+    validations:
+      required: false
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: for example, macOS 14.5
+    validations:
+      required: false
+  - type: input
+    id: phone-model
+    attributes:
+      label: Phone model
+      placeholder: for example, Pixel 3 XL
+    validations:
+      required: false
+  - type: input
+    id: android-version
+    attributes:
+      label: Android version
+      placeholder: for example, Android 12
+    validations:
+      required: false
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      description: Which path was the transfer using?
+      options:
+        - Wi-Fi
+        - USB
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Paste the exact words from any error message.
+    validations:
+      required: true
