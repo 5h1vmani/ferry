@@ -1,9 +1,13 @@
 package app.ferry
 
 import android.Manifest
+import android.app.ComponentCaller
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import androidx.annotation.RequiresApi
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResultLauncher
@@ -20,7 +24,11 @@ import app.ferry.engine.pushShared
 class MainActivity : ComponentActivity() {
     private lateinit var notificationPrompt: ActivityResultLauncher<String>
     private lateinit var cameraPrompt: ActivityResultLauncher<String>
-    private lateinit var locationPrompt: ActivityResultLauncher<String>
+
+    // docs/audits/oss-capability.md M1. Android ignores a request for fine
+    // location that does not also ask for coarse location, on an app that
+    // targets API 31 or later, so both are requested together.
+    private lateinit var locationPrompt: ActivityResultLauncher<Array<String>>
 
     // The Devices screen's "Send files" control, docs/ux-fix-plan.md item 1.
     // Opens the system picker for one or more documents, and feeds the
@@ -77,9 +85,16 @@ class MainActivity : ComponentActivity() {
             }
         }
         locationPrompt = registerForActivityResult(
-            ActivityResultContracts.RequestPermission(),
-        ) { granted ->
-            Permissions.locationAnswered(granted)
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) { grants ->
+            // Only fine location unlocks the Wi-Fi network name; coarse is
+            // requested alongside it only because Android otherwise
+            // ignores the fine request. docs/audits/oss-capability.md M1.
+            // A person can still choose approximate only, and Settings
+            // shows that case in its own words.
+            val fine = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+            val coarse = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            Permissions.locationAnswered(fine, coarse)
             // A callback registered before this grant never carries the
             // name, so a grant here is exactly the edge NetworkName has to
             // re-register for.
@@ -88,9 +103,10 @@ class MainActivity : ComponentActivity() {
         sendFilesPrompt = registerForActivityResult(
             ActivityResultContracts.OpenMultipleDocuments(),
         ) { uris ->
-            // The document picker's own result always carries a read
-            // grant; the system is the sender, not another app.
-            handleSharedUris(uris, hasReadGrant = true)
+            // The person chose each file in the system picker, and the
+            // picker grants Ferry each one it returns. No other app is
+            // involved, so rule 3 of ShareIntake's check always passes.
+            handleSharedUris(uris) { true }
         }
         setContent {
             FerryApp(
@@ -107,7 +123,15 @@ class MainActivity : ComponentActivity() {
                 onSendFilesClick = { sendFilesPrompt.launch(arrayOf("*/*")) },
             )
         }
-        handleIntentIfShare(intent)
+        // Only a fresh launch carries a share to act on. After a rotation,
+        // or a relaunch from Recents, getIntent still holds the old share.
+        // Acting on it again would push the same files a second time.
+        // docs/audits/android-share-grant.md finding 3.
+        val relaunched = savedInstanceState != null ||
+            intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (!relaunched) {
+            handleIntentIfShare(intent, fromNewIntent = false)
+        }
     }
 
     // A share from another app arrives here when this activity is not
@@ -117,7 +141,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleIntentIfShare(intent)
+        handleIntentIfShare(intent, fromNewIntent = true)
     }
 
     // docs/ux-fix-plan.md item 1. Every path resolves off the main thread,
@@ -125,18 +149,55 @@ class MainActivity : ComponentActivity() {
     // dials the Mac. FerryEngine.pushShared does nothing when no Mac is
     // paired; requestNavigateHome shows Devices either way, since that is
     // where the empty state, and the pushed transfer, both are.
-    private fun handleIntentIfShare(intent: Intent) {
+    private fun handleIntentIfShare(intent: Intent, fromNewIntent: Boolean) {
         if (!ShareIntake.isShareIntent(intent)) {
             return
         }
-        // Audit finding 1: a sender that could not read the file itself
-        // never gets this flag from the system, so its absence is the
-        // proof docs/engine-contract.md item 5 asks for.
-        val hasReadGrant = intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0
-        handleSharedUris(ShareIntake.urisFrom(intent), hasReadGrant)
+        handleSharedUris(ShareIntake.urisFrom(intent), shareSenderCheck(fromNewIntent))
     }
 
-    private fun handleSharedUris(uris: List<Uri>, hasReadGrant: Boolean) {
+    // Rule 3 of ShareIntake's share check: can the app that sent this
+    // share read a URI itself? docs/audits/android-share-grant.md finding 1.
+    //
+    // Android 15 added ComponentCaller for this. Android records what the
+    // sender could read at the moment the share arrived. The system share
+    // sheet launches Ferry as the sender, so the answer is about the app
+    // the person shared from. Android keeps one caller for the launch and
+    // one for each onNewIntent. currentCaller works only inside
+    // onNewIntent, so the caller is taken here, on the main thread.
+    //
+    // Android 14 and earlier have no such API, so the check passes every
+    // URI there, and ShareIntake's grant check is the only proof.
+    private fun shareSenderCheck(fromNewIntent: Boolean): (Uri) -> Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            return { true }
+        }
+        val caller = try {
+            if (fromNewIntent) currentCaller else initialCaller
+        } catch (e: IllegalStateException) {
+            // No caller was recorded. Without one, nothing can prove the
+            // sender could read the files, so every URI is refused.
+            android.util.Log.w("Ferry", "no caller recorded for this share", e)
+            return { false }
+        }
+        return { uri -> callerCanRead(caller, uri) }
+    }
+
+    // Asks Android whether the caller could read this URI when it sent the
+    // share. Android throws SecurityException when Ferry itself has no
+    // access to the URI, and IllegalArgumentException for a URI the
+    // caller's intent did not carry. Both mean no.
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    private fun callerCanRead(caller: ComponentCaller, uri: Uri): Boolean = try {
+        caller.checkContentUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) ==
+            PackageManager.PERMISSION_GRANTED
+    } catch (e: SecurityException) {
+        false
+    } catch (e: IllegalArgumentException) {
+        false
+    }
+
+    private fun handleSharedUris(uris: List<Uri>, senderCanRead: (Uri) -> Boolean) {
         if (uris.isEmpty()) {
             return
         }
@@ -148,7 +209,7 @@ class MainActivity : ComponentActivity() {
                 // is sent, and ShareIntake.appError already carries why,
                 // for FerryApp to show through ErrorBlock. docs/voice.md
                 // rule 10.
-                val resolution = ShareIntake.resolve(context, uris, hasReadGrant)
+                val resolution = ShareIntake.resolve(context, uris, senderCanRead)
                 if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
                     FerryEngine.pushShared(resolution.localPaths)
                 }
@@ -245,7 +306,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         locationPromptShown = true
-        locationPrompt.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        locationPrompt.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+        )
     }
 
     private fun setAdvertising(on: Boolean) {

@@ -10,18 +10,24 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.OpenInNew
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import app.ferry.FerryColor
@@ -52,6 +58,8 @@ fun SettingsScreen(
     allFilesAccessGranted: Boolean,
     notificationsAllowed: Boolean,
     locationGranted: Boolean,
+    // Approximate location allowed, precise location not.
+    locationApproximateOnly: Boolean,
     // The Networks section, docs/engine-contract.md item 18. Null when the
     // network cannot be read: Wi-Fi off, location refused, or unknown.
     currentNetworkName: String?,
@@ -68,6 +76,11 @@ fun SettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // docs/audits/oss-looks.md M2. Forgetting a device used to run at once,
+    // from one tap on a plain text button. This holds the device a Forget
+    // tap named, until the confirm dialog below is answered.
+    var pendingForget by remember { mutableStateOf<DeviceInfo?>(null) }
+
     Scaffold(
         modifier = modifier,
         containerColor = FerryColor.background(),
@@ -107,6 +120,19 @@ fun SettingsScreen(
                 value = sharedRootName,
                 caption = stringResource(R.string.settings_shared_storage_caption),
             )
+            // docs/audits/oss-looks.md M5. Neither app said what the cable
+            // path needs before it fails. This is the phone's own half of
+            // that requirement, next to the other facts about this phone.
+            Text(
+                text = stringResource(R.string.settings_usb_requirement),
+                style = FerryFont.caption(),
+                color = FerryColor.textSecondary(),
+                modifier = Modifier.padding(
+                    start = FerrySpace.s4,
+                    end = FerrySpace.s4,
+                    bottom = FerrySpace.s2,
+                ),
+            )
 
             GroupHeader(stringResource(R.string.settings_group_permissions))
             Permission(
@@ -127,7 +153,11 @@ fun SettingsScreen(
                 label = stringResource(R.string.settings_location_label),
                 granted = locationGranted,
                 grantedWord = stringResource(R.string.settings_status_granted),
-                notGrantedWord = stringResource(R.string.settings_status_not_granted),
+                notGrantedWord = if (locationApproximateOnly) {
+                    stringResource(R.string.settings_status_approximate_only)
+                } else {
+                    stringResource(R.string.settings_status_not_granted)
+                },
                 onClick = onOpenAppSettings,
             )
 
@@ -172,10 +202,11 @@ fun SettingsScreen(
                         ),
                         valueIsMono = true,
                     )
-                    // Destructive, and the platform's own colour for it.
-                    // No danger token: Material has already answered this.
+                    // docs/audits/oss-looks.md M2. One tap used to forget
+                    // the device at once. This tap now only names it; the
+                    // dialog below is what actually forgets it.
                     TextButton(
-                        onClick = { onForget(device) },
+                        onClick = { pendingForget = device },
                         modifier = Modifier.padding(horizontal = FerrySpace.s3),
                     ) {
                         Text(
@@ -187,6 +218,35 @@ fun SettingsScreen(
                 }
             }
         }
+    }
+
+    // docs/audits/oss-looks.md M2. Getting a forgotten device back needs
+    // both devices and a new pairing, so the dialog states that, and its
+    // destructive button is the one in Material's own error colour.
+    pendingForget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingForget = null },
+            title = { Text(stringResource(R.string.forget_device_title, target.name)) },
+            text = { Text(stringResource(R.string.forget_device_body, target.name)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingForget = null
+                        onForget(target)
+                    },
+                ) {
+                    Text(
+                        text = stringResource(R.string.action_forget_this_device),
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingForget = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 

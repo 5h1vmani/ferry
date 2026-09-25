@@ -78,7 +78,13 @@ fun ErrorBlock(
                 Spacer(Modifier.height(FerrySpace.s2))
                 OutlinedButton(
                     onClick = onAction,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = FerryColor.accent()),
+                    // docs/audits/oss-looks.md M8. accent (step 9) on
+                    // surface_raised is 2.72 to 1 in dark mode, below the
+                    // 4.5 to 1 this label needs as text. accent_text (step
+                    // 11) is the role already used for text at this
+                    // contrast level, and it clears 4.5 to 1 in both
+                    // themes: see the contrast script in the batch report.
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = FerryColor.accentText()),
                 ) {
                     Text(actionLabel ?: stringResource(R.string.action_retry))
                 }

@@ -1,46 +1,34 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The launcher icon's foreground layer: the Ferry mark, from
-     design_ouput/logo_assets/ferry-mark.svg, drawn in white so it shows on
-     the accent-filled background layer below, the same as the mark's own
-     white knockout variant, ferry-mark-white.svg. design_ouput/logo_assets/
-     README.md: "On an accent-filled ground the whole mark is white, track
-     included."
-
-     The mark's own 24x24 grid already carries its clear space, so the
-     whole grid is scaled as one square into this canvas's 66dp safe zone
-     (scale 66/24 = 2.75, centered with a 21dp offset on each side), rather
-     than the tight bounding box of its paths. That keeps the whole shape
-     inside every launcher mask. docs/audits/oss-looks.md B2 and m16. -->
+<!-- The launcher icon's monochrome layer, for Android 13's themed icons.
+     The system recolours every opaque pixel here to the wallpaper's own
+     tint and ignores the colour underneath, so only the shape and its
+     alpha matter. Same geometry as ic_launcher_foreground.xml.
+     docs/audits/oss-looks.md B2 and m16. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <!-- The file corner: ferry-mark.svg's first path. -->
     <path
         android:pathData="M44.1,43.275 H56.2 L62.9,50.975 V59.225 H44.1 V43.275 Z"
         android:strokeColor="#FFFFFF"
         android:strokeWidth="6.05"
         android:strokeLineJoin="round" />
-    <!-- The folded corner: the second path. -->
     <path
         android:pathData="M56.2,43.275 V50.975 H62.9"
         android:strokeColor="#FFFFFF"
         android:strokeWidth="6.05"
         android:strokeLineCap="round"
         android:strokeLineJoin="round" />
-    <!-- The hull: the third path, filled rather than stroked. -->
     <path
         android:pathData="M32,56.75 H76 L67.75,70.5 H40.25 L32,56.75 Z"
         android:fillColor="#FFFFFF" />
-    <!-- The waterline's faint track, opacity 0.26 in the source mark. -->
     <path
         android:pathData="M27.875,73.8 H80.125"
         android:strokeColor="#FFFFFF"
         android:strokeWidth="6.6"
         android:strokeLineCap="round"
         android:strokeAlpha="0.26" />
-    <!-- The waterline's solid highlight. -->
     <path
         android:pathData="M27.875,73.8 H54"
         android:strokeColor="#FFFFFF"

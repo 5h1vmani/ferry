@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Ferry's window theme. Every screen's own colours come from FerryColor,
+    read from design/tokens.json, so this theme exists only to pick the
+    right platform base: light here, and the dark base in
+    values-night/themes.xml. Before this file, the manifest pointed at the
+    light base in both places, so the window stayed light even when the
+    system was in dark mode: docs/audits/oss-looks.md B3.
+-->
+<resources>
+    <style name="Theme.Ferry" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>

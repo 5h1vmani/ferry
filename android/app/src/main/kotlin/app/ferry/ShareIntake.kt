@@ -3,9 +3,11 @@ package app.ferry
 import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Process
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import java.io.File
@@ -78,8 +80,8 @@ object ShareIntake {
     // start of every resolve call, so an error from an earlier share does
     // not outlive it; audit finding 10 also clears it when Devices is left.
     sealed class AppError {
-        // The sharing app's own intent carried no read grant: audit
-        // finding 1.
+        // A shared URI failed the share check in mayRead: audit finding
+        // 1, and docs/audits/android-share-grant.md finding 1.
         data object NotGranted : AppError()
         data class Unreadable(val name: String) : AppError()
 
@@ -140,12 +142,50 @@ object ShareIntake {
     fun isShareIntent(intent: Intent): Boolean =
         intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE
 
-    // Every content URI a share, or the multi-select document picker, handed
-    // over, in the order the sender listed them.
+    // The files a share sends: EXTRA_STREAM, single or as a list depending
+    // on the action, in the order the sender listed them, with no repeats.
+    //
+    // ClipData is not read. A sender may put a preview image there, for
+    // example a thumbnail for a shared link, and that image is not a file
+    // the person chose to send. Every URI returned here gets its own check
+    // in resolve(), so the ClipData grant flag no longer decides anything.
+    // docs/audits/android-share-grant.md finding 2.
     fun urisFrom(intent: Intent): List<Uri> = when (intent.action) {
         Intent.ACTION_SEND -> listOfNotNull(streamExtra(intent))
-        Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent)
+        Intent.ACTION_SEND_MULTIPLE -> streamListExtra(intent).distinct()
         else -> emptyList()
+    }
+
+    // The share check. docs/engine-contract.md item 5 lets Ferry read a
+    // file only when the sender could read it too. Ferry holds all files
+    // access, so the fact that Ferry can open a URI proves nothing.
+    // docs/audits/android-share-grant.md finding 1.
+    //
+    // A URI passes only when all three rules hold.
+    //
+    // 1. It is a content URI. Android has no grant for a file:// path, so
+    //    Ferry could read one only with its own all files access.
+    // 2. Ferry holds a read grant for this exact URI. checkUriPermission
+    //    counts only grants in Android's grant table. It never counts all
+    //    files access. Android adds a grant only for an app that can read
+    //    the URI itself, so the grant proves that some such app chose to
+    //    hand this file to Ferry.
+    // 3. senderCanRead says the sender itself can read it. On Android 15
+    //    and later, Android answers this for the app that sent the share.
+    //    On Android 14 and earlier, no API names the sender, so rule 2 is
+    //    the only proof. The known limit there is a grant left over from
+    //    an earlier share, because rule 2 cannot tell who made a grant.
+    private fun mayRead(context: Context, uri: Uri, senderCanRead: (Uri) -> Boolean): Boolean {
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) {
+            return false
+        }
+        val ferryHasGrant = context.checkUriPermission(
+            uri,
+            Process.myPid(),
+            Process.myUid(),
+            Intent.FLAG_GRANT_READ_URI_PERMISSION,
+        ) == PackageManager.PERMISSION_GRANTED
+        return ferryHasGrant && senderCanRead(uri)
     }
 
     @Suppress("DEPRECATION")
@@ -172,24 +212,22 @@ object ShareIntake {
     // Stops at the first file it cannot read and sends none of the paths:
     // a share that partly lands is a person guessing which files made it.
     //
-    // `hasReadGrant` is `intent.flags` carrying `FLAG_GRANT_READ_URI_PERMISSION`
-    // for a share, and always true for the document picker, which the
-    // system itself always grants. Audit finding 1: the system gives that
-    // grant only to a sender that could read the file itself, so it is the
-    // proof docs/engine-contract.md item 5 asks for; without it, nothing is
-    // read.
-    fun resolve(context: Context, uris: List<Uri>, hasReadGrant: Boolean): Resolution {
+    // Every URI must pass mayRead before Ferry opens it. senderCanRead is
+    // rule 3 of that check. MainActivity builds it for a share, and passes
+    // one that always answers true for the system document picker, where
+    // the person chose each file and the picker's own grant is the proof.
+    fun resolve(context: Context, uris: List<Uri>, senderCanRead: (Uri) -> Boolean): Resolution {
         clearAppError()
-        if (!hasReadGrant) {
-            setAppError(AppError.NotGranted)
-            return Resolution.NotGranted
-        }
         if (uris.size > MAX_SHARE_URIS) {
             setAppError(AppError.TooMany(uris.size, MAX_SHARE_URIS))
             return Resolution.TooMany
         }
         val paths = mutableListOf<String>()
         for (uri in uris) {
+            if (!mayRead(context, uri, senderCanRead)) {
+                setAppError(AppError.NotGranted)
+                return Resolution.NotGranted
+            }
             val path = try {
                 resolveOne(context, uri)
             } catch (e: CopyTooLargeException) {

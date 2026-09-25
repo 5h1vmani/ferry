@@ -9,8 +9,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import androidx.annotation.RequiresApi
 import app.ferry.engine.FerryEngine
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,8 +45,9 @@ import uniffi.ferry_runtime.FerryException
 //
 // The service type is dataSync. Android 15 and later limit a dataSync
 // foreground service to six hours in a day, after which the system stops
-// it. The Pixel 3 XL this build targets runs Android 12, which has no such
-// limit, so nothing here works around it yet.
+// it and calls onTimeout below, so this service can still end cleanly and
+// say why. The Pixel 3 XL this build targets runs Android 12, which has no
+// such limit. docs/audits/oss-capability.md M3.
 class ReachableService : Service() {
     // True while the phone advertises. False in the off state, which this
     // service holds rather than ending.
@@ -63,6 +66,31 @@ class ReachableService : Service() {
     // fresh instance must not assume a notification some earlier, now-dead
     // instance posted is still tracked.
     private val transferNotifier = TransferNotifier(this)
+
+    // Held while the phone advertises and browses over Wi-Fi. Not
+    // reference-counted: this service is the one place that acquires and
+    // releases it, so a plain acquired/not-acquired state is enough, and a
+    // duplicate acquire from a repeat start does not need to be balanced by
+    // a duplicate release. docs/audits/oss-capability.md M4: without this
+    // lock, Android's Wi-Fi stack drops multicast on many phones, and mDNS
+    // is how this phone and a Mac find each other.
+    private var multicastLock: WifiManager.MulticastLock? = null
+
+    private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) {
+            return
+        }
+        val wifiManager = applicationContext.getSystemService(WifiManager::class.java) ?: return
+        val lock = wifiManager.createMulticastLock("app.ferry.mdns")
+        lock.setReferenceCounted(false)
+        lock.acquire()
+        multicastLock = lock
+    }
+
+    private fun releaseMulticastLock() {
+        multicastLock?.let { if (it.isHeld) it.release() }
+        multicastLock = null
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -102,6 +130,7 @@ class ReachableService : Service() {
         if (intent?.action == ACTION_STOP_ADVERTISING) {
             advertising = false
             FerryEngine.setReachable(false)
+            releaseMulticastLock()
             createChannel()
             startForeground(
                 NOTIFICATION_ID,
@@ -137,6 +166,8 @@ class ReachableService : Service() {
         }
         createChannel()
         advertising = true
+        acquireMulticastLock()
+        cancelDailyLimitNotice()
         startForeground(
             NOTIFICATION_ID,
             buildNotification(),
@@ -145,6 +176,49 @@ class ReachableService : Service() {
         running = true
         FerryEngine.setReachable(true)
         return START_STICKY
+    }
+
+    // Android 15 and later stop a dataSync foreground service after six
+    // hours in a day, and this callback is that stop: it cannot be
+    // refused. Android crashes the app if the service is still in the
+    // foreground a few seconds later, so leaving the foreground and
+    // stopping come first. stopSelf() takes no start id, so a start that
+    // arrived after the timeout cannot keep the service alive.
+    //
+    // A plain notification on the "reachable" channel then says why. It
+    // carries its own tag, because stopForeground removes the ongoing
+    // notification on NOTIFICATION_ID, and Android may do that after this
+    // method returns. docs/audits/oss-capability.md M3,
+    // docs/audits/android-share-grant.md finding 4.
+    @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        super.onTimeout(startId, fgsType)
+        advertising = false
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        postDailyLimitNotice()
+        FerryEngine.setReachable(false)
+        releaseMulticastLock()
+        running = false
+    }
+
+    private fun postDailyLimitNotice() {
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        val open = openAppIntent(this)
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(getString(R.string.notification_daily_limit_stopped, Build.MODEL))
+            .setContentText(getString(R.string.notification_daily_limit_why_todo))
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(DAILY_LIMIT_TAG, NOTIFICATION_ID, notification)
+    }
+
+    // The daily limit notice is out of date once the phone is reachable
+    // again, so it goes when advertising starts.
+    private fun cancelDailyLimitNotice() {
+        getSystemService(NotificationManager::class.java)?.cancel(DAILY_LIMIT_TAG, NOTIFICATION_ID)
     }
 
     override fun onDestroy() {
@@ -159,6 +233,7 @@ class ReachableService : Service() {
         notifyJob?.cancel()
         cancelStaleTransferNotifications()
         FerryEngine.setReachable(false)
+        releaseMulticastLock()
         running = false
         // The activity can have finished while this service kept running.
         // Stopping here is the only chance left to release the engine in
@@ -219,7 +294,7 @@ class ReachableService : Service() {
             )
             return Notification.Builder(this, CHANNEL_ID)
                 .setContentTitle(getString(R.string.notification_not_advertising, Build.MODEL))
-                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setOngoing(true)
                 .setContentIntent(open)
                 .addAction(
@@ -239,7 +314,7 @@ class ReachableService : Service() {
         )
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.notification_advertising, Build.MODEL))
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setSmallIcon(R.drawable.ic_notification)
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(
@@ -268,7 +343,7 @@ class ReachableService : Service() {
         val words = errorWordsFor(this, code, detail)
         val open = openAppIntent(this)
         val notification = Notification.Builder(this, TRANSFERS_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(words.stopped)
             .setContentText(listOf(words.why, words.todo).filter { it.isNotEmpty() }.joinToString(" "))
             .setContentIntent(open)
@@ -312,6 +387,10 @@ class ReachableService : Service() {
         // both need this, to keep a transfer's notification id clear of the
         // "reachable" notification's own.
         internal const val NOTIFICATION_ID = 1
+
+        // Tags the daily limit notice, so it never shares a key with the
+        // ongoing notification on NOTIFICATION_ID or a transfer's own.
+        private const val DAILY_LIMIT_TAG = "daily_limit"
         private const val ACTION_STOP_ADVERTISING = "app.ferry.action.STOP_ADVERTISING"
         private const val ACTION_START_ADVERTISING = "app.ferry.action.START_ADVERTISING"
 

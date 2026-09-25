@@ -1,5 +1,6 @@
 package app.ferry.components
 
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -9,8 +10,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import app.ferry.FerryColor
 import app.ferry.FerryFont
 import app.ferry.FerryIcon
@@ -62,7 +64,20 @@ fun PresenceControl(
     }
 
     ListItem(
-        modifier = modifier.clearAndSetSemantics { contentDescription = description },
+        // docs/audits/oss-looks.md M3. clearAndSetSemantics used to replace
+        // the whole row's semantics, which dropped the Switch's own toggle
+        // action along with it: TalkBack read the state but had no action
+        // on it. toggleable below gives the row the real tap target, the
+        // Switch role, and the checked state in one merged node; the
+        // explicit contentDescription after it is what gets announced,
+        // instead of the label and supporting text read out a second time.
+        modifier = modifier
+            .toggleable(
+                value = isAdvertising,
+                onValueChange = onChange,
+                role = Role.Switch,
+            )
+            .semantics(mergeDescendants = true) { contentDescription = description },
         headlineContent = { Text(text = label, style = FerryFont.body()) },
         supportingContent = when {
             !isAdvertising -> {
@@ -97,8 +112,18 @@ fun PresenceControl(
         trailingContent = {
             Switch(
                 checked = isAdvertising,
-                onCheckedChange = onChange,
-                colors = SwitchDefaults.colors(checkedTrackColor = FerryColor.accent()),
+                // The row above is the real tap target and carries the
+                // Switch role and toggle action; a second, independent
+                // click target here would be a duplicate for both a touch
+                // and a screen reader user.
+                onCheckedChange = null,
+                // docs/audits/oss-looks.md M8. accent is step 9, which is
+                // 2.59 to 1 against this row's accent_surface fill in dark
+                // mode, below the 3 to 1 an icon or a track needs.
+                // accent_text is step 11, already used for text against
+                // this same background, and it clears 3 to 1 in both
+                // themes: see the contrast script in the batch report.
+                colors = SwitchDefaults.colors(checkedTrackColor = FerryColor.accentText()),
             )
         },
         colors = ListItemDefaults.colors(

@@ -24,6 +24,7 @@ import app.ferry.screens.DevicesScreen
 import app.ferry.screens.FirstRunScreen
 import app.ferry.screens.PairingScreen
 import app.ferry.screens.SettingsScreen
+import app.ferry.screens.StartingScreen
 
 // The screens of the phone app. No navigation library: this sealed class is
 // the whole of Ferry's navigation state, and FerryApp's `when` is the whole
@@ -77,11 +78,29 @@ fun FerryApp(
 ) {
     val darkTheme = isSystemInDarkTheme()
     val baseScheme = if (darkTheme) darkColorScheme() else lightColorScheme()
+    // docs/audits/oss-looks.md B4. The four roles above covered only part
+    // of Material's ColorScheme, so every role this app never named kept
+    // Material's own default — in dark mode, that default onPrimary is a
+    // dark purple, which sat on the accent-filled buttons and the presence
+    // switch at 2.27 to 1. Every role a screen actually draws now comes
+    // from a token, so no Material default can leak through.
+    //
+    // error and onError are the one pair left at Material's own default,
+    // on purpose: design/tokens.json carries no token for either, by the
+    // same decision the Forget button and destructive dialogs read from
+    // Material's own error role (docs/design.md, "no danger role").
     val colorScheme = baseScheme.copy(
         primary = FerryColor.accent(),
+        onPrimary = FerryColor.onAccent(),
         background = FerryColor.background(),
+        onBackground = FerryColor.text(),
         surface = FerryColor.surface(),
         onSurface = FerryColor.text(),
+        surfaceVariant = FerryColor.surfaceRaised(),
+        onSurfaceVariant = FerryColor.textSecondary(),
+        outline = FerryColor.border(),
+        primaryContainer = FerryColor.accentSurface(),
+        onPrimaryContainer = FerryColor.accentText(),
     )
 
     // remember alone loses this to a rotation: the activity is destroyed
@@ -130,11 +149,18 @@ fun FerryApp(
         }
     }
 
+    // True once the engine's first snapshot has arrived. docs/audits/
+    // oss-looks.md M6: before that, devices, transfers, and presence are
+    // all at their empty starting values, which would draw as "No Mac
+    // paired" and "Not reachable over Wi-Fi" even when a Mac is paired.
+    val engineStarted by FerryEngine.started.collectAsState()
+
     val allFilesAccess by Permissions.allFilesAccess.collectAsState()
     val notificationsAllowed by Permissions.notifications.collectAsState()
     val cameraGranted by Permissions.camera.collectAsState()
     val cameraRefused by Permissions.cameraRefused.collectAsState()
     val locationGranted by Permissions.location.collectAsState()
+    val locationApproximateOnly by Permissions.locationApproximateOnly.collectAsState()
     val firstRunDone by Permissions.firstRunDone.collectAsState()
 
     val engineDevices by FerryEngine.devices.collectAsState()
@@ -185,6 +211,15 @@ fun FerryApp(
                 onGrantAccess = onGrantFirstRunAccess,
                 onSkip = onSkipFirstRun,
             )
+            return@MaterialTheme
+        }
+
+        // A missing all files access grant is already a known, fixed fact,
+        // so its error block shows at once rather than waiting behind a
+        // starting screen the engine will never get past. docs/audits/
+        // oss-looks.md M6.
+        if (!engineStarted && allFilesAccess) {
+            StartingScreen()
             return@MaterialTheme
         }
 
@@ -252,6 +287,7 @@ fun FerryApp(
                 allFilesAccessGranted = allFilesAccess,
                 notificationsAllowed = notificationsAllowed,
                 locationGranted = locationGranted,
+                locationApproximateOnly = locationApproximateOnly,
                 currentNetworkName = currentNetwork,
                 trustedNetworks = trustedNetworks,
                 isAdvertising = isAdvertising,

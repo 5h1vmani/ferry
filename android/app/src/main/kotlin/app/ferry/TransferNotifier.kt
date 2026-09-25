@@ -103,7 +103,7 @@ class TransferNotifier(private val context: Context) {
     private fun buildTransferNotification(group: TransferGroup): Notification {
         val open = openAppIntent(context)
         val builder = Notification.Builder(context, ReachableService.TRANSFERS_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(group.label)
             .setSubText(directionLineFor(group))
             .setContentIntent(open)
