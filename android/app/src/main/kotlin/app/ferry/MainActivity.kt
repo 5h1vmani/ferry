@@ -20,7 +20,11 @@ import app.ferry.engine.pushShared
 class MainActivity : ComponentActivity() {
     private lateinit var notificationPrompt: ActivityResultLauncher<String>
     private lateinit var cameraPrompt: ActivityResultLauncher<String>
-    private lateinit var locationPrompt: ActivityResultLauncher<String>
+
+    // docs/audits/oss-capability.md M1. Android ignores a request for fine
+    // location that does not also ask for coarse location, on an app that
+    // targets API 31 or later, so both are requested together.
+    private lateinit var locationPrompt: ActivityResultLauncher<Array<String>>
 
     // The Devices screen's "Send files" control, docs/ux-fix-plan.md item 1.
     // Opens the system picker for one or more documents, and feeds the
@@ -77,8 +81,12 @@ class MainActivity : ComponentActivity() {
             }
         }
         locationPrompt = registerForActivityResult(
-            ActivityResultContracts.RequestPermission(),
-        ) { granted ->
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) { grants ->
+            // Only fine location unlocks the Wi-Fi network name; coarse is
+            // requested alongside it only because Android otherwise
+            // ignores the fine request. docs/audits/oss-capability.md M1.
+            val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
             Permissions.locationAnswered(granted)
             // A callback registered before this grant never carries the
             // name, so a grant here is exactly the edge NetworkName has to
@@ -89,8 +97,9 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.OpenMultipleDocuments(),
         ) { uris ->
             // The document picker's own result always carries a read
-            // grant; the system is the sender, not another app.
-            handleSharedUris(uris, hasReadGrant = true)
+            // grant for every URI it returns, the same as ShareIntake
+            // checks for a share's own URIs.
+            handleSharedUris(uris)
         }
         setContent {
             FerryApp(
@@ -129,14 +138,13 @@ class MainActivity : ComponentActivity() {
         if (!ShareIntake.isShareIntent(intent)) {
             return
         }
-        // Audit finding 1: a sender that could not read the file itself
-        // never gets this flag from the system, so its absence is the
-        // proof docs/engine-contract.md item 5 asks for.
-        val hasReadGrant = intent.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION != 0
-        handleSharedUris(ShareIntake.urisFrom(intent), hasReadGrant)
+        // Security finding, this batch: ShareIntake.resolve checks each
+        // URI's own read grant now, rather than this trusting one flag on
+        // the whole intent for every URI urisFrom returns.
+        handleSharedUris(ShareIntake.urisFrom(intent))
     }
 
-    private fun handleSharedUris(uris: List<Uri>, hasReadGrant: Boolean) {
+    private fun handleSharedUris(uris: List<Uri>) {
         if (uris.isEmpty()) {
             return
         }
@@ -148,7 +156,7 @@ class MainActivity : ComponentActivity() {
                 // is sent, and ShareIntake.appError already carries why,
                 // for FerryApp to show through ErrorBlock. docs/voice.md
                 // rule 10.
-                val resolution = ShareIntake.resolve(context, uris, hasReadGrant)
+                val resolution = ShareIntake.resolve(context, uris)
                 if (resolution is ShareIntake.Resolution.Success && resolution.localPaths.isNotEmpty()) {
                     FerryEngine.pushShared(resolution.localPaths)
                 }
@@ -245,7 +253,9 @@ class MainActivity : ComponentActivity() {
             return
         }
         locationPromptShown = true
-        locationPrompt.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        locationPrompt.launch(
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION),
+        )
     }
 
     private fun setAdvertising(on: Boolean) {
