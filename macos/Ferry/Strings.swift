@@ -35,27 +35,41 @@ enum S {
 
         /// For an error code that is not in the generated table. That
         /// should not happen, so the code itself is shown. A guess would
-        /// be worse than the code.
+        /// be worse than the code. There is no report path yet, so the
+        /// only real action left is to try the same thing again.
+        /// `docs/audits/oss-looks.md`, M10.
         static let unknownErrorStopped = "The action stopped."
         static let unknownErrorWhyFormat = "Ferry has no words for the code %@."
         static func unknownErrorWhy(code: String) -> String {
             String(format: unknownErrorWhyFormat, code)
         }
-        static let unknownErrorToDo = "Report this code."
+        static let unknownErrorToDo = "Try again."
     }
 
     /// Whether this Mac advertises and accepts connections. Job 5's only
     /// control, shown in the sidebar footer and the menu bar. New in
     /// docs/ia.md, Presence.
+    ///
+    /// The words say "reachable over Wi-Fi", matching the phone's own
+    /// notification, "%1$s is reachable over Wi-Fi." (`strings.xml`,
+    /// `notification_advertising`). Code identifiers still say
+    /// "advertising", because that is the mDNS term. `docs/audits/
+    /// oss-looks.md`, M1.
     enum presence {
-        static let advertising = "Advertising"
-        static let notAdvertising = "Not advertising"
+        static let advertising = "Reachable over Wi-Fi"
+        static let notAdvertising = "Not reachable over Wi-Fi"
         /// Stated because the failure it causes is silent. Named by its
         /// real name: this Mac, Wi-Fi, USB.
         static let consequence = "This Mac cannot be found on Wi-Fi. USB still works."
 
-        static let accessibilityOn = "Advertising, on"
-        static let accessibilityOffFormat = "Not advertising, off. %@"
+        /// Not the switch's on-screen label: an accessibility hint, so a
+        /// screen reader says what turning the switch on or off does, next
+        /// to the state it states already. `docs/voice.md` rule 9.
+        static let becomeReachable = "Become reachable"
+        static let stopBeingReachable = "Stop being reachable"
+
+        static let accessibilityOn = "Reachable over Wi-Fi, on"
+        static let accessibilityOffFormat = "Not reachable over Wi-Fi, off. %@"
         static func accessibilityOff(consequence: String) -> String {
             String(format: accessibilityOffFormat, consequence)
         }
@@ -69,10 +83,15 @@ enum S {
         /// authorisation. Named by the real cause, not guessed.
         static let quietUnknownNetwork = "Ferry cannot read the network name."
 
-        static let accessibilityQuietFormat = "Advertising, quiet on this network. %@"
+        static let accessibilityQuietFormat = "Reachable over Wi-Fi, quiet on this network. %@"
         static func accessibilityQuiet(why: String) -> String {
             String(format: accessibilityQuietFormat, why)
         }
+
+        /// Shown before the engine's first snapshot arrives, in place of a
+        /// state nobody has asked the engine about yet.
+        /// `docs/audits/oss-looks.md`, M6.
+        static let starting = "Starting."
     }
 
     /// The menu bar item. New in docs/ia.md, L0.
@@ -86,6 +105,11 @@ enum S {
         static let noPhonePaired = "No phone paired."
         static let noPhoneSelected = "No phone selected."
         static let pairAPhone = "Pair a phone"
+        /// Shown in the sidebar and the window's detail pane before the
+        /// engine's first snapshot arrives. Until then Ferry does not know
+        /// whether a phone is paired, so it says so instead of stating
+        /// "No phone paired." `docs/audits/oss-looks.md`, M6.
+        static let starting = "Starting."
         static let lastSeenFormat = "Last seen %@"
         static func lastSeen(_ relative: String) -> String {
             String(format: lastSeenFormat, relative)
@@ -284,6 +308,12 @@ enum S {
         static let today = "Today"
         static let yesterday = "Yesterday"
 
+        /// Opens the full log in a sheet, once the section holds more than
+        /// its inline limit. `docs/audits/oss-looks.md`, M9.
+        static let seeAllAccess = "See all access"
+        static let fullLogTitle = "Access log"
+        static let done = "Done"
+
         /// The sentence's subject, always a name and never "you". A log is
         /// read months later, out of context.
         static let thisMac = "This Mac"
@@ -368,6 +398,11 @@ enum S {
         static let title = "Pair a phone"
         static let waitingHeadline = "Looking for a phone."
         static let waitingBody = "Plug in a cable, or open Ferry on the phone and turn on pairing."
+        /// Shown under `waitingBody` when the engine reports no adb on this
+        /// Mac, where a person is already looking at the cable state.
+        /// `docs/audits/oss-looks.md`, M5; `docs/audits/oss-capability.md`,
+        /// M6.
+        static let cableNeedsAdb = "The cable needs adb on this Mac and USB debugging on the phone."
         static let codeInstruction = "Confirm this matches on the phone."
         static let accessibilityConfirmed = "Paired"
 
@@ -424,6 +459,15 @@ enum S {
         static let pairedLabel = "Paired"
         static let keyFingerprintLabel = "Key fingerprint"
         static let forgetThisPhone = "Forget this phone"
+
+        /// The confirmation before Forget acts, on the device row's context
+        /// menu and the detail pane's footer. Named by the device, per
+        /// `docs/voice.md` rule 4. `docs/audits/oss-looks.md`, M2.
+        static let forgetConfirmTitleFormat = "Forget %@"
+        static func forgetConfirmTitle(deviceName: String) -> String {
+            String(format: forgetConfirmTitleFormat, deviceName)
+        }
+        static let forgetConfirmMessage = "Pairing again needs both devices."
     }
 
     enum settings {
