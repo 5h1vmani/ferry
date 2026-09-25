@@ -36,6 +36,11 @@ struct PresenceSnapshot: Equatable {
     /// True while this device advertises, browses, and accepts over
     /// Wi-Fi.
     let isWifiPresenceOn: Bool
+    /// True while adb is found on this Mac. False disables USB pairing,
+    /// and a person watching the cable state is told why.
+    /// `crates/ferry-runtime/src/lib.rs`, `adb_present`.
+    /// `docs/audits/oss-looks.md`, M5; `docs/audits/oss-capability.md`, M6.
+    let adbPresent: Bool
 
     /// True when this Mac advertises but is quiet on the current
     /// network: the network is not trusted and no pairing is in
@@ -55,7 +60,8 @@ struct PresenceSnapshot: Equatable {
         activeTransport: nil,
         speedBytesPerSec: nil,
         networkName: nil,
-        isWifiPresenceOn: false
+        isWifiPresenceOn: false,
+        adbPresent: true
     )
 }
 

@@ -45,7 +45,14 @@ targets:
           fi
           cd "$SRCROOT/.."
           export CARGO_TARGET_DIR="$SRCROOT/../target/xcode"
-          cargo build --release -p ferry-runtime --target aarch64-apple-darwin
+          # Xcode exports MACOSX_DEPLOYMENT_TARGET (14.0) into this script.
+          # With Xcode 27 and rustc 1.92, that value also reaches the host
+          # proc-macro dylibs, and dyld then refuses to load them ("can't
+          # find crate for thiserror_impl"). Unset, rustc uses its own lower
+          # default, and a library built for an older macOS links into a
+          # 14.0 app without a warning.
+          env -u MACOSX_DEPLOYMENT_TARGET \
+            cargo build --release -p ferry-runtime --target aarch64-apple-darwin
           mkdir -p "$CARGO_TARGET_DIR/lib"
           cp -f "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/libferry_runtime.a" \
                 "$CARGO_TARGET_DIR/lib/libferry_runtime.a"
@@ -64,6 +71,11 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Ferry/Ferry.entitlements
         SWIFT_VERSION: "5.9"
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: NO
+        # Assets.xcassets/AppIcon holds every macOS icon size, rendered from
+        # design_ouput/logo_assets/ferry-app-icon.svg. Without this setting
+        # the catalog is built but no icon is picked from it.
+        # docs/audits/oss-looks.md, B2.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # This Mac has an Apple silicon processor, and the engine is built
         # for that one target only.
         ARCHS: arm64
@@ -99,7 +111,7 @@ targets:
         NSLocalNetworkUsageDescription: Ferry finds your phone on this network and copies files from it.
         # macOS 14 and later answer no Wi-Fi network name until this app is
         # authorised for location. See docs/engine-contract.md, item 18.
-        NSLocationUsageDescription: Ferry reads the Wi-Fi network name to know where it can be found.
+        NSLocationUsageDescription: macOS treats the Wi-Fi network name as location data. Ferry reads the name to know which networks you trust.
         NSBonjourServices:
           - _ferry._tcp
         # A drop on the Dock icon pushes to the target device

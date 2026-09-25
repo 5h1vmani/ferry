@@ -11,6 +11,10 @@ import SwiftUI
 struct DeviceRow: View {
     @EnvironmentObject private var model: EngineModel
     let device: DeviceSnapshot
+    /// True while the Forget confirmation is up. `docs/audits/
+    /// oss-looks.md`, M2: a context menu click no longer ends the pairing
+    /// on its own.
+    @State private var isConfirmingForget = false
 
     var body: some View {
         HStack(spacing: FerrySpace.s2) {
@@ -66,8 +70,20 @@ struct DeviceRow: View {
                 SendFilesPanel.present(forDevice: device.keyHex, model: model)
             }
             Button(S.deviceDetail.forgetThisPhone, role: .destructive) {
+                isConfirmingForget = true
+            }
+        }
+        .confirmationDialog(
+            S.deviceDetail.forgetConfirmTitle(deviceName: device.name),
+            isPresented: $isConfirmingForget,
+            titleVisibility: .visible
+        ) {
+            Button(S.deviceDetail.forgetThisPhone, role: .destructive) {
                 model.forget(keyHex: device.keyHex)
             }
+            Button(S.common.cancel, role: .cancel) {}
+        } message: {
+            Text(S.deviceDetail.forgetConfirmMessage)
         }
     }
 }
