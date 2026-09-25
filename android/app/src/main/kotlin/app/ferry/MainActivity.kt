@@ -120,7 +120,15 @@ class MainActivity : ComponentActivity() {
                 onSendFilesClick = { sendFilesPrompt.launch(arrayOf("*/*")) },
             )
         }
-        handleIntentIfShare(intent, fromNewIntent = false)
+        // Only a fresh launch carries a share to act on. After a rotation,
+        // or a relaunch from Recents, getIntent still holds the old share.
+        // Acting on it again would push the same files a second time.
+        // docs/audits/android-share-grant.md finding 3.
+        val relaunched = savedInstanceState != null ||
+            intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (!relaunched) {
+            handleIntentIfShare(intent, fromNewIntent = false)
+        }
     }
 
     // A share from another app arrives here when this activity is not
