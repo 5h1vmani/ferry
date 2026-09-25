@@ -188,15 +188,15 @@ enum PreviewData {
     static let mountReady = MountSnapshot(path: reachablePhone.mountPath)
 
     static let roots = [
-        SharedRootSnapshot(name: "Desktop", path: "/Users/yantram/Desktop", isWritable: true),
-        SharedRootSnapshot(name: "Downloads", path: "/Users/yantram/Downloads", isWritable: true),
+        SharedRootSnapshot(name: "Desktop", path: "/Users/you/Desktop", isWritable: true),
+        SharedRootSnapshot(name: "Downloads", path: "/Users/you/Downloads", isWritable: true),
     ]
 
     /// Job 7 turned on and having run (docs/engine-contract.md, item 14).
     static let autoCopyOn = AutoCopySnapshot(
         isEnabled: true,
         source: "Internal storage/DCIM",
-        destination: "/Users/yantram/Downloads/DCIM",
+        destination: "/Users/you/Downloads/DCIM",
         lastRun: S.automatic.lastRun(files: 43, relative: "2 hours ago"),
         isSupported: true,
         isRunning: false
@@ -206,7 +206,7 @@ enum PreviewData {
     static let autoCopyRunning = AutoCopySnapshot(
         isEnabled: true,
         source: "Internal storage/DCIM",
-        destination: "/Users/yantram/Downloads/DCIM",
+        destination: "/Users/you/Downloads/DCIM",
         lastRun: S.automatic.lastRun(files: 43, relative: "2 hours ago"),
         isSupported: true,
         isRunning: true
