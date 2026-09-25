@@ -28,6 +28,11 @@
          says the same kind of thing on both platforms. -->
     <string name="action_forget_this_device">Forget this Mac</string>
     <string name="action_open_settings">Open settings</string>
+    <!-- The confirm dialog before Forget runs, docs/audits/oss-looks.md
+         M2. Named so the dialog still reads correctly if a phone ever
+         pairs with more than one Mac. -->
+    <string name="forget_device_title">Forget %1$s?</string>
+    <string name="forget_device_body">This removes every transfer record for %1$s. Pairing it again needs both devices.</string>
     <!-- The Devices screen's share control, docs/ux-fix-plan.md item 1.
          Opens the system picker; the same words on the Mac name the Finder
          Services entry and the drop target's own control. -->
@@ -89,21 +94,25 @@
     <!-- PresenceControl, docs/components.md. Job 5's only control. It
          appears on Devices and in the notification, and both read one
          value, so both read these words. -->
-    <string name="presence_advertising">Advertising</string>
-    <string name="presence_not_advertising">Not advertising</string>
+    <!-- docs/audits/oss-looks.md M1. "Advertising" is the mDNS term, and it
+         read as if this switch were about advertisements. These words say
+         what the switch does instead. Code identifiers keep the word
+         advertising, because that is still the correct mDNS term there. -->
+    <string name="presence_advertising">Reachable over Wi-Fi</string>
+    <string name="presence_not_advertising">Not reachable over Wi-Fi</string>
     <!-- Stated because the failure it causes is silent. Named by its real
          name: this phone, Wi-Fi, USB. -->
     <string name="presence_consequence">This phone cannot be found on Wi-Fi. USB still works.</string>
-    <string name="presence_start">Start advertising</string>
-    <string name="presence_stop">Stop advertising</string>
-    <string name="cd_presence_on">Advertising, on</string>
-    <string name="cd_presence_off">Not advertising, off. %1$s</string>
+    <string name="presence_start">Become reachable</string>
+    <string name="presence_stop">Stop being reachable</string>
+    <string name="cd_presence_on">Reachable over Wi-Fi, on</string>
+    <string name="cd_presence_off">Not reachable over Wi-Fi, off. %1$s</string>
     <!-- Shared by PresenceControl, the reachable notification, and the
-         Networks section of Settings: advertising is on, and reachability
-         is quiet because this network is not trusted.
+         Networks section of Settings: this phone is reachable, and it is
+         quiet because this network is not trusted.
          docs/engine-contract.md, item 18. -->
     <string name="presence_quiet_on_network">Ferry is quiet on this network.</string>
-    <string name="cd_presence_quiet">Advertising, on. %1$s</string>
+    <string name="cd_presence_quiet">Reachable over Wi-Fi, on. %1$s</string>
 
     <!-- Sizes and durations, for the numbers the engine reports. Units are
          decimal, the way a disk and a network count them. -->
@@ -184,7 +193,10 @@
          one wording, on both platforms. -->
     <string name="error_unknown_stopped">The action stopped.</string>
     <string name="error_unknown_why">Ferry has no words for the code %1$s.</string>
-    <string name="error_unknown_todo">Report this code.</string>
+    <!-- docs/audits/oss-looks.md M10. "Report this code." named no place
+         to report it. This code and the engine have drifted apart, which
+         an update fixes, so the words point at a real, doable action. -->
+    <string name="error_unknown_todo">Update Ferry, then try again.</string>
 
     <!-- PairingCode, docs/components.md. Digit words spell the code for
          a screen reader, one digit at a time, so it can be compared
@@ -291,6 +303,13 @@
          way back. -->
     <string name="notification_not_advertising">Not advertising. %1$s cannot be found on Wi-Fi.</string>
 
+    <!-- docs/audits/oss-capability.md M3. Android 15 and later stop a
+         dataSync foreground service after six hours in a day. This is
+         that stop, posted on the same channel as the notification above,
+         since the ongoing one is gone once the service stops. -->
+    <string name="notification_daily_limit_stopped">%1$s stopped being reachable.</string>
+    <string name="notification_daily_limit_why_todo">Android limits this to six hours a day. Open Ferry to turn it back on.</string>
+
     <!-- Transfer notifications, docs/ux-fix-plan.md item 2. One per batch,
          or per transfer outside a batch. Its title, progress line, and
          error words are the ones TransferRow already draws, from the
@@ -309,7 +328,12 @@
     <string name="settings_group_paired">Paired</string>
     <string name="settings_name_label">Name</string>
     <string name="settings_shared_storage_label">Shared storage</string>
-    <string name="settings_shared_storage_caption">Not editable in phase 1.</string>
+    <!-- docs/audits/oss-looks.md M10. "Not editable in phase 1" named an
+         internal project phase. -->
+    <string name="settings_shared_storage_caption">Not editable yet.</string>
+    <!-- docs/audits/oss-looks.md M5. The cable path needs USB debugging on
+         the phone and adb on the Mac; neither app said so before this. -->
+    <string name="settings_usb_requirement">A USB cable needs USB debugging on, in Developer options.</string>
     <string name="settings_all_files_access_label">All files access</string>
     <string name="settings_status_granted">Granted</string>
     <string name="settings_status_not_granted">Not granted</string>
