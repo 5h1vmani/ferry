@@ -56,12 +56,8 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 
 ### Part B: build and open the Mac app
 
-Build the Mac app as the README's "Build from source" section says, then
-open it:
-
-```bash
-open macos/build/Build/Products/Debug/Ferry.app
-```
+Build and open the Mac app as the README's "Build from source" section
+says.
 
 The first build takes a few minutes. Two system prompts may appear: one
 about the local network, and one from the firewall about incoming
