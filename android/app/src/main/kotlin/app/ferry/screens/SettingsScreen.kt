@@ -58,6 +58,8 @@ fun SettingsScreen(
     allFilesAccessGranted: Boolean,
     notificationsAllowed: Boolean,
     locationGranted: Boolean,
+    // Approximate location allowed, precise location not.
+    locationApproximateOnly: Boolean,
     // The Networks section, docs/engine-contract.md item 18. Null when the
     // network cannot be read: Wi-Fi off, location refused, or unknown.
     currentNetworkName: String?,
@@ -151,7 +153,11 @@ fun SettingsScreen(
                 label = stringResource(R.string.settings_location_label),
                 granted = locationGranted,
                 grantedWord = stringResource(R.string.settings_status_granted),
-                notGrantedWord = stringResource(R.string.settings_status_not_granted),
+                notGrantedWord = if (locationApproximateOnly) {
+                    stringResource(R.string.settings_status_approximate_only)
+                } else {
+                    stringResource(R.string.settings_status_not_granted)
+                },
                 onClick = onOpenAppSettings,
             )
 

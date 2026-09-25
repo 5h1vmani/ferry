@@ -160,6 +160,7 @@ fun FerryApp(
     val cameraGranted by Permissions.camera.collectAsState()
     val cameraRefused by Permissions.cameraRefused.collectAsState()
     val locationGranted by Permissions.location.collectAsState()
+    val locationApproximateOnly by Permissions.locationApproximateOnly.collectAsState()
     val firstRunDone by Permissions.firstRunDone.collectAsState()
 
     val engineDevices by FerryEngine.devices.collectAsState()
@@ -286,6 +287,7 @@ fun FerryApp(
                 allFilesAccessGranted = allFilesAccess,
                 notificationsAllowed = notificationsAllowed,
                 locationGranted = locationGranted,
+                locationApproximateOnly = locationApproximateOnly,
                 currentNetworkName = currentNetwork,
                 trustedNetworks = trustedNetworks,
                 isAdvertising = isAdvertising,

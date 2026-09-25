@@ -90,8 +90,11 @@ class MainActivity : ComponentActivity() {
             // Only fine location unlocks the Wi-Fi network name; coarse is
             // requested alongside it only because Android otherwise
             // ignores the fine request. docs/audits/oss-capability.md M1.
-            val granted = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
-            Permissions.locationAnswered(granted)
+            // A person can still choose approximate only, and Settings
+            // shows that case in its own words.
+            val fine = grants[Manifest.permission.ACCESS_FINE_LOCATION] == true
+            val coarse = grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            Permissions.locationAnswered(fine, coarse)
             // A callback registered before this grant never carries the
             // name, so a grant here is exactly the edge NetworkName has to
             // re-register for.

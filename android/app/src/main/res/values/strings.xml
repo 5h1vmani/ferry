@@ -337,6 +337,9 @@
     <string name="settings_all_files_access_label">All files access</string>
     <string name="settings_status_granted">Granted</string>
     <string name="settings_status_not_granted">Not granted</string>
+    <!-- Location allowed as approximate only. Android gives the Wi-Fi
+         name only with precise location. -->
+    <string name="settings_status_approximate_only">Approximate only. Turn on precise location so Ferry can read the Wi-Fi name.</string>
     <string name="settings_notifications_label">Notifications</string>
     <string name="settings_status_allowed">Allowed</string>
     <string name="settings_status_not_allowed">Not allowed</string>

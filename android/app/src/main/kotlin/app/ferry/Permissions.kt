@@ -46,6 +46,14 @@ object Permissions {
     // asked for the first time pairing starts, never at first run.
     val location: StateFlow<Boolean> = _location.asStateFlow()
 
+    private val _locationApproximateOnly = MutableStateFlow(false)
+
+    // True when the person allowed approximate location but not precise
+    // location. Android gives the Wi-Fi name only with precise location,
+    // so the name stays unknown, and Settings says which choice to change.
+    // docs/audits/android-share-grant.md finding 5.
+    val locationApproximateOnly: StateFlow<Boolean> = _locationApproximateOnly.asStateFlow()
+
     private val _cameraRefused = MutableStateFlow(false)
 
     // True once the person has refused the camera in this run. The pairing
@@ -72,6 +80,12 @@ object Permissions {
             Manifest.permission.ACCESS_FINE_LOCATION,
         )
         _location.value = location == PackageManager.PERMISSION_GRANTED
+        val coarseLocation = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+        )
+        _locationApproximateOnly.value =
+            !_location.value && coarseLocation == PackageManager.PERMISSION_GRANTED
         if (_camera.value) {
             // A grant made on the system screen clears an earlier refusal,
             // so the pairing screen stops offering the fallback as if it
@@ -94,10 +108,13 @@ object Permissions {
         _cameraRefused.value = !granted
     }
 
-    // Records the answer to the location prompt. Refused is not an error:
-    // the network name stays unknown, and Settings says why.
-    fun locationAnswered(granted: Boolean) {
-        _location.value = granted
+    // Records the answer to the location prompt: precise, approximate
+    // only, or refused. Only precise location reads the network name.
+    // Neither of the other two is an error: the network name stays
+    // unknown, and Settings says why.
+    fun locationAnswered(fine: Boolean, coarse: Boolean) {
+        _location.value = fine
+        _locationApproximateOnly.value = !fine && coarse
     }
 
     // The system screen where all files access is granted for this app.
