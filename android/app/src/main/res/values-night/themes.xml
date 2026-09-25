@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The dark half of Theme.Ferry: see values/themes.xml. Android selects
+    this file's version of the style automatically when the system is in
+    dark mode.
+-->
+<resources>
+    <style name="Theme.Ferry" parent="@android:style/Theme.Material.NoActionBar" />
+</resources>
