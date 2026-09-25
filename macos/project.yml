@@ -45,7 +45,14 @@ targets:
           fi
           cd "$SRCROOT/.."
           export CARGO_TARGET_DIR="$SRCROOT/../target/xcode"
-          cargo build --release -p ferry-runtime --target aarch64-apple-darwin
+          # Xcode exports MACOSX_DEPLOYMENT_TARGET (14.0) into this script.
+          # With Xcode 27 and rustc 1.92, that value also reaches the host
+          # proc-macro dylibs, and dyld then refuses to load them ("can't
+          # find crate for thiserror_impl"). Unset, rustc uses its own lower
+          # default, and a library built for an older macOS links into a
+          # 14.0 app without a warning.
+          env -u MACOSX_DEPLOYMENT_TARGET \
+            cargo build --release -p ferry-runtime --target aarch64-apple-darwin
           mkdir -p "$CARGO_TARGET_DIR/lib"
           cp -f "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/libferry_runtime.a" \
                 "$CARGO_TARGET_DIR/lib/libferry_runtime.a"
